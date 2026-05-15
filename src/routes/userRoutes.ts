@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { getAllUsers, getUserById, createUser, updateUser, deactivateUser, activateUser } from '../controllers/userController';
+import { getAllUsers, getUserById, createUser, updateUser, deactivateUser, activateUser, changePassword } from '../controllers/userController';
 
 // สร้าง Schema สำหรับตรวจสอบข้อมูล (Validation) ให้ตรงกับโครงสร้างตาราง users
 const userSchema = t.Object({
@@ -51,4 +51,12 @@ export const userRoutes = new Elysia({ prefix: '/api/v1/users' })
     .patch('/:id/activate', activateUser, {
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['Users'] }
+    })
+    .patch('/:id/change-password', changePassword, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            old_password: t.String(),
+            new_password: t.String()
+        }),
+        detail: { tags: ['Users'], summary: 'เปลี่ยนรหัสผ่าน', description: 'ตรวจสอบรหัสเก่าก่อน ถ้าตรงจึงเข้ารหัสใหม่ด้วย Argon2id แล้วอัปเดต' }
     });

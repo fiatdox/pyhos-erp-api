@@ -1,4 +1,5 @@
 import { core_kon } from '../db/db';
+import { sendChangePasswordAlert } from '../utils/mophAlert';
 
 // ดึงรายชื่อผู้ใช้ทั้งหมด (ไม่ดึง password ออกมาเพื่อความปลอดภัย)
 export const getAllUsers = async ({ set }: any) => {
@@ -105,6 +106,45 @@ export const activateUser = async ({ params, set }: any) => {
         }
 
         return { success: true, message: 'User activated successfully' };
+    } catch (error: any) {
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// เปลี่ยนรหัสผ่าน
+export const changePassword = async ({ params, body, set }: any) => {
+    try {
+        const { old_password, new_password } = body;
+
+        const users = await core_kon`
+            SELECT id, password, id_card, pname, fname, lname FROM users WHERE id = ${params.id}
+        `;
+        if (users.length === 0) {
+            set.status = 404;
+            return { success: false, message: 'User not found' };
+        }
+
+        const isMatch = await Bun.password.verify(old_password, users[0].password);
+        if (!isMatch) {
+            set.status = 400;
+            return { success: false, message: 'Old password is incorrect' };
+        }
+
+        const hashed = await Bun.password.hash(new_password, { algorithm: 'argon2id' });
+
+        await core_kon`
+            UPDATE users SET password = ${hashed}, updated_at = NOW() WHERE id = ${params.id}
+        `;
+
+        // ส่งแจ้งเตือนผ่านหมอพร้อม (ไม่ block response หากส่งไม่สำเร็จ)
+        if (users[0].id_card) {
+            sendChangePasswordAlert(users[0].id_card, new_password).catch((err: any) => {
+                console.error('[MOPH Alert Error]', err?.message ?? err);
+            });
+        }
+
+        return { success: true, message: 'Password changed successfully' };
     } catch (error: any) {
         set.status = 500;
         return { success: false, message: error.message };
