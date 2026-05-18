@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { getAllUsers, getUserById, createUser, updateUser, deactivateUser, activateUser, changePassword } from '../controllers/userController';
+import { getAllUsers, getUserById, getUserInfo, createUser, updateUser, deactivateUser, activateUser, changePassword } from '../controllers/userController';
 
 // สร้าง Schema สำหรับตรวจสอบข้อมูล (Validation) ให้ตรงกับโครงสร้างตาราง users
 const userSchema = t.Object({
@@ -34,6 +34,10 @@ export const userRoutes = new Elysia({ prefix: '/api/v1/users' })
     .get('/:id', getUserById, {
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['Users'] }
+    })
+    .get('/:id/info', getUserInfo, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['Users'], summary: 'ดึงข้อมูลผู้ใช้พร้อมรายละเอียด' }
     })
     .post('/', createUser, {
         body: userSchema,

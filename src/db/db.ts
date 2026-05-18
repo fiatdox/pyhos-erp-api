@@ -1,4 +1,15 @@
 import postgres from 'postgres';
+import mysql from 'mysql2/promise';
+
+export const equipmentPool = mysql.createPool({
+    host: process.env.EQUIPMENT_HOST,
+    port: Number(process.env.EQUIPMENT_PORT),
+    user: process.env.EQUIPMENT_USER,
+    password: process.env.EQUIPMENT_PASSWORD,
+    database: process.env.EQUIPMENT_DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 30,
+});
 
 export const core_kon = postgres({
     host: process.env.CORE_KON_HOST,

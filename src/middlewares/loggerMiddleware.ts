@@ -110,7 +110,9 @@ export const loggerMiddleware = (app: Elysia) =>
             const userAgent = request.headers.get('user-agent') || '-';
             const referer = request.headers.get('referer') || '-';
 
-            console.log(`${clientIP.padEnd(15)} | ${userId.padEnd(10)} | ${coloredMethodPadded} | ${fullPath.padEnd(30)} | ${`${duration}ms`.padEnd(8)} | ${colorStatus(set.status)}`);
+            const now = new Date();
+            const datetime = `${now.toLocaleDateString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric' })} ${now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}`;
+            console.log(`${datetime} | ${clientIP.padEnd(15)} | ${userId.padEnd(10)} | ${coloredMethodPadded} | ${fullPath.padEnd(30)} | ${`${duration}ms`.padEnd(8)} | ${colorStatus(set.status)}`);
 
             // บันทึกลงไฟล์ (File Log) - ตัดสีออกและเพิ่ม Timestamp
             const timestamp = new Date().toISOString();

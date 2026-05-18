@@ -1,9 +1,18 @@
 import { Elysia, t } from 'elysia';
 import { jwt } from '@elysiajs/jwt';
+import { rateLimit } from 'elysia-rate-limit';
 import { loginCOREKON } from '../controllers/authController';
 
 export const authRoutes = new Elysia({ prefix: '/api/v1/auth' })
-    // This route group also needs the JWT plugin to sign tokens
+    .use(rateLimit({
+        duration: 60000,
+        max: 100,
+        generator: (req, server) => server?.requestIP(req)?.address ?? req.headers.get('x-forwarded-for') ?? 'unknown',
+        errorResponse: new Response(
+            JSON.stringify({ success: false, message: 'Too many login attempts. Please try again later.' }),
+            { status: 429, headers: { 'Content-Type': 'application/json' } }
+        )
+    }))
     .use(jwt({
         name: 'jwt',
         secret: process.env.JWT_SECRET || 'your-secret-key',

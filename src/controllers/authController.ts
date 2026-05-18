@@ -29,7 +29,14 @@ export const loginCOREKON = async ({ body, set, jwt }: Context & { jwt: any }) =
             return { success: false, message: 'Invalid username or password' };
         }
 
-        const token = await jwt.sign({ username: user.username });
+        const roleRows = await core_kon`
+            SELECT r.role_name
+            FROM core_kon.user_m_users_roles mu
+            LEFT JOIN core_kon.user_roles r ON r.id = mu.role_id
+            WHERE mu.user_id = ${user.id}
+        `;
+
+        const token = await jwt.sign({ id: user.id, username: user.username });
         const weak = password === user.id_card;
 
         return {
@@ -37,13 +44,14 @@ export const loginCOREKON = async ({ body, set, jwt }: Context & { jwt: any }) =
             token,
             weak,
             data: {
-                id : user.id,
+                id: user.id,
                 username: user.username,
                 name: user.employee_name,
                 mission_name: user.mission_name,
                 major_name: user.major_name,
                 position_name: user.position_name,
-                user_type_id: user.user_type_id
+                user_type_id: user.user_type_id,
+                roles: roleRows.map((r: any) => r.role_name)
             }
         };
     } catch (error) {

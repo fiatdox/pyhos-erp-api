@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById } from '../controllers/itController';
+import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile } from '../controllers/itController';
 
 export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
     .use(authMiddleware)
@@ -30,4 +30,80 @@ export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
     .get('/priority-levels/:id', getPriorityLevelById, {
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['IT'], summary: 'ดึงระดับความสำคัญ IT ตาม id', description: 'ดึงข้อมูล it_priority_level_id, name, description, response_days, display_order จากตาราง it_priority_levels ตาม id เฉพาะที่ is_active = Y' }
+    })
+    // ดึงรายการสถานะกระบวนการ IT ทั้งหมด
+    .get('/process-statuses', getProcessStatuses, {
+        detail: { tags: ['IT'], summary: 'ดึงรายการสถานะกระบวนการ IT ทั้งหมด' }
+    })
+    // ดึงสถานะกระบวนการ IT หลายรายการ เช่น ?ids=1,2,3
+    .get('/process-statuses/by-ids', getProcessStatusesByIds, {
+        query: t.Object({ ids: t.String() }),
+        detail: { tags: ['IT'], summary: 'ดึงสถานะกระบวนการ IT หลายรายการ', description: 'ส่ง ?ids=1,2,3' }
+    })
+    // ดึงสถานะกระบวนการ IT ตาม id
+    .get('/process-statuses/:id', getProcessStatusById, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['IT'], summary: 'ดึงสถานะกระบวนการ IT ตาม id' }
+    })
+    // ดึงรายการซ่อมทั้งหมด ย้อนหลัง 1 ปี หรือกรองตามช่วงวันที่
+    .post('/repair-requests/all', getAllRepairRequests, {
+        body: t.Object({
+            date1: t.Optional(t.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
+            date2: t.Optional(t.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
+            status: t.Optional(t.Union([t.Array(t.Numeric()), t.String()])),
+        }),
+        detail: {
+            tags: ['IT'],
+            summary: 'ดึงรายการซ่อมทั้งหมด',
+            description: 'ค่าเริ่มต้นย้อนหลัง 1 ปี หรือส่ง { date1, date2 } รูปแบบ YYYY-MM-DD เพื่อกำหนดช่วงเอง',
+        },
+    })
+    // ดึงรายการคำร้องซ่อมคอมพิวเตอร์ (กรอง status ได้ เช่น ?status=1,2,3)
+    .get('/repair-requests', getRepairRequests, {
+        query: t.Object({ status: t.Optional(t.String()) }),
+        detail: {
+            tags: ['IT'],
+            summary: 'ดึงรายการคำร้องซ่อมคอมพิวเตอร์',
+            description: 'ส่ง ?status=1 หรือ ?status=1,2,3 เพื่อกรองตาม process_status_id ถ้าไม่ส่งจะดึงทั้งหมด',
+        },
+    })
+    // บันทึกคำร้องงานซ่อมคอมพิวเตอร์
+    .post('/repair-requests', createRepairRequest, {
+        body: t.Object({
+            equipment_number: t.String({ minLength: 1 }),
+            equipment_name: t.String({ minLength: 1 }),
+            it_equipment_type_id: t.Numeric(),
+            brand: t.Optional(t.String()),
+            location: t.String({ minLength: 1 }),
+            unit_price: t.Optional(t.Numeric()),
+            company_name: t.Optional(t.String()),
+            budget_year: t.Optional(t.String({ maxLength: 4 })),
+            problem_category_id: t.Numeric(),
+            problem_description: t.String({ minLength: 1 }),
+            it_priority_level_id: t.Numeric(),
+            images: t.Optional(t.Union([t.File(), t.Array(t.File())])),
+        }),
+        detail: {
+            tags: ['IT'],
+            summary: 'บันทึกคำร้องงานซ่อมคอมพิวเตอร์',
+            description: 'บันทึกลงตาราง it_repair_requests และ it_repair_request_images (รูป 0-3 ภาพ) รับข้อมูลเป็น multipart/form-data',
+        },
+    })
+    // ดึงรายการภาพทั้งหมดตาม it_repair_request_id
+    .get('/repair-requests/:id/images', getRepairRequestImages, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: {
+            tags: ['IT'],
+            summary: 'ดึงรายการภาพตาม it_repair_request_id',
+            description: 'ดึงข้อมูล it_repair_request_image_id, attach_file_name, created_at, created_by จากตาราง it_repair_request_images',
+        },
+    })
+    // เรียกดูไฟล์ภาพตาม it_repair_request_image_id
+    .get('/repair-request-images/:imageId/file', getRepairRequestImageFile, {
+        params: t.Object({ imageId: t.Numeric() }),
+        detail: {
+            tags: ['IT'],
+            summary: 'เรียกดูไฟล์ภาพตาม it_repair_request_image_id',
+            description: 'คืนค่าไฟล์ภาพจริง (image/jpeg, image/png, ฯลฯ) สำหรับแสดงในเบราว์เซอร์',
+        },
     });

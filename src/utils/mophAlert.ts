@@ -1,4 +1,4 @@
-const MOPH_ALERTING_URL = `${process.env.MOPH_ALERT_BASE_URL}/alert/v3.1/messages`;
+export const MOPH_ALERTING_URL = `${process.env.MOPH_ALERT_BASE_URL}/alert/v3.1/messages`;
 
 const MOPH_HEADERS = {
     'Content-Type': 'application/json',
@@ -6,7 +6,8 @@ const MOPH_HEADERS = {
     'secret-key': process.env.MOPH_ALERT_SECRET_ID!,
 };
 
-function formatThaiDate(date: Date): { thaiDate: string; thaiTime: string } {
+
+export function formatThaiDate(date: Date): { thaiDate: string; thaiTime: string } {
     const months = ['', 'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
         'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
     const thaiDate = `${date.getDate()} ${months[date.getMonth() + 1]} ${date.getFullYear() + 543}`;
@@ -99,3 +100,4 @@ export async function sendChangePasswordAlert(idCard: string, newPassword: strin
     });
     console.log('[MOPH Alert] Change Password Template:', res.status, await res.text());
 }
+

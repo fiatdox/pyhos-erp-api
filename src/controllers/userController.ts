@@ -16,6 +16,35 @@ export const getAllUsers = async ({ set }: any) => {
     }
 };
 
+// ดึงข้อมูลผู้ใช้พร้อม join ตารางที่เกี่ยวข้อง
+export const getUserInfo = async ({ params, set }: any) => {
+    try {
+        const users = await core_kon`
+            SELECT id, id_card, CONCAT(pname, fname, ' ', lname) AS employee_name
+                ,m."name" as mission_name
+                ,m1."name" as major_name
+                ,m2."name" as submajor_name
+                ,up.position_name
+                ,ut.type_name as user_type_name
+            FROM users u
+            left join missions m on u.mission_id = m.mission_id
+            left join majors m1 on u.major_id = m1.major_id
+            left join submajors m2 on u.submajor_id = m2.submajor_id
+            left join user_positions up on up.user_position_id = u.user_position_id
+            left join user_types ut on ut.user_type_id = u.user_type_id
+            WHERE u.id = ${params.id}
+        `;
+        if (users.length === 0) {
+            set.status = 404;
+            return { success: false, message: 'User not found' };
+        }
+        return { success: true, data: users[0] };
+    } catch (error: any) {
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
 // ดึงข้อมูลผู้ใช้รายบุคคล (ไม่ดึง password ออกมา)
 export const getUserById = async ({ params, set }: any) => {
     try {
@@ -113,9 +142,25 @@ export const activateUser = async ({ params, set }: any) => {
 };
 
 // เปลี่ยนรหัสผ่าน
-export const changePassword = async ({ params, body, set }: any) => {
+export const changePassword = async ({ params, body, set, user }: any) => {
     try {
         const { old_password, new_password } = body;
+
+        const isOwner = user?.id === params.id;
+
+        if (!isOwner) {
+            const roleRows = await core_kon`
+                SELECT r.role_name
+                FROM core_kon.user_m_users_roles mu
+                LEFT JOIN core_kon.user_roles r ON r.id = mu.role_id
+                WHERE mu.user_id = ${user?.id}
+            `;
+            const isAdmin = roleRows.some((r: any) => r.role_name?.toLowerCase() === 'admin');
+            if (!isAdmin) {
+                set.status = 403;
+                return { success: false, message: 'Forbidden' };
+            }
+        }
 
         const users = await core_kon`
             SELECT id, password, id_card, pname, fname, lname FROM users WHERE id = ${params.id}
@@ -125,10 +170,12 @@ export const changePassword = async ({ params, body, set }: any) => {
             return { success: false, message: 'User not found' };
         }
 
-        const isMatch = await Bun.password.verify(old_password, users[0].password);
-        if (!isMatch) {
-            set.status = 400;
-            return { success: false, message: 'Old password is incorrect' };
+        if (isOwner) {
+            const isMatch = await Bun.password.verify(old_password, users[0].password);
+            if (!isMatch) {
+                set.status = 400;
+                return { success: false, message: 'Old password is incorrect' };
+            }
         }
 
         const hashed = await Bun.password.hash(new_password, { algorithm: 'argon2id' });

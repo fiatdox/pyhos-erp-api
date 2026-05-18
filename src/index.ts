@@ -6,6 +6,7 @@ import { systemRoutes } from "./routes/systemRoutes";
 import { permissionRoutes, roleRoutes, userRoleRoutes } from "./routes/permissionRoutes";
 import { hrRoutes } from "./routes/hrRoutes";
 import { itRoutes } from "./routes/itRoutes";
+import { equipmentRoutes } from "./routes/equipmentRoutes";
 import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 
 const app = new Elysia()
@@ -26,7 +27,8 @@ const app = new Elysia()
           { name: 'Permissions', description: 'Permission management endpoints' },
           { name: 'Roles', description: 'Role management and role-permission mapping endpoints' },
           { name: 'HR', description: 'HR endpoints (leave types)' },
-          { name: 'IT', description: 'IT endpoints (equipment types)' }
+          { name: 'IT', description: 'IT endpoints (equipment types)' },
+          { name: 'Equipment', description: 'ค้นหาครุภัณฑ์จากฐานข้อมูล deprecia' }
         ],
         components: {
           securitySchemes: {
@@ -49,6 +51,7 @@ const app = new Elysia()
   .use(userRoleRoutes)
   .use(hrRoutes)
   .use(itRoutes)
+  .use(equipmentRoutes)
   //.get("/", () => "Hello Elysia")
   .listen(process.env.PORT || 5000);
 
