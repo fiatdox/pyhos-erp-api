@@ -415,6 +415,179 @@ export const getRepairRequestImages = async ({ params, set }: any) => {
     }
 };
 
+// รับมอบหมายงานซ่อม: อัปเดต assign_to/assign_datetime และเพิ่ม timeline (process_status_id = 2 กำลังดำเนินการ)
+export const receiveAssignment = async ({ params, user, set }: any) => {
+    const actionBy: number | null = user?.id ?? null;
+    if (!actionBy) {
+        set.status = 401;
+        return { success: false, message: 'Unauthorized' };
+    }
+
+    try {
+        const result = await core_kon.begin(async (sql) => {
+            const updated = await sql`
+                UPDATE it_repair_requests
+                SET assigned_to = ${actionBy},
+                    assign_datetime = NOW(),
+                    process_status_id = 2
+                WHERE it_repair_request_id = ${params.id}
+                RETURNING it_repair_request_id, assigned_to, assign_datetime
+            `;
+
+            if (updated.length === 0) {
+                return null;
+            }
+
+            const [timeline] = await sql`
+                INSERT INTO it_repair_request_timelines (
+                    it_repair_request_id, process_status_id, action_by, action_datetime
+                ) VALUES (
+                    ${params.id}, 2, ${actionBy}, NOW()
+                )
+                RETURNING timeline_id
+            `;
+
+            return { request: updated[0], timeline };
+        });
+
+        if (!result) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบคำร้องซ่อม' };
+        }
+
+        return { success: true, data: result };
+    } catch (error: any) {
+        console.error('[receiveAssignment] DB Error:', error.message);
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// อัปเดตผลการประเมินซ่อมในตาราง it_repair_requests
+export const updateRepairAssessment = async ({ params, body, user, set }: any) => {
+    const actionBy: number | null = user?.id ?? null;
+    if (!actionBy) {
+        set.status = 401;
+        return { success: false, message: 'Unauthorized' };
+    }
+
+    const {
+        repair_assessment_id,
+        assessment_detail,
+        parts_used,
+        replacement_recommendation,
+        return_status_id,
+        external_service_detail,
+    } = body;
+
+    if (![1, 2, 3, 4, 5].includes(repair_assessment_id)) {
+        set.status = 400;
+        return { success: false, message: 'repair_assessment_id ต้องเป็น 1-5' };
+    }
+
+    if (!assessment_detail || String(assessment_detail).trim() === '') {
+        set.status = 400;
+        return { success: false, message: 'assessment_detail จำเป็นต้องระบุ' };
+    }
+
+    if ((repair_assessment_id === 2 || repair_assessment_id === 3) && !parts_used) {
+        set.status = 400;
+        return { success: false, message: 'parts_used จำเป็นต้องระบุเมื่อ repair_assessment_id = 2 หรือ 3' };
+    }
+
+    if (repair_assessment_id === 4) {
+        if (!replacement_recommendation) {
+            set.status = 400;
+            return { success: false, message: 'replacement_recommendation จำเป็นต้องระบุเมื่อ repair_assessment_id = 4' };
+        }
+        if (![1, 2].includes(return_status_id)) {
+            set.status = 400;
+            return { success: false, message: 'return_status_id ต้องเป็น 1 หรือ 2 เมื่อ repair_assessment_id = 4' };
+        }
+    }
+
+    if (repair_assessment_id === 5 && !external_service_detail) {
+        set.status = 400;
+        return { success: false, message: 'external_service_detail จำเป็นต้องระบุเมื่อ repair_assessment_id = 5' };
+    }
+
+    try {
+        const [assessment] = await core_kon`
+            SELECT process_status_id FROM it_repair_assessments
+            WHERE repair_assessment_id = ${repair_assessment_id}
+        `;
+
+        if (!assessment) {
+            set.status = 400;
+            return { success: false, message: 'ไม่พบ repair_assessment_id ที่ระบุ' };
+        }
+
+        const payload: Record<string, any> = {
+            repair_assessment_id,
+            assessment_detail,
+            parts_used: (repair_assessment_id === 2 || repair_assessment_id === 3) ? parts_used : null,
+            replacement_recommendation: repair_assessment_id === 4 ? replacement_recommendation : null,
+            return_status_id: repair_assessment_id === 4 ? return_status_id : null,
+            external_service_detail: repair_assessment_id === 5 ? external_service_detail : null,
+            process_status_id: assessment.process_status_id,
+        };
+
+        const result = await core_kon`
+            UPDATE it_repair_requests SET ${core_kon(payload)}
+            WHERE it_repair_request_id = ${params.id}
+            RETURNING it_repair_request_id, repair_assessment_id, assessment_detail,
+                      parts_used, replacement_recommendation, return_status_id,
+                      external_service_detail, process_status_id
+        `;
+
+        if (result.length === 0) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบคำร้องซ่อม' };
+        }
+
+        return { success: true, data: result[0] };
+    } catch (error: any) {
+        console.error('[updateRepairAssessment] DB Error:', error.message);
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// ดึงรายการผลการประเมินซ่อมทั้งหมด (เฉพาะที่ active)
+export const getRepairAssessments = async ({ set }: any) => {
+    try {
+        const result = await core_kon`
+            SELECT repair_assessment_id, assessment_name, is_active, created_at
+            FROM it_repair_assessments
+            WHERE is_active = 'Y'
+            ORDER BY repair_assessment_id ASC
+        `;
+        return { success: true, data: result };
+    } catch (error: any) {
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// ดึงผลการประเมินซ่อมตาม id
+export const getRepairAssessmentById = async ({ params, set }: any) => {
+    try {
+        const result = await core_kon`
+            SELECT repair_assessment_id, assessment_name, is_active, created_at
+            FROM it_repair_assessments
+            WHERE repair_assessment_id = ${params.id}
+        `;
+        if (result.length === 0) {
+            set.status = 404;
+            return { success: false, message: 'Repair assessment not found' };
+        }
+        return { success: true, data: result[0] };
+    } catch (error: any) {
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
 // เรียกดูไฟล์ภาพตาม it_repair_request_image_id
 export const getRepairRequestImageFile = async ({ params, set }: any) => {
     try {

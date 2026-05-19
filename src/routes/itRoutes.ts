@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile } from '../controllers/itController';
+import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment } from '../controllers/itController';
 
 export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
     .use(authMiddleware)
@@ -96,6 +96,49 @@ export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
             tags: ['IT'],
             summary: 'ดึงรายการภาพตาม it_repair_request_id',
             description: 'ดึงข้อมูล it_repair_request_image_id, attach_file_name, created_at, created_by จากตาราง it_repair_request_images',
+        },
+    })
+    // ดึงรายการผลการประเมินซ่อมทั้งหมด
+    .get('/repair-assessments', getRepairAssessments, {
+        detail: {
+            tags: ['IT'],
+            summary: 'ดึงรายการผลการประเมินซ่อมทั้งหมด',
+            description: 'ดึงข้อมูลจากตาราง repair_assessments เฉพาะที่ is_active = Y',
+        },
+    })
+    // ดึงผลการประเมินซ่อมตาม id
+    .get('/repair-assessments/:id', getRepairAssessmentById, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: {
+            tags: ['IT'],
+            summary: 'ดึงผลการประเมินซ่อมตาม id',
+            description: 'ดึงข้อมูลจากตาราง repair_assessments ตาม repair_assessment_id',
+        },
+    })
+    // อัปเดตผลการประเมินซ่อม
+    .patch('/repair-requests/:id/assessment', updateRepairAssessment, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            repair_assessment_id: t.Numeric({ minimum: 1, maximum: 5 }),
+            assessment_detail: t.String({ minLength: 1 }),
+            parts_used: t.Optional(t.String()),
+            replacement_recommendation: t.Optional(t.String()),
+            return_status_id: t.Optional(t.Numeric({ minimum: 1, maximum: 2 })),
+            external_service_detail: t.Optional(t.String()),
+        }),
+        detail: {
+            tags: ['IT'],
+            summary: 'อัปเดตผลการประเมินซ่อม',
+            description: 'อัปเดต repair_assessment_id, assessment_detail และฟิวด์เสริมตามประเภท (id=2,3 ต้องมี parts_used; id=4 ต้องมี replacement_recommendation+return_status_id; id=5 ต้องมี external_service_detail)',
+        },
+    })
+    // รับมอบหมายงานซ่อม (assign ตัวเอง + เพิ่ม timeline กำลังดำเนินการ)
+    .patch('/repair-requests/:id/receive-assignment', receiveAssignment, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: {
+            tags: ['IT'],
+            summary: 'รับมอบหมายงานซ่อม',
+            description: 'อัปเดต assign_to, assign_datetime ใน it_repair_requests และเพิ่ม timeline (process_status_id = 2 กำลังดำเนินการ)',
         },
     })
     // เรียกดูไฟล์ภาพตาม it_repair_request_image_id

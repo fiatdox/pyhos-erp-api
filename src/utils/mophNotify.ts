@@ -115,9 +115,6 @@ function buildItMaintenanceTemplate(data: ItMaintenanceData): object {
 export async function mophItMatenance(data: ItMaintenanceData): Promise<void> {
     const payload = buildItMaintenanceTemplate(data);
     const url = `${process.env.MOPH_NOTIFY_BASE_URL}/api/notify/send`;
-    console.log('[MOPH Notify] URL:', url);
-    console.log('[MOPH Notify] client-key:', process.env.IT_MATENANCE_CLIENT_ID);
-    console.log('[MOPH Notify] secret-key:', process.env.IT_MATENANCE_SECRET_ID);
     const res = await fetch(url, {
         method: 'POST',
         headers: IT_MATENANCE_HEADERS,
