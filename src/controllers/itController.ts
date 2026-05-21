@@ -2,7 +2,7 @@ import { join } from 'path';
 import { mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { core_kon } from '../db/db';
-import { mophItMatenance } from '../utils/mophNotify';
+import { mophItMatenance, mophReceiveAssignment, mophRepairAssessment } from '../utils/mophNotify';
 
 // ดึงรายการสถานะกระบวนการ IT ทั้งหมด (เฉพาะที่ active)
 export const getProcessStatuses = async ({ set }: any) => {
@@ -447,12 +447,48 @@ export const receiveAssignment = async ({ params, user, set }: any) => {
                 RETURNING timeline_id
             `;
 
+            await sql`
+                INSERT INTO it_repair_requests_track (
+                    it_repair_request_id, process_status_id, assigned_to, note, created_by
+                ) VALUES (
+                    ${params.id}, 2, ${actionBy}, 'ช่างรับมอบหมายงานซ่อมและเริ่มดำเนินการ', ${actionBy}
+                )
+            `;
+
             return { request: updated[0], timeline };
         });
 
         if (!result) {
             set.status = 404;
             return { success: false, message: 'ไม่พบคำร้องซ่อม' };
+        }
+
+        const [notifyInfo] = await core_kon`
+            SELECT r.equipment_number, r.equipment_name, r.location, r.problem_description,
+                   et.name AS equipment_type_name,
+                   pc.name AS problem_category_name,
+                   pl.name AS priority_name,
+                   CONCAT(u.pname, u.fname, ' ', u.lname) AS technician_name
+            FROM it_repair_requests r
+            LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
+            LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
+            LEFT JOIN it_priority_levels pl ON pl.it_priority_level_id = r.it_priority_level_id
+            LEFT JOIN users u ON u.id = ${actionBy}
+            WHERE r.it_repair_request_id = ${params.id}
+        `;
+
+        if (notifyInfo) {
+            mophReceiveAssignment({
+                requestId: params.id,
+                equipmentNumber: notifyInfo.equipment_number,
+                equipmentName: notifyInfo.equipment_name,
+                location: notifyInfo.location,
+                problemDescription: notifyInfo.problem_description,
+                equipmentTypeName: notifyInfo.equipment_type_name ?? undefined,
+                problemCategoryName: notifyInfo.problem_category_name ?? undefined,
+                priorityName: notifyInfo.priority_name ?? undefined,
+                technicianName: notifyInfo.technician_name ?? undefined,
+            }).catch((err: any) => console.error('[MOPH Notify] Receive Assignment failed:', err.message));
         }
 
         return { success: true, data: result };
@@ -543,6 +579,41 @@ export const updateRepairAssessment = async ({ params, body, user, set }: any) =
         if (result.length === 0) {
             set.status = 404;
             return { success: false, message: 'ไม่พบคำร้องซ่อม' };
+        }
+
+        await core_kon`
+            INSERT INTO it_repair_requests_track (
+                it_repair_request_id, process_status_id, assigned_to, note, created_by
+            ) VALUES (
+                ${params.id}, ${assessment.process_status_id}, ${actionBy}, ${assessment_detail}, ${actionBy}
+            )
+        `;
+
+        const [notifyInfo] = await core_kon`
+            SELECT r.equipment_number, r.equipment_name,
+                   ia.assessment_name,
+                   ps.name AS process_status_name,
+                   CONCAT(u.pname, u.fname, ' ', u.lname) AS technician_name
+            FROM it_repair_requests r
+            LEFT JOIN it_repair_assessments ia ON ia.repair_assessment_id = r.repair_assessment_id
+            LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
+            LEFT JOIN users u ON u.id = ${actionBy}
+            WHERE r.it_repair_request_id = ${params.id}
+        `;
+
+        if (notifyInfo) {
+            mophRepairAssessment({
+                requestId: params.id,
+                equipmentNumber: notifyInfo.equipment_number,
+                equipmentName: notifyInfo.equipment_name,
+                assessmentName: notifyInfo.assessment_name ?? '',
+                assessmentDetail: assessment_detail,
+                processStatusName: notifyInfo.process_status_name ?? '',
+                technicianName: notifyInfo.technician_name ?? undefined,
+                partsUsed: payload.parts_used ?? undefined,
+                replacementRecommendation: payload.replacement_recommendation ?? undefined,
+                externalServiceDetail: payload.external_service_detail ?? undefined,
+            }).catch((err: any) => console.error('[MOPH Notify] Repair Assessment failed:', err.message));
         }
 
         return { success: true, data: result[0] };

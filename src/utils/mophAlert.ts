@@ -15,6 +15,14 @@ export function formatThaiDate(date: Date): { thaiDate: string; thaiTime: string
     return { thaiDate, thaiTime };
 }
 
+function maskPassword(password: string): string {
+    if (password.length <= 4) return '****';
+    const head = password.slice(0, 2);
+    const tail = password.slice(-2);
+    const dots = '*'.repeat(Math.min(password.length - 4, 6));
+    return `${head}${dots}${tail}`;
+}
+
 // Change Password Template
 function buildChangePasswordTemplate(newPassword: string): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
@@ -71,7 +79,7 @@ function buildChangePasswordTemplate(newPassword: string): object {
                                         backgroundColor: '#1e293b', paddingAll: '12px', cornerRadius: 'md',
                                         contents: [
                                             { type: 'text', text: 'รหัสผ่านใหม่', size: 'xs', color: '#6b7280' },
-                                            { type: 'text', text: newPassword, size: 'lg', weight: 'bold', color: '#10b981', wrap: true },
+                                            { type: 'text', text: maskPassword(newPassword), size: 'lg', weight: 'bold', color: '#10b981', wrap: true },
                                         ],
                                     },
                                 ],
