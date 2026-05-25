@@ -11,6 +11,16 @@ export const equipmentPool = mysql.createPool({
     connectionLimit: 30,
 });
 
+export const hisPool = mysql.createPool({
+    host: process.env.HIS_HOST,
+    port: Number(process.env.HIS_PORT),
+    user: process.env.HIS_USER,
+    password: process.env.HIS_PASSWORD,
+    database: process.env.HIS_DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 30,
+});
+
 export const core_kon = postgres({
     host: process.env.CORE_KON_HOST,
     port: Number(process.env.CORE_KON_PORT),
