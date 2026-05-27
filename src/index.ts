@@ -9,6 +9,7 @@ import { itRoutes } from "./routes/itRoutes";
 import { equipmentRoutes } from "./routes/equipmentRoutes";
 import { hisRoutes } from "./routes/hisRoutes";
 import { itRiskRoutes } from "./routes/itRiskRoutes";
+import { itActivityRoutes } from "./routes/itActivityRoutes";
 import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 
 const app = new Elysia()
@@ -32,7 +33,8 @@ const app = new Elysia()
           { name: 'IT', description: 'IT endpoints (equipment types)' },
           { name: 'Equipment', description: 'ค้นหาครุภัณฑ์จากฐานข้อมูล deprecia' },
           { name: 'HIS', description: 'HIS endpoints (online sessions)' },
-          { name: 'IT Risk', description: 'IT Risk Management (TMI/ISO 27001)' }
+          { name: 'IT Risk', description: 'IT Risk Management (TMI/ISO 27001)' },
+          { name: 'IT Activity', description: 'IT Activity Log — HAIT ข้อ 4.5 บันทึกกิจกรรมเจ้าหน้าที่ IT' }
         ],
         components: {
           securitySchemes: {
@@ -58,6 +60,7 @@ const app = new Elysia()
   .use(equipmentRoutes)
   .use(hisRoutes)
   .use(itRiskRoutes)
+  .use(itActivityRoutes)
   //.get("/", () => "Hello Elysia")
   .listen(process.env.PORT || 5000);
 
