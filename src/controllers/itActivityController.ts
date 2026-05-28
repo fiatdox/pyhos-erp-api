@@ -122,7 +122,6 @@ export const getActivityLogs = async ({ query, set }: any) => {
             success: true,
             data: (rows as any[]).map((r) => ({
                 ...r,
-                log_date_th: fmtDateTh(r.log_date),
                 duration_hours: r.duration_hours != null ? Number(r.duration_hours) : null,
                 hours_used: r.hours_used != null ? Number(r.hours_used) : null,
                 affected_users: r.affected_users != null ? Number(r.affected_users) : null,
@@ -220,7 +219,6 @@ export const getActivityLogById = async ({ params, set }: any) => {
             success: true,
             data: {
                 ...row,
-                log_date_th: fmtDateTh(row.log_date),
                 duration_hours: row.duration_hours != null ? Number(row.duration_hours) : null,
                 hours_used: row.hours_used != null ? Number(row.hours_used) : null,
             },
