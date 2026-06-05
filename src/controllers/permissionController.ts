@@ -135,6 +135,10 @@ export const createRole = async ({ body, set }: any) => {
         set.status = 201;
         return { success: true, message: 'Role created successfully', data: result[0] };
     } catch (error: any) {
+        if (error.code === '23505') {
+            set.status = 409;
+            return { success: false, message: 'มี role ชื่อนี้อยู่แล้ว (role_name ต้องไม่ซ้ำ)' };
+        }
         set.status = 500;
         return { success: false, message: error.message };
     }

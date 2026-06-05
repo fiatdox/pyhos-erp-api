@@ -11,6 +11,7 @@ import { hisRoutes } from "./routes/hisRoutes";
 import { itRiskRoutes } from "./routes/itRiskRoutes";
 import { itActivityRoutes } from "./routes/itActivityRoutes";
 import { itIncidentReportRoutes } from "./routes/itIncidentReportRoutes";
+import { userRolesRoutes } from "./routes/userRolesRoutes";
 import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 
 const app = new Elysia()
@@ -26,17 +27,18 @@ const app = new Elysia()
         },
         tags: [
           { name: 'Auth', description: 'Authentication endpoints' },
-          { name: 'Users', description: 'User management endpoints' },
-          { name: 'System', description: 'System data endpoints (missions, majors, submajors)' },
-          { name: 'Permissions', description: 'Permission management endpoints' },
-          { name: 'Roles', description: 'Role management and role-permission mapping endpoints' },
-          { name: 'HR', description: 'HR endpoints (leave types)' },
-          { name: 'IT', description: 'IT endpoints (equipment types)' },
           { name: 'Equipment', description: 'ค้นหาครุภัณฑ์จากฐานข้อมูล deprecia' },
           { name: 'HIS', description: 'HIS endpoints (online sessions)' },
-          { name: 'IT Risk', description: 'IT Risk Management (TMI/ISO 27001)' },
+          { name: 'HR', description: 'HR endpoints (leave types)' },
+          { name: 'IT', description: 'IT endpoints (equipment types)' },
           { name: 'IT Activity', description: 'IT Activity Log — HAIT ข้อ 4.5 บันทึกกิจกรรมเจ้าหน้าที่ IT' },
-          { name: 'IT Incident Report', description: 'IT Incident Report — รายงานและติดตามเหตุการณ์ด้าน IT' }
+          { name: 'IT Incident Report', description: 'IT Incident Report — รายงานและติดตามเหตุการณ์ด้าน IT' },
+          { name: 'IT Risk', description: 'IT Risk Management (TMI/ISO 27001)' },
+          
+          { name: 'System', description: 'System data endpoints (missions, majors, submajors)' },
+          { name: 'Users', description: 'User management endpoints' },
+          { name: 'Users - Permissions', description: 'Permission management endpoints' },
+          { name: 'Users - Roles', description: 'Role management and role-permission mapping endpoints' }
         ],
         components: {
           securitySchemes: {
@@ -57,6 +59,7 @@ const app = new Elysia()
   .use(permissionRoutes)
   .use(roleRoutes)
   .use(userRoleRoutes)
+  .use(userRolesRoutes)
   .use(hrRoutes)
   .use(itRoutes)
   .use(equipmentRoutes)

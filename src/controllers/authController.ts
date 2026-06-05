@@ -7,7 +7,7 @@ export const loginCOREKON = async ({ body, set, jwt }: Context & { jwt: any }) =
     try {
         const rows = await core_kon`
             SELECT id,username, password, id_card, CONCAT(pname, fname, ' ', lname) AS employee_name ,m."name" as mission_name,m1."name" as major_name,up.position_name
-            ,ut.user_type_id
+            ,ut.user_type_id,ut.type_name as user_type_name
             FROM users u
             left join missions m on u.mission_id =m.mission_id
             left join majors m1 on u.major_id  =m1.major_id
@@ -51,6 +51,7 @@ export const loginCOREKON = async ({ body, set, jwt }: Context & { jwt: any }) =
                 major_name: user.major_name,
                 position_name: user.position_name,
                 user_type_id: user.user_type_id,
+                user_type_name: user.user_type_name,
                 roles: roleRows.map((r: any) => r.role_name)
             }
         };
