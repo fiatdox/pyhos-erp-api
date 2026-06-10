@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment } from '../controllers/itController';
+import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, rejectAssignment, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment } from '../controllers/itController';
 
 export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
     .use(authMiddleware)
@@ -132,13 +132,30 @@ export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
             description: 'อัปเดต repair_assessment_id, assessment_detail และฟิวด์เสริมตามประเภท (id=2,3 ต้องมี parts_used; id=4 ต้องมี replacement_recommendation+return_status_id; id=5 ต้องมี external_service_detail)',
         },
     })
-    // รับมอบหมายงานซ่อม (assign ตัวเอง + เพิ่ม timeline กำลังดำเนินการ)
+    // รับมอบหมายงานซ่อม (assign ตัวเอง + เพิ่ม track กำลังดำเนินการ)
     .patch('/repair-requests/:id/receive-assignment', receiveAssignment, {
         params: t.Object({ id: t.Numeric() }),
+        body: t.Optional(t.Object({
+            estimated_days: t.Optional(t.Nullable(t.Numeric())),
+            estimated_completion_date: t.Optional(t.Nullable(t.String())),
+            technician_priority_id: t.Optional(t.Nullable(t.Numeric())),
+        })),
         detail: {
             tags: ['IT'],
             summary: 'รับมอบหมายงานซ่อม',
-            description: 'อัปเดต assign_to, assign_datetime ใน it_repair_requests และเพิ่ม timeline (process_status_id = 2 กำลังดำเนินการ)',
+            description: 'อัปเดต assign_to, assign_datetime, estimated_days, estimated_completion_date ใน it_repair_requests และเพิ่ม track (process_status_id = 2 กำลังดำเนินการ) — estimated_days/estimated_completion_date เป็น optional',
+        },
+    })
+    // ปฏิเสธงานซ่อม (process_status_id = 10 ปฏิเสธ + ใส่เหตุผลลง track)
+    .patch('/repair-requests/:id/reject-assignment', rejectAssignment, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            reject_reason: t.String({ minLength: 1 }),
+        }),
+        detail: {
+            tags: ['IT'],
+            summary: 'ปฏิเสธงานซ่อม',
+            description: 'อัปเดต process_status_id = 10 (ปฏิเสธ) ใน it_repair_requests และเพิ่ม track โดยใส่ reject_reason ลงใน note',
         },
     })
     // เรียกดูไฟล์ภาพตาม it_repair_request_image_id

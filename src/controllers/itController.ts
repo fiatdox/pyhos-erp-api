@@ -2,7 +2,8 @@ import { join } from 'path';
 import { mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { core_kon } from '../db/db';
-import { mophItMatenance, mophReceiveAssignment, mophRepairAssessment } from '../utils/mophNotify';
+import { mophItMatenance, mophReceiveAssignment, mophRepairAssessment, mophRejectAssignment } from '../utils/mophNotify';
+import { sendRepairRejectedAlert, sendRepairReceivedAlert } from '../utils/mophAlert';
 
 // ดึงรายการสถานะกระบวนการ IT ทั้งหมด (เฉพาะที่ active)
 export const getProcessStatuses = async ({ set }: any) => {
@@ -288,13 +289,22 @@ export const getAllRepairRequests = async ({ body, set }: any) => {
                     r.process_status_id,
                     CONCAT(u.pname, u.fname, ' ', u.lname) AS created_by_name,
                     m1.name AS major_name,
-                    m2.name AS submajor_name
+                    m2.name AS submajor_name,
+                    r.assigned_to,
+                    CONCAT(au.pname, au.fname, ' ', au.lname) AS assigned_to_name,
+                    r.assign_datetime,
+                    r.estimated_days,
+                    r.estimated_completion_date,
+                    r.technician_priority_id,
+                    tpl.name AS technician_priority_name
                 FROM it_repair_requests r
                 LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
                 LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
                 LEFT JOIN it_priority_levels pl ON pl.it_priority_level_id = r.it_priority_level_id
+                LEFT JOIN it_priority_levels tpl ON tpl.it_priority_level_id = r.technician_priority_id
                 LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
                 LEFT JOIN users u ON u.id = r.created_by
+                LEFT JOIN users au ON au.id = r.assigned_to
                 LEFT JOIN majors m1 ON m1.major_id = u.major_id
                 LEFT JOIN submajors m2 ON m2.submajor_id = u.submajor_id
                 WHERE DATE(r.created_at) BETWEEN ${from} AND ${to}
@@ -311,13 +321,22 @@ export const getAllRepairRequests = async ({ body, set }: any) => {
                     r.process_status_id,
                     CONCAT(u.pname, u.fname, ' ', u.lname) AS created_by_name,
                     m1.name AS major_name,
-                    m2.name AS submajor_name
+                    m2.name AS submajor_name,
+                    r.assigned_to,
+                    CONCAT(au.pname, au.fname, ' ', au.lname) AS assigned_to_name,
+                    r.assign_datetime,
+                    r.estimated_days,
+                    r.estimated_completion_date,
+                    r.technician_priority_id,
+                    tpl.name AS technician_priority_name
                 FROM it_repair_requests r
                 LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
                 LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
                 LEFT JOIN it_priority_levels pl ON pl.it_priority_level_id = r.it_priority_level_id
+                LEFT JOIN it_priority_levels tpl ON tpl.it_priority_level_id = r.technician_priority_id
                 LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
                 LEFT JOIN users u ON u.id = r.created_by
+                LEFT JOIN users au ON au.id = r.assigned_to
                 LEFT JOIN majors m1 ON m1.major_id = u.major_id
                 LEFT JOIN submajors m2 ON m2.submajor_id = u.submajor_id
                 WHERE DATE(r.created_at) BETWEEN ${from} AND ${to}
@@ -415,13 +434,17 @@ export const getRepairRequestImages = async ({ params, set }: any) => {
     }
 };
 
-// รับมอบหมายงานซ่อม: อัปเดต assign_to/assign_datetime และเพิ่ม timeline (process_status_id = 2 กำลังดำเนินการ)
-export const receiveAssignment = async ({ params, user, set }: any) => {
+// รับมอบหมายงานซ่อม: อัปเดต assign_to/assign_datetime และเพิ่ม track (process_status_id = 2 กำลังดำเนินการ)
+export const receiveAssignment = async ({ params, body, user, set }: any) => {
     const actionBy: number | null = user?.id ?? null;
     if (!actionBy) {
         set.status = 401;
         return { success: false, message: 'Unauthorized' };
     }
+
+    const estimatedDays = (body as any)?.estimated_days ?? null;
+    const estimatedCompletionDate = (body as any)?.estimated_completion_date ?? null;
+    const technicianPriorityId = (body as any)?.technician_priority_id ?? null;
 
     try {
         const result = await core_kon.begin(async (sql) => {
@@ -429,33 +452,29 @@ export const receiveAssignment = async ({ params, user, set }: any) => {
                 UPDATE it_repair_requests
                 SET assigned_to = ${actionBy},
                     assign_datetime = NOW(),
-                    process_status_id = 2
+                    process_status_id = 2,
+                    estimated_days = COALESCE(${estimatedDays}, estimated_days),
+                    estimated_completion_date = COALESCE(${estimatedCompletionDate}, estimated_completion_date),
+                    technician_priority_id = COALESCE(${technicianPriorityId}, technician_priority_id)
                 WHERE it_repair_request_id = ${params.id}
-                RETURNING it_repair_request_id, assigned_to, assign_datetime
+                RETURNING it_repair_request_id, assigned_to, assign_datetime,
+                          estimated_days, estimated_completion_date, technician_priority_id
             `;
 
             if (updated.length === 0) {
                 return null;
             }
 
-            const [timeline] = await sql`
-                INSERT INTO it_repair_request_timelines (
-                    it_repair_request_id, process_status_id, action_by, action_datetime
-                ) VALUES (
-                    ${params.id}, 2, ${actionBy}, NOW()
-                )
-                RETURNING timeline_id
-            `;
-
-            await sql`
+            const [track] = await sql`
                 INSERT INTO it_repair_requests_track (
                     it_repair_request_id, process_status_id, assigned_to, note, created_by
                 ) VALUES (
                     ${params.id}, 2, ${actionBy}, 'ช่างรับมอบหมายงานซ่อมและเริ่มดำเนินการ', ${actionBy}
                 )
+                RETURNING it_repair_request_track_id
             `;
 
-            return { request: updated[0], timeline };
+            return { request: updated[0], track };
         });
 
         if (!result) {
@@ -464,20 +483,33 @@ export const receiveAssignment = async ({ params, user, set }: any) => {
         }
 
         const [notifyInfo] = await core_kon`
-            SELECT r.equipment_number, r.equipment_name, r.location, r.problem_description,
+            SELECT r.equipment_number, r.equipment_name, r.location, r.problem_description, r.created_at,
                    et.name AS equipment_type_name,
                    pc.name AS problem_category_name,
                    pl.name AS priority_name,
+                   tpl.name AS technician_priority_name,
+                   ru.id_card,
                    CONCAT(u.pname, u.fname, ' ', u.lname) AS technician_name
             FROM it_repair_requests r
             LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
             LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
             LEFT JOIN it_priority_levels pl ON pl.it_priority_level_id = r.it_priority_level_id
+            LEFT JOIN it_priority_levels tpl ON tpl.it_priority_level_id = r.technician_priority_id
             LEFT JOIN users u ON u.id = ${actionBy}
+            LEFT JOIN users ru ON ru.id = r.created_by
             WHERE r.it_repair_request_id = ${params.id}
         `;
 
         if (notifyInfo) {
+            const estimatedCompletionDate = result.request.estimated_completion_date
+                ? (() => {
+                    const d = new Date(result.request.estimated_completion_date);
+                    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+                })()
+                : undefined;
+            const requestedAt = notifyInfo.created_at ? new Date(notifyInfo.created_at).toISOString() : undefined;
+
+            // ทางที่ 1: แจ้งเข้าหน่วยงาน IT ผ่าน MOPH Notify
             mophReceiveAssignment({
                 requestId: params.id,
                 equipmentNumber: notifyInfo.equipment_number,
@@ -487,13 +519,137 @@ export const receiveAssignment = async ({ params, user, set }: any) => {
                 equipmentTypeName: notifyInfo.equipment_type_name ?? undefined,
                 problemCategoryName: notifyInfo.problem_category_name ?? undefined,
                 priorityName: notifyInfo.priority_name ?? undefined,
+                technicianPriorityName: notifyInfo.technician_priority_name ?? undefined,
                 technicianName: notifyInfo.technician_name ?? undefined,
+                estimatedDays: result.request.estimated_days ?? undefined,
+                estimatedCompletionDate,
             }).catch((err: any) => console.error('[MOPH Notify] Receive Assignment failed:', err.message));
+
+            // ทางที่ 2: แจ้งกลับผู้ส่งซ่อม (created_by) ผ่าน MOPH Alert โดยใช้ id_card
+            if (notifyInfo.id_card) {
+                sendRepairReceivedAlert(notifyInfo.id_card, {
+                    requestId: params.id,
+                    equipmentName: notifyInfo.equipment_name ?? undefined,
+                    equipmentNumber: notifyInfo.equipment_number ?? undefined,
+                    location: notifyInfo.location ?? undefined,
+                    problemDescription: notifyInfo.problem_description ?? undefined,
+                    equipmentTypeName: notifyInfo.equipment_type_name ?? undefined,
+                    problemCategoryName: notifyInfo.problem_category_name ?? undefined,
+                    priorityName: notifyInfo.priority_name ?? undefined,
+                    technicianName: notifyInfo.technician_name ?? undefined,
+                    technicianPriorityName: notifyInfo.technician_priority_name ?? undefined,
+                    estimatedDays: result.request.estimated_days ?? undefined,
+                    estimatedCompletionDate,
+                    requestedAt,
+                }).catch((err: any) => console.error('[MOPH Alert] Repair Received failed:', err.message));
+            }
         }
 
         return { success: true, data: result };
     } catch (error: any) {
         console.error('[receiveAssignment] DB Error:', error.message);
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// ปฏิเสธงานซ่อม: อัปเดต process_status_id = 10 (ปฏิเสธ) และเพิ่ม track โดยใส่เหตุผลลงใน note
+export const rejectAssignment = async ({ params, body, user, set }: any) => {
+    const actionBy: number | null = user?.id ?? null;
+    if (!actionBy) {
+        set.status = 401;
+        return { success: false, message: 'Unauthorized' };
+    }
+
+    const rejectReason: string = ((body as any)?.reject_reason ?? '').trim();
+    if (!rejectReason) {
+        set.status = 400;
+        return { success: false, message: 'กรุณาระบุเหตุผลการปฏิเสธ (reject_reason)' };
+    }
+
+    try {
+        const result = await core_kon.begin(async (sql) => {
+            const updated = await sql`
+                UPDATE it_repair_requests
+                SET process_status_id = 10
+                WHERE it_repair_request_id = ${params.id}
+                RETURNING it_repair_request_id, process_status_id
+            `;
+
+            if (updated.length === 0) {
+                return null;
+            }
+
+            const [track] = await sql`
+                INSERT INTO it_repair_requests_track (
+                    it_repair_request_id, process_status_id, assigned_to, note, created_by
+                ) VALUES (
+                    ${params.id}, 10, ${actionBy}, ${rejectReason}, ${actionBy}
+                )
+                RETURNING it_repair_request_track_id
+            `;
+
+            return { request: updated[0], track };
+        });
+
+        if (!result) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบคำร้องซ่อม' };
+        }
+
+        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง
+        const [reqInfo] = await core_kon`
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
+                   et.name AS equipment_type_name,
+                   pc.name AS problem_category_name,
+                   pl.name AS priority_name,
+                   CONCAT(tu.pname, tu.fname, ' ', tu.lname) AS technician_name
+            FROM it_repair_requests r
+            LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
+            LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
+            LEFT JOIN it_priority_levels pl ON pl.it_priority_level_id = r.it_priority_level_id
+            LEFT JOIN users ru ON ru.id = r.created_by
+            LEFT JOIN users tu ON tu.id = ${actionBy}
+            WHERE r.it_repair_request_id = ${params.id}
+        `;
+
+        if (reqInfo) {
+            // ทางที่ 1: แจ้งกลับผู้ส่งซ่อม (created_by) ผ่าน MOPH Alert โดยใช้ id_card
+            if (reqInfo.id_card) {
+                sendRepairRejectedAlert(reqInfo.id_card, {
+                    requestId: params.id,
+                    equipmentName: reqInfo.equipment_name ?? undefined,
+                    equipmentNumber: reqInfo.equipment_number ?? undefined,
+                    location: reqInfo.location ?? undefined,
+                    problemDescription: reqInfo.problem_description ?? undefined,
+                    equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
+                    problemCategoryName: reqInfo.problem_category_name ?? undefined,
+                    priorityName: reqInfo.priority_name ?? undefined,
+                    technicianName: reqInfo.technician_name ?? undefined,
+                    rejectReason,
+                    requestedAt: reqInfo.created_at ? new Date(reqInfo.created_at).toISOString() : undefined,
+                }).catch((err: any) => console.error('[MOPH Alert] Repair Rejected failed:', err.message));
+            }
+
+            // ทางที่ 2: แจ้งเข้าหน่วยงาน IT ผ่าน MOPH Notify (เหมือนตอนรับงาน)
+            mophRejectAssignment({
+                requestId: params.id,
+                equipmentNumber: reqInfo.equipment_number,
+                equipmentName: reqInfo.equipment_name,
+                location: reqInfo.location ?? undefined,
+                problemDescription: reqInfo.problem_description ?? undefined,
+                equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
+                problemCategoryName: reqInfo.problem_category_name ?? undefined,
+                priorityName: reqInfo.priority_name ?? undefined,
+                technicianName: reqInfo.technician_name ?? undefined,
+                rejectReason,
+                requestedAt: reqInfo.created_at ? new Date(reqInfo.created_at).toISOString() : undefined,
+            }).catch((err: any) => console.error('[MOPH Notify] Reject Assignment failed:', err.message));
+        }
+
+        return { success: true, message: 'ปฏิเสธงานซ่อมเรียบร้อย', data: result };
+    } catch (error: any) {
+        console.error('[rejectAssignment] DB Error:', error.message);
         set.status = 500;
         return { success: false, message: error.message };
     }

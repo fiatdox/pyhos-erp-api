@@ -73,7 +73,7 @@ function buildItMaintenanceTemplate(data: ItMaintenanceData): object {
                         paddingAll: '20px',
                         backgroundColor: '#0d1b2a',
                         contents: [
-                            { type: 'text', text: '🛠️ PYHOS-ERP', weight: 'bold', size: 'lg', color: '#10b981' },
+                            { type: 'text', text: '🛠️ PYHOS-EXP', weight: 'bold', size: 'lg', color: '#10b981' },
                             { type: 'text', text: 'IT Maintenance Notification', size: 'xs', color: '#6b7280', margin: 'xs' },
                         ],
                     },
@@ -133,8 +133,11 @@ export interface ReceiveAssignmentData {
     equipmentTypeName?: string;
     problemCategoryName?: string;
     priorityName?: string;
+    technicianPriorityName?: string;
     technicianName?: string;
     assignDatetime?: string;
+    estimatedDays?: number;
+    estimatedCompletionDate?: string;
 }
 
 function buildReceiveAssignmentTemplate(data: ReceiveAssignmentData): object {
@@ -143,35 +146,53 @@ function buildReceiveAssignmentTemplate(data: ReceiveAssignmentData): object {
         requestId, equipmentNumber, equipmentName,
         location, problemDescription,
         equipmentTypeName, problemCategoryName, priorityName,
+        technicianPriorityName,
         technicianName, assignDatetime,
+        estimatedDays, estimatedCompletionDate,
     } = data;
 
-    const toRow = (row: { label: string; value: string }) => ({
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
         type: 'box',
         layout: 'baseline',
         contents: [
             { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
-            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: '#38bdf8', flex: 5, wrap: true },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? '#38bdf8', flex: 5, wrap: true },
         ],
     });
+
+    // สีตามระดับความเร่งด่วน: ปกติ → เขียว, ปานกลาง → เหลือง, เร่งด่วน → ส้ม, วิกฤต → แดง
+    const priorityColor = (name: string): string => {
+        if (name.includes('วิกฤต')) return '#ef4444';
+        if (name.includes('เร่งด่วน')) return '#f97316';
+        if (name.includes('ปานกลาง')) return '#eab308';
+        if (name.includes('ปกติ')) return '#22c55e';
+        return '#38bdf8';
+    };
 
     const rows = [
         { label: 'เลขคำร้อง', value: `#${requestId}` },
         { label: 'รับงานเมื่อ', value: assignDatetime ?? `${thaiDate} ${thaiTime} น.` },
-        ...(priorityName ? [{ label: 'ความเร่งด่วน', value: priorityName }] : []),
+        ...(priorityName ? [{ label: 'ความเร่งด่วน', value: priorityName, color: priorityColor(priorityName) }] : []),
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
         { label: 'สถานที่', value: location },
         ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
         { label: 'อาการ', value: problemDescription },
+    ];
+
+    // ส่วนของช่าง (คั่นด้วยเส้น)
+    const techRows = [
         ...(technicianName ? [{ label: 'ช่างผู้รับงาน', value: technicianName }] : []),
+        ...(technicianPriorityName ? [{ label: 'ช่างประเมินระดับ', value: technicianPriorityName, color: priorityColor(technicianPriorityName) }] : []),
+        ...(estimatedDays != null ? [{ label: 'ประเมินเสร็จใน', value: `${estimatedDays} วัน` }] : []),
+        ...(estimatedCompletionDate ? [{ label: 'คาดเสร็จวันที่', value: formatThaiDate(new Date(estimatedCompletionDate)).thaiDate }] : []),
     ];
 
     return {
         messages: [
             {
                 type: 'flex',
-                altText: `ช่างรับงานซ่อม #${requestId}`,
+                altText: `รับงานซ่อม #${requestId}`,
                 contents: {
                     type: 'bubble',
                     size: 'mega',
@@ -181,7 +202,7 @@ function buildReceiveAssignmentTemplate(data: ReceiveAssignmentData): object {
                         paddingAll: '20px',
                         backgroundColor: '#0d1b2a',
                         contents: [
-                            { type: 'text', text: '⚙️ PYHOS-ERP', weight: 'bold', size: 'lg', color: '#38bdf8' },
+                            { type: 'text', text: '⚙️ PYHOS-EXP', weight: 'bold', size: 'lg', color: '#38bdf8' },
                             { type: 'text', text: 'IT Repair In Progress', size: 'xs', color: '#6b7280', margin: 'xs' },
                         ],
                     },
@@ -191,15 +212,17 @@ function buildReceiveAssignmentTemplate(data: ReceiveAssignmentData): object {
                         paddingAll: '20px',
                         backgroundColor: '#0f172a',
                         contents: [
-                            { type: 'text', text: `ช่างรับงานซ่อม #${requestId}`, weight: 'bold', size: 'xl', color: '#f8fafc', wrap: true },
-                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
-                            { type: 'separator', margin: 'lg', color: '#1e293b' },
                             {
                                 type: 'box',
                                 layout: 'vertical',
                                 margin: 'lg',
                                 spacing: 'sm',
-                                contents: rows.map(toRow),
+                                contents: [
+                                    ...rows.map(toRow),
+                                    ...(techRows.length > 0
+                                        ? [{ type: 'separator', margin: 'md', color: '#1e293b' }, ...techRows.map(toRow)]
+                                        : []),
+                                ],
                             },
                         ],
                     },
@@ -218,6 +241,115 @@ export async function mophReceiveAssignment(data: ReceiveAssignmentData): Promis
         body: JSON.stringify(payload),
     });
     console.log('[MOPH Notify] Receive Assignment Template:', res.status, await res.text());
+}
+
+// Reject Assignment Template (แจ้งเข้าหน่วยงาน)
+export interface RejectAssignmentData {
+    requestId: number;
+    equipmentNumber: string;
+    equipmentName: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    problemCategoryName?: string;
+    priorityName?: string;
+    technicianName?: string;
+    rejectReason: string;
+    requestedAt?: string;
+}
+
+function buildRejectAssignmentTemplate(data: RejectAssignmentData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentNumber, equipmentName,
+        location, problemDescription,
+        equipmentTypeName, problemCategoryName, priorityName,
+        technicianName, rejectReason, requestedAt,
+    } = data;
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box',
+        layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? '#f8fafc', flex: 5, wrap: true },
+        ],
+    });
+
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'ปฏิเสธเมื่อ', value: `${thaiDate} ${thaiTime} น.` },
+        ...(priorityName ? [{ label: 'ความเร่งด่วน', value: priorityName }] : []),
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(technicianName ? [{ label: 'ผู้ปฏิเสธ', value: technicianName }] : []),
+    ];
+
+    return {
+        messages: [
+            {
+                type: 'flex',
+                altText: `คำร้องซ่อม #${requestId} ถูกปฏิเสธ`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: '⚙️ PYHOS-EXP', weight: 'bold', size: 'lg', color: '#f87171' },
+                            { type: 'text', text: 'IT Repair Rejected', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `คำร้องซ่อม #${requestId} ถูกปฏิเสธ`, weight: 'bold', size: 'xl', color: '#f87171', wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box',
+                                layout: 'vertical',
+                                margin: 'lg',
+                                spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            {
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#1e0a0a', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'เหตุผลการปฏิเสธ', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: rejectReason, size: 'sm', weight: 'bold', color: '#f87171', wrap: true },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function mophRejectAssignment(data: RejectAssignmentData): Promise<void> {
+    const payload = buildRejectAssignmentTemplate(data);
+    const url = `${process.env.MOPH_NOTIFY_BASE_URL}/api/notify/send`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: IT_MATENANCE_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Notify] Reject Assignment Template:', res.status, await res.text());
 }
 
 // Repair Assessment Template
@@ -279,7 +411,7 @@ function buildRepairAssessmentTemplate(data: RepairAssessmentData): object {
                         paddingAll: '20px',
                         backgroundColor: '#0d1b2a',
                         contents: [
-                            { type: 'text', text: '🔧 PYHOS-ERP', weight: 'bold', size: 'lg', color: '#f59e0b' },
+                            { type: 'text', text: '🔧 PYHOS-EXP', weight: 'bold', size: 'lg', color: '#f59e0b' },
                             { type: 'text', text: 'IT Repair Assessment Result', size: 'xs', color: '#6b7280', margin: 'xs' },
                         ],
                     },
