@@ -351,3 +351,247 @@ export async function sendRepairReceivedAlert(idCard: string, data: RepairReceiv
     console.log('[MOPH Alert] Repair Received Template:', res.status, await res.text());
 }
 
+// IT Repair Extension Template (แจ้งกลับผู้ส่งซ่อมเมื่อช่างขอเวลาเพิ่ม)
+export interface RepairExtensionData {
+    requestId: number;
+    equipmentName?: string;
+    equipmentNumber?: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    problemCategoryName?: string;
+    technicianName?: string;
+    requestedAt?: string;
+    previousCompletionDate?: string;
+    newCompletionDate: string;
+    extensionDays?: number;
+    extensionReason: string;
+}
+
+function buildRepairExtensionTemplate(data: RepairExtensionData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentName, equipmentNumber,
+        location, problemDescription,
+        equipmentTypeName, problemCategoryName,
+        technicianName, requestedAt, previousCompletionDate, newCompletionDate,
+        extensionDays, extensionReason,
+    } = data;
+
+    const equipmentText = equipmentName
+        ? `${equipmentName}${equipmentNumber ? ` (${equipmentNumber})` : ''}`
+        : '-';
+
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+    const newThai = formatThaiDate(new Date(newCompletionDate)).thaiDate;
+    const prevThai = previousCompletionDate ? formatThaiDate(new Date(previousCompletionDate)).thaiDate : null;
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box', layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? '#f59e0b', flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'ขอเลื่อนเมื่อ', value: `${thaiDate} ${thaiTime} น.` },
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: equipmentText },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(technicianName ? [{ label: 'ช่างผู้ขอเลื่อน', value: technicianName }] : []),
+    ];
+
+    const scheduleRows = [
+        ...(prevThai ? [{ label: 'กำหนดเดิม', value: prevThai, color: '#94a3b8' }] : []),
+        { label: 'กำหนดใหม่', value: newThai },
+        ...(extensionDays != null ? [{ label: 'ขอเพิ่ม', value: `${extensionDays} วัน` }] : []),
+    ];
+
+    return {
+        message_title: 'แจ้งผลคำร้องซ่อม: ช่างขอเวลาเพิ่ม',
+        message_html: `<div><p><strong>คำร้องซ่อม #${requestId}: ช่างขอเวลาเพิ่มในการดำเนินการ</strong></p><ul>${requestedThai ? `<li><b>วันที่ส่งซ่อม:</b> ${requestedThai.thaiDate} ${requestedThai.thaiTime} น.</li>` : ''}<li><b>ขอเลื่อนเมื่อ:</b> ${thaiDate} ${thaiTime} น.</li><li><b>ครุภัณฑ์:</b> ${equipmentText}</li><li><b>กำหนดเสร็จใหม่:</b> ${newThai}</li>${technicianName ? `<li><b>ช่างผู้ขอเลื่อน:</b> ${technicianName}</li>` : ''}</ul><p><b>เหตุผล:</b> ${extensionReason}</p></div>`,
+        message_text: `คำร้องซ่อม #${requestId} ช่างขอเวลาเพิ่ม กำหนดเสร็จใหม่ ${newThai} เหตุผล: ${extensionReason}`,
+        message_type: 'HPT',
+        messages: [
+            {
+                type: 'flex',
+                altText: `คำร้องซ่อม #${requestId} ช่างขอเวลาเพิ่ม`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: '⏳ PYHOS-EXP', weight: 'bold', size: 'lg', color: '#f59e0b' },
+                            { type: 'text', text: 'IT Repair Time Extension', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `คำร้องซ่อม #${requestId} ช่างขอเวลาเพิ่ม`, weight: 'bold', size: 'xl', color: '#f59e0b', wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box', layout: 'vertical', margin: 'lg', spacing: 'sm',
+                                contents: [
+                                    ...rows.map(toRow),
+                                    { type: 'separator', margin: 'md', color: '#1e293b' },
+                                    ...scheduleRows.map(toRow),
+                                ],
+                            },
+                            {
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#1c1407', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'เหตุผลที่ขอเวลาเพิ่ม', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: extensionReason, size: 'sm', weight: 'bold', color: '#f59e0b', wrap: true },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function sendRepairExtensionAlert(idCard: string, data: RepairExtensionData): Promise<void> {
+    const payload = { cid: [idCard], ...buildRepairExtensionTemplate(data) };
+    const res = await fetch(MOPH_ALERTING_URL, {
+        method: 'POST',
+        headers: MOPH_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Alert] Repair Extension Template:', res.status, await res.text());
+}
+
+// IT Repair Header Approve Template (แจ้งกลับผู้ส่งซ่อมเมื่อหัวหน้าอนุมัติ/ไม่อนุมัติ)
+export interface HeaderApproveAlertData {
+    requestId: number;
+    equipmentName?: string;
+    equipmentNumber?: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    problemCategoryName?: string;
+    technicianName?: string;
+    approverName?: string;
+    requestedAt?: string;
+    headerApprove: number; // 1 = อนุมัติ, 2 = ไม่อนุมัติ
+    headerComment?: string;
+}
+
+function buildHeaderApproveTemplate(data: HeaderApproveAlertData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentName, equipmentNumber,
+        location, problemDescription,
+        equipmentTypeName, problemCategoryName,
+        technicianName, approverName, requestedAt,
+        headerApprove, headerComment,
+    } = data;
+
+    const equipmentText = equipmentName
+        ? `${equipmentName}${equipmentNumber ? ` (${equipmentNumber})` : ''}`
+        : '-';
+
+    const approved = headerApprove === 1;
+    const accent = approved ? '#22c55e' : '#f87171';
+    const resultText = approved ? 'หัวหน้าอนุมัติแล้ว' : 'หัวหน้าไม่อนุมัติ';
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box', layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? accent, flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'พิจารณาเมื่อ', value: `${thaiDate} ${thaiTime} น.` },
+        { label: 'ผลพิจารณา', value: resultText },
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: equipmentText },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(technicianName ? [{ label: 'ช่างผู้รับงาน', value: technicianName }] : []),
+        ...(approverName ? [{ label: 'ผู้พิจารณา', value: approverName }] : []),
+    ];
+
+    return {
+        message_title: `แจ้งผลคำร้องซ่อม: ${resultText}`,
+        message_html: `<div><p><strong>คำร้องซ่อม #${requestId}: ${resultText}</strong></p><ul>${requestedThai ? `<li><b>วันที่ส่งซ่อม:</b> ${requestedThai.thaiDate} ${requestedThai.thaiTime} น.</li>` : ''}<li><b>พิจารณาเมื่อ:</b> ${thaiDate} ${thaiTime} น.</li><li><b>ครุภัณฑ์:</b> ${equipmentText}</li>${approverName ? `<li><b>ผู้พิจารณา:</b> ${approverName}</li>` : ''}</ul>${headerComment ? `<p><b>ความเห็นหัวหน้า:</b> ${headerComment}</p>` : ''}</div>`,
+        message_text: `คำร้องซ่อม #${requestId} ${resultText}${headerComment ? ` ความเห็น: ${headerComment}` : ''}`,
+        message_type: 'HPT',
+        messages: [
+            {
+                type: 'flex',
+                altText: `คำร้องซ่อม #${requestId} ${resultText}`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: `${approved ? '✅' : '🚫'} PYHOS-EXP`, weight: 'bold', size: 'lg', color: accent },
+                            { type: 'text', text: 'IT Repair Approval', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `คำร้องซ่อม #${requestId} ${resultText}`, weight: 'bold', size: 'xl', color: accent, wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box', layout: 'vertical', margin: 'lg', spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            ...(headerComment ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: approved ? '#06140b' : '#1e0a0a', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'ความเห็นหัวหน้า', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: headerComment, size: 'sm', weight: 'bold', color: accent, wrap: true },
+                                ],
+                            }] : []),
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function sendHeaderApproveAlert(idCard: string, data: HeaderApproveAlertData): Promise<void> {
+    const payload = { cid: [idCard], ...buildHeaderApproveTemplate(data) };
+    const res = await fetch(MOPH_ALERTING_URL, {
+        method: 'POST',
+        headers: MOPH_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Alert] Header Approve Template:', res.status, await res.text());
+}
+

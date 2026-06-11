@@ -449,3 +449,239 @@ export async function mophRepairAssessment(data: RepairAssessmentData): Promise<
     });
     console.log('[MOPH Notify] Repair Assessment Template:', res.status, await res.text());
 }
+
+// Request Extension Template (แจ้งเข้าหน่วยงาน IT เมื่อช่างขอเวลาเพิ่ม)
+export interface RequestExtensionData {
+    requestId: number;
+    equipmentNumber: string;
+    equipmentName: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    problemCategoryName?: string;
+    technicianName?: string;
+    requestedAt?: string;
+    previousCompletionDate?: string;
+    newCompletionDate: string;
+    extensionDays?: number;
+    extensionReason: string;
+}
+
+function buildRequestExtensionTemplate(data: RequestExtensionData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentNumber, equipmentName,
+        location, problemDescription,
+        equipmentTypeName, problemCategoryName,
+        technicianName, requestedAt, previousCompletionDate, newCompletionDate,
+        extensionDays, extensionReason,
+    } = data;
+
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box',
+        layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? '#f59e0b', flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'ขอเลื่อนเมื่อ', value: `${thaiDate} ${thaiTime} น.` },
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(technicianName ? [{ label: 'ช่างผู้ขอเลื่อน', value: technicianName }] : []),
+    ];
+
+    const scheduleRows = [
+        ...(previousCompletionDate ? [{ label: 'กำหนดเดิม', value: formatThaiDate(new Date(previousCompletionDate)).thaiDate, color: '#94a3b8' }] : []),
+        { label: 'กำหนดใหม่', value: formatThaiDate(new Date(newCompletionDate)).thaiDate },
+        ...(extensionDays != null ? [{ label: 'ขอเพิ่ม', value: `${extensionDays} วัน` }] : []),
+    ];
+
+    return {
+        messages: [
+            {
+                type: 'flex',
+                altText: `ช่างขอเวลาเพิ่ม #${requestId}`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: '⏳ PYHOS-EXP', weight: 'bold', size: 'lg', color: '#f59e0b' },
+                            { type: 'text', text: 'IT Repair Time Extension', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `ช่างขอเวลาเพิ่ม #${requestId}`, weight: 'bold', size: 'xl', color: '#f59e0b', wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box',
+                                layout: 'vertical',
+                                margin: 'lg',
+                                spacing: 'sm',
+                                contents: [
+                                    ...rows.map(toRow),
+                                    { type: 'separator', margin: 'md', color: '#1e293b' },
+                                    ...scheduleRows.map(toRow),
+                                ],
+                            },
+                            {
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#1c1407', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'เหตุผลที่ขอเวลาเพิ่ม', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: extensionReason, size: 'sm', weight: 'bold', color: '#f59e0b', wrap: true },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function mophRequestExtension(data: RequestExtensionData): Promise<void> {
+    const payload = buildRequestExtensionTemplate(data);
+    const url = `${process.env.MOPH_NOTIFY_BASE_URL}/api/notify/send`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: IT_MATENANCE_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Notify] Request Extension Template:', res.status, await res.text());
+}
+
+// Header Approve Template (แจ้งเข้าหน่วยงาน IT เมื่อหัวหน้าอนุมัติ/ไม่อนุมัติ)
+export interface HeaderApproveData {
+    requestId: number;
+    equipmentNumber: string;
+    equipmentName: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    problemCategoryName?: string;
+    technicianName?: string;
+    approverName?: string;
+    requestedAt?: string;
+    headerApprove: number; // 1 = อนุมัติ, 2 = ไม่อนุมัติ
+    headerComment?: string;
+}
+
+function buildHeaderApproveTemplate(data: HeaderApproveData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentNumber, equipmentName,
+        location, problemDescription,
+        equipmentTypeName, problemCategoryName,
+        technicianName, approverName, requestedAt,
+        headerApprove, headerComment,
+    } = data;
+
+    const approved = headerApprove === 1;
+    const accent = approved ? '#22c55e' : '#f87171';
+    const resultText = approved ? 'หัวหน้าอนุมัติแล้ว' : 'หัวหน้าไม่อนุมัติ';
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box',
+        layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? accent, flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'พิจารณาเมื่อ', value: `${thaiDate} ${thaiTime} น.` },
+        { label: 'ผลพิจารณา', value: resultText },
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(technicianName ? [{ label: 'ช่างผู้รับงาน', value: technicianName }] : []),
+        ...(approverName ? [{ label: 'ผู้พิจารณา', value: approverName }] : []),
+    ];
+
+    return {
+        messages: [
+            {
+                type: 'flex',
+                altText: `${resultText} #${requestId}`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: `${approved ? '✅' : '🚫'} PYHOS-EXP`, weight: 'bold', size: 'lg', color: accent },
+                            { type: 'text', text: 'IT Repair Approval', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `${resultText} #${requestId}`, weight: 'bold', size: 'xl', color: accent, wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box',
+                                layout: 'vertical',
+                                margin: 'lg',
+                                spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            ...(headerComment ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: approved ? '#06140b' : '#1e0a0a', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'ความเห็นหัวหน้า', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: headerComment, size: 'sm', weight: 'bold', color: accent, wrap: true },
+                                ],
+                            }] : []),
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function mophHeaderApprove(data: HeaderApproveData): Promise<void> {
+    const payload = buildHeaderApproveTemplate(data);
+    const url = `${process.env.MOPH_NOTIFY_BASE_URL}/api/notify/send`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: IT_MATENANCE_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Notify] Header Approve Template:', res.status, await res.text());
+}

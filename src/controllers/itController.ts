@@ -2,8 +2,8 @@ import { join } from 'path';
 import { mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { core_kon } from '../db/db';
-import { mophItMatenance, mophReceiveAssignment, mophRepairAssessment, mophRejectAssignment } from '../utils/mophNotify';
-import { sendRepairRejectedAlert, sendRepairReceivedAlert } from '../utils/mophAlert';
+import { mophItMatenance, mophReceiveAssignment, mophRepairAssessment, mophRejectAssignment, mophRequestExtension, mophHeaderApprove } from '../utils/mophNotify';
+import { sendRepairRejectedAlert, sendRepairReceivedAlert, sendRepairExtensionAlert, sendHeaderApproveAlert } from '../utils/mophAlert';
 
 // ดึงรายการสถานะกระบวนการ IT ทั้งหมด (เฉพาะที่ active)
 export const getProcessStatuses = async ({ set }: any) => {
@@ -374,12 +374,16 @@ export const getRepairRequests = async ({ query, set }: any) => {
                     r.process_status_id,
                     CONCAT(u.pname, u.fname, ' ', u.lname) AS created_by_name,
                     m1.name AS major_name,
-                    m2.name AS submajor_name
+                    m2.name AS submajor_name,
+                    r.repair_assessment_id,
+                    ia.assessment_name,
+                    r.assessment_detail
                 FROM it_repair_requests r
                 LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
                 LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
                 LEFT JOIN it_priority_levels pl ON pl.it_priority_level_id = r.it_priority_level_id
                 LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
+                LEFT JOIN it_repair_assessments ia ON ia.repair_assessment_id = r.repair_assessment_id
                 LEFT JOIN users u ON u.id = r.created_by
                 LEFT JOIN majors m1 ON m1.major_id = u.major_id
                 LEFT JOIN submajors m2 ON m2.submajor_id = u.submajor_id
@@ -397,12 +401,16 @@ export const getRepairRequests = async ({ query, set }: any) => {
                     r.process_status_id,
                     CONCAT(u.pname, u.fname, ' ', u.lname) AS created_by_name,
                     m1.name AS major_name,
-                    m2.name AS submajor_name
+                    m2.name AS submajor_name,
+                    r.repair_assessment_id,
+                    ia.assessment_name,
+                    r.assessment_detail
                 FROM it_repair_requests r
                 LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
                 LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
                 LEFT JOIN it_priority_levels pl ON pl.it_priority_level_id = r.it_priority_level_id
                 LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
+                LEFT JOIN it_repair_assessments ia ON ia.repair_assessment_id = r.repair_assessment_id
                 LEFT JOIN users u ON u.id = r.created_by
                 LEFT JOIN majors m1 ON m1.major_id = u.major_id
                 LEFT JOIN submajors m2 ON m2.submajor_id = u.submajor_id
@@ -650,6 +658,289 @@ export const rejectAssignment = async ({ params, body, user, set }: any) => {
         return { success: true, message: 'ปฏิเสธงานซ่อมเรียบร้อย', data: result };
     } catch (error: any) {
         console.error('[rejectAssignment] DB Error:', error.message);
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// ดึงประวัติการขอเวลาเพิ่มของคำร้องซ่อม (เรียงจากล่าสุดไปเก่าสุด)
+export const getRepairExtensions = async ({ params, set }: any) => {
+    try {
+        const extensions = await core_kon`
+            SELECT e.it_repair_request_extension_id,
+                   e.it_repair_request_id,
+                   e.previous_estimated_completion_date,
+                   e.new_estimated_completion_date,
+                   e.extension_days,
+                   e.extension_reason,
+                   e.requested_at,
+                   e.requested_by,
+                   CONCAT(u.pname, u.fname, ' ', u.lname) AS requested_by_name
+            FROM it_repair_requests_extension e
+            LEFT JOIN users u ON u.id = e.requested_by
+            WHERE e.it_repair_request_id = ${params.id}
+            ORDER BY e.requested_at DESC
+        `;
+
+        return { success: true, data: extensions };
+    } catch (error: any) {
+        console.error('[getRepairExtensions] DB Error:', error.message);
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// ช่างขอเวลาเพิ่มในการดำเนินการ: บันทึกลง it_repair_requests_extension + เพิ่ม track
+// หมายเหตุ: ไม่แก้ estimated_completion_date เดิมใน it_repair_requests (เก็บกำหนดเดิมไว้คงเดิม)
+export const requestExtension = async ({ params, body, user, set }: any) => {
+    const actionBy: number | null = user?.id ?? null;
+    if (!actionBy) {
+        set.status = 401;
+        return { success: false, message: 'Unauthorized' };
+    }
+
+    const newCompletionDate: string = ((body as any)?.new_estimated_completion_date ?? '').trim();
+    const extensionReason: string = ((body as any)?.extension_reason ?? '').trim();
+    const extensionDays = (body as any)?.extension_days ?? null;
+
+    if (!newCompletionDate) {
+        set.status = 400;
+        return { success: false, message: 'กรุณาระบุกำหนดเสร็จใหม่ (new_estimated_completion_date)' };
+    }
+    if (!extensionReason) {
+        set.status = 400;
+        return { success: false, message: 'กรุณาระบุเหตุผลที่ขอเวลาเพิ่ม (extension_reason)' };
+    }
+
+    try {
+        const result = await core_kon.begin(async (sql) => {
+            // ดึงกำหนดเดิมไว้เก็บเป็น snapshot (ไม่แก้ค่าใน it_repair_requests)
+            const [req] = await sql`
+                SELECT estimated_completion_date
+                FROM it_repair_requests
+                WHERE it_repair_request_id = ${params.id}
+            `;
+
+            if (!req) {
+                return null;
+            }
+
+            const [extension] = await sql`
+                INSERT INTO it_repair_requests_extension (
+                    it_repair_request_id, previous_estimated_completion_date,
+                    new_estimated_completion_date, extension_days, extension_reason, requested_by
+                ) VALUES (
+                    ${params.id}, ${req.estimated_completion_date ?? null},
+                    ${newCompletionDate}, ${extensionDays}, ${extensionReason}, ${actionBy}
+                )
+                RETURNING it_repair_request_extension_id, requested_at
+            `;
+
+            // เพิ่ม track โดยคงสถานะ "กำลังดำเนินการ" (process_status_id = 2)
+            const [track] = await sql`
+                INSERT INTO it_repair_requests_track (
+                    it_repair_request_id, process_status_id, assigned_to, note, created_by
+                ) VALUES (
+                    ${params.id}, 2, ${actionBy},
+                    ${`ช่างขอเวลาเพิ่ม (กำหนดเสร็จใหม่ ${newCompletionDate}): ${extensionReason}`},
+                    ${actionBy}
+                )
+                RETURNING it_repair_request_track_id
+            `;
+
+            return { extension, track };
+        });
+
+        if (!result) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบคำร้องซ่อม' };
+        }
+
+        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง (estimated_completion_date คือกำหนดเดิมที่ยังไม่แก้)
+        const [reqInfo] = await core_kon`
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description,
+                   r.estimated_completion_date, r.created_at,
+                   et.name AS equipment_type_name,
+                   pc.name AS problem_category_name,
+                   CONCAT(tu.pname, tu.fname, ' ', tu.lname) AS technician_name
+            FROM it_repair_requests r
+            LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
+            LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
+            LEFT JOIN users ru ON ru.id = r.created_by
+            LEFT JOIN users tu ON tu.id = ${actionBy}
+            WHERE r.it_repair_request_id = ${params.id}
+        `;
+
+        if (reqInfo) {
+            const previousCompletionDate = reqInfo.estimated_completion_date
+                ? new Date(reqInfo.estimated_completion_date).toISOString()
+                : undefined;
+            const requestedAt = reqInfo.created_at ? new Date(reqInfo.created_at).toISOString() : undefined;
+
+            // ทางที่ 1: แจ้งเข้าหน่วยงาน IT ผ่าน MOPH Notify
+            mophRequestExtension({
+                requestId: params.id,
+                equipmentNumber: reqInfo.equipment_number,
+                equipmentName: reqInfo.equipment_name,
+                location: reqInfo.location ?? undefined,
+                problemDescription: reqInfo.problem_description ?? undefined,
+                equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
+                problemCategoryName: reqInfo.problem_category_name ?? undefined,
+                technicianName: reqInfo.technician_name ?? undefined,
+                requestedAt,
+                previousCompletionDate,
+                newCompletionDate,
+                extensionDays: extensionDays ?? undefined,
+                extensionReason,
+            }).catch((err: any) => console.error('[MOPH Notify] Request Extension failed:', err.message));
+
+            // ทางที่ 2: แจ้งกลับผู้ส่งซ่อม (created_by) ผ่าน MOPH Alert โดยใช้ id_card
+            if (reqInfo.id_card) {
+                sendRepairExtensionAlert(reqInfo.id_card, {
+                    requestId: params.id,
+                    equipmentName: reqInfo.equipment_name ?? undefined,
+                    equipmentNumber: reqInfo.equipment_number ?? undefined,
+                    location: reqInfo.location ?? undefined,
+                    problemDescription: reqInfo.problem_description ?? undefined,
+                    equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
+                    problemCategoryName: reqInfo.problem_category_name ?? undefined,
+                    technicianName: reqInfo.technician_name ?? undefined,
+                    requestedAt,
+                    previousCompletionDate,
+                    newCompletionDate,
+                    extensionDays: extensionDays ?? undefined,
+                    extensionReason,
+                }).catch((err: any) => console.error('[MOPH Alert] Repair Extension failed:', err.message));
+            }
+        }
+
+        return { success: true, message: 'บันทึกการขอเวลาเพิ่มเรียบร้อย', data: result };
+    } catch (error: any) {
+        console.error('[requestExtension] DB Error:', error.message);
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// หัวหน้า IT อนุมัติ/ไม่อนุมัติคำร้องซ่อม: อัปเดต header_approve (1=อนุมัติ, 2=ไม่อนุมัติ) + header_comment
+export const approveByHeader = async ({ params, body, user, set }: any) => {
+    const actionBy: number | null = user?.id ?? null;
+    if (!actionBy) {
+        set.status = 401;
+        return { success: false, message: 'Unauthorized' };
+    }
+
+    const headerApprove = (body as any)?.header_approve;
+    const headerComment: string | null = ((body as any)?.header_comment ?? '').trim() || null;
+
+    if (![1, 2].includes(headerApprove)) {
+        set.status = 400;
+        return { success: false, message: 'header_approve ต้องเป็น 1 (อนุมัติ) หรือ 2 (ไม่อนุมัติ)' };
+    }
+
+    // กรณีไม่อนุมัติ ต้องระบุเหตุผล
+    if (headerApprove === 2 && !headerComment) {
+        set.status = 400;
+        return { success: false, message: 'กรุณาระบุเหตุผล (header_comment) เมื่อไม่อนุมัติ' };
+    }
+
+    // ทั้งอนุมัติ/ไม่อนุมัติ → เลื่อนไป process_status_id = 9 (รออนุมัติจากหัวหน้ากลุ่มภารกิจ)
+    const NEXT_STATUS_ID = 9;
+
+    try {
+        const result = await core_kon.begin(async (sql) => {
+            const updated = await sql`
+                UPDATE it_repair_requests
+                SET header_approve = ${headerApprove},
+                    header_comment = ${headerComment},
+                    process_status_id = ${NEXT_STATUS_ID}
+                WHERE it_repair_request_id = ${params.id}
+                RETURNING it_repair_request_id, header_approve, header_comment, process_status_id
+            `;
+
+            if (updated.length === 0) {
+                return null;
+            }
+
+            // เพิ่ม track log การพิจารณาของหัวหน้า IT
+            const note = headerApprove === 1
+                ? `หัวหน้า IT อนุมัติ${headerComment ? `: ${headerComment}` : ''} (ส่งให้หัวหน้ากลุ่มภารกิจพิจารณา)`
+                : `หัวหน้า IT ไม่อนุมัติ: ${headerComment} (ส่งให้หัวหน้ากลุ่มภารกิจพิจารณา)`;
+
+            await sql`
+                INSERT INTO it_repair_requests_track (
+                    it_repair_request_id, process_status_id, assigned_to, note, created_by
+                ) VALUES (
+                    ${params.id}, ${NEXT_STATUS_ID}, ${actionBy}, ${note}, ${actionBy}
+                )
+            `;
+
+            return updated;
+        });
+
+        if (!result) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบคำร้องซ่อม' };
+        }
+
+        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง
+        const [reqInfo] = await core_kon`
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
+                   et.name AS equipment_type_name,
+                   pc.name AS problem_category_name,
+                   CONCAT(au.pname, au.fname, ' ', au.lname) AS technician_name,
+                   CONCAT(hu.pname, hu.fname, ' ', hu.lname) AS approver_name
+            FROM it_repair_requests r
+            LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
+            LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
+            LEFT JOIN users ru ON ru.id = r.created_by
+            LEFT JOIN users au ON au.id = r.assigned_to
+            LEFT JOIN users hu ON hu.id = ${actionBy}
+            WHERE r.it_repair_request_id = ${params.id}
+        `;
+
+        if (reqInfo) {
+            const requestedAt = reqInfo.created_at ? new Date(reqInfo.created_at).toISOString() : undefined;
+
+            // ทางที่ 1: แจ้งเข้าหน่วยงาน IT ผ่าน MOPH Notify
+            mophHeaderApprove({
+                requestId: params.id,
+                equipmentNumber: reqInfo.equipment_number,
+                equipmentName: reqInfo.equipment_name,
+                location: reqInfo.location ?? undefined,
+                problemDescription: reqInfo.problem_description ?? undefined,
+                equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
+                problemCategoryName: reqInfo.problem_category_name ?? undefined,
+                technicianName: reqInfo.technician_name ?? undefined,
+                approverName: reqInfo.approver_name ?? undefined,
+                requestedAt,
+                headerApprove,
+                headerComment: headerComment ?? undefined,
+            }).catch((err: any) => console.error('[MOPH Notify] Header Approve failed:', err.message));
+
+            // ทางที่ 2: แจ้งกลับผู้ส่งซ่อม (created_by) ผ่าน MOPH Alert โดยใช้ id_card
+            if (reqInfo.id_card) {
+                sendHeaderApproveAlert(reqInfo.id_card, {
+                    requestId: params.id,
+                    equipmentName: reqInfo.equipment_name ?? undefined,
+                    equipmentNumber: reqInfo.equipment_number ?? undefined,
+                    location: reqInfo.location ?? undefined,
+                    problemDescription: reqInfo.problem_description ?? undefined,
+                    equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
+                    problemCategoryName: reqInfo.problem_category_name ?? undefined,
+                    technicianName: reqInfo.technician_name ?? undefined,
+                    approverName: reqInfo.approver_name ?? undefined,
+                    requestedAt,
+                    headerApprove,
+                    headerComment: headerComment ?? undefined,
+                }).catch((err: any) => console.error('[MOPH Alert] Header Approve failed:', err.message));
+            }
+        }
+
+        const message = headerApprove === 1 ? 'อนุมัติคำร้องซ่อมเรียบร้อย' : 'บันทึกการไม่อนุมัติเรียบร้อย';
+        return { success: true, message, data: result[0] };
+    } catch (error: any) {
+        console.error('[approveByHeader] DB Error:', error.message);
         set.status = 500;
         return { success: false, message: error.message };
     }

@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, rejectAssignment, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment } from '../controllers/itController';
+import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, rejectAssignment, requestExtension, getRepairExtensions, approveByHeader, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment } from '../controllers/itController';
 
 export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
     .use(authMiddleware)
@@ -156,6 +156,42 @@ export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
             tags: ['IT'],
             summary: 'ปฏิเสธงานซ่อม',
             description: 'อัปเดต process_status_id = 10 (ปฏิเสธ) ใน it_repair_requests และเพิ่ม track โดยใส่ reject_reason ลงใน note',
+        },
+    })
+    // ช่างขอเวลาเพิ่ม (บันทึก extension + track โดยคงกำหนดเดิมไว้)
+    .patch('/repair-requests/:id/request-extension', requestExtension, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            new_estimated_completion_date: t.String({ minLength: 1 }),
+            extension_reason: t.String({ minLength: 1 }),
+            extension_days: t.Optional(t.Nullable(t.Numeric())),
+        }),
+        detail: {
+            tags: ['IT'],
+            summary: 'ขอเวลาเพิ่มในการดำเนินการ',
+            description: 'บันทึกการขอเวลาเพิ่มลง it_repair_requests_extension (วันที่ขอ + เหตุผล + กำหนดเสร็จใหม่) และเพิ่ม track (process_status_id = 2) โดยไม่แก้ estimated_completion_date เดิมใน it_repair_requests',
+        },
+    })
+    // ดึงประวัติการขอเวลาเพิ่มของคำร้องซ่อม
+    .get('/repair-requests/:id/extensions', getRepairExtensions, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: {
+            tags: ['IT'],
+            summary: 'ประวัติการขอเวลาเพิ่ม',
+            description: 'ดึงรายการขอเวลาเพิ่มทั้งหมดของคำร้องซ่อม (เรียงจากล่าสุดไปเก่าสุด) พร้อมชื่อผู้ขอ',
+        },
+    })
+    // หัวหน้า IT อนุมัติ/ไม่อนุมัติคำร้องซ่อม
+    .patch('/repair-requests/:id/header-approve', approveByHeader, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            header_approve: t.Numeric({ minimum: 1, maximum: 2 }),
+            header_comment: t.Optional(t.String()),
+        }),
+        detail: {
+            tags: ['IT'],
+            summary: 'หัวหน้า IT อนุมัติคำร้องซ่อม',
+            description: 'อัปเดต header_approve (1=อนุมัติ, 2=ไม่อนุมัติ) และ header_comment ใน it_repair_requests — กรณีไม่อนุมัติ (2) ต้องระบุ header_comment',
         },
     })
     // เรียกดูไฟล์ภาพตาม it_repair_request_image_id
