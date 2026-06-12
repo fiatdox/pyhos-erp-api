@@ -685,3 +685,122 @@ export async function mophHeaderApprove(data: HeaderApproveData): Promise<void> 
     });
     console.log('[MOPH Notify] Header Approve Template:', res.status, await res.text());
 }
+
+// Mission Approve Template (แจ้งเข้าหน่วยงาน IT เมื่อหัวหน้ากลุ่มภารกิจอนุมัติ/ไม่อนุมัติ)
+export interface MissionApproveData {
+    requestId: number;
+    equipmentNumber: string;
+    equipmentName: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    problemCategoryName?: string;
+    technicianName?: string;
+    approverName?: string;
+    assessmentName?: string;
+    nextStatusName?: string;
+    requestedAt?: string;
+    missionApprove: number; // 1 = อนุมัติ, 2 = ไม่อนุมัติ
+    missionComment?: string;
+}
+
+function buildMissionApproveTemplate(data: MissionApproveData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentNumber, equipmentName,
+        location, problemDescription,
+        equipmentTypeName, problemCategoryName,
+        technicianName, approverName, assessmentName, nextStatusName, requestedAt,
+        missionApprove, missionComment,
+    } = data;
+
+    const approved = missionApprove === 1;
+    const accent = approved ? '#22c55e' : '#f87171';
+    const resultText = approved ? 'หัวหน้ากลุ่มภารกิจอนุมัติ' : 'หัวหน้ากลุ่มภารกิจไม่อนุมัติ';
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box',
+        layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? accent, flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'พิจารณาเมื่อ', value: `${thaiDate} ${thaiTime} น.` },
+        { label: 'ผลพิจารณา', value: resultText },
+        ...(assessmentName ? [{ label: 'ผลประเมินช่าง', value: assessmentName }] : []),
+        ...(approved && nextStatusName ? [{ label: 'ขั้นตอนถัดไป', value: nextStatusName, color: '#38bdf8' }] : []),
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(technicianName ? [{ label: 'ช่างผู้รับงาน', value: technicianName }] : []),
+        ...(approverName ? [{ label: 'ผู้พิจารณา', value: approverName }] : []),
+    ];
+
+    return {
+        messages: [
+            {
+                type: 'flex',
+                altText: `${resultText} #${requestId}`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: `${approved ? '✅' : '🚫'} PYHOS-EXP`, weight: 'bold', size: 'lg', color: accent },
+                            { type: 'text', text: 'IT Repair Mission Approval', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `${resultText} #${requestId}`, weight: 'bold', size: 'xl', color: accent, wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box',
+                                layout: 'vertical',
+                                margin: 'lg',
+                                spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            ...(missionComment ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: approved ? '#06140b' : '#1e0a0a', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'ความเห็นหัวหน้ากลุ่มภารกิจ', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: missionComment, size: 'sm', weight: 'bold', color: accent, wrap: true },
+                                ],
+                            }] : []),
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function mophMissionApprove(data: MissionApproveData): Promise<void> {
+    const payload = buildMissionApproveTemplate(data);
+    const url = `${process.env.MOPH_NOTIFY_BASE_URL}/api/notify/send`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: IT_MATENANCE_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Notify] Mission Approve Template:', res.status, await res.text());
+}

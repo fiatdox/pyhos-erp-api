@@ -595,3 +595,145 @@ export async function sendHeaderApproveAlert(idCard: string, data: HeaderApprove
     console.log('[MOPH Alert] Header Approve Template:', res.status, await res.text());
 }
 
+// IT Repair Mission Approve Template (แจ้งกลับผู้ส่งซ่อมเมื่อหัวหน้ากลุ่มภารกิจอนุมัติ/ไม่อนุมัติ)
+export interface MissionApproveAlertData {
+    requestId: number;
+    equipmentName?: string;
+    equipmentNumber?: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    problemCategoryName?: string;
+    technicianName?: string;
+    approverName?: string;
+    assessmentName?: string;
+    nextStatusName?: string;
+    nextStatusId?: number;
+    requestedAt?: string;
+    missionApprove: number; // 1 = อนุมัติ, 2 = ไม่อนุมัติ
+    missionComment?: string;
+}
+
+function buildMissionApproveTemplate(data: MissionApproveAlertData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentName, equipmentNumber,
+        location, problemDescription,
+        equipmentTypeName, problemCategoryName,
+        technicianName, approverName, assessmentName, nextStatusName, nextStatusId, requestedAt,
+        missionApprove, missionComment,
+    } = data;
+
+    // อนุมัติให้จัดซื้อ (3 = ออกใบ PR/ซื้ออะไหล่, 11 = อนุมัติซื้อทดแทน) → แจ้งสิ่งที่ผู้แจ้งต้องดำเนินการต่อ
+    const showPurchaseAction = missionApprove === 1 && (nextStatusId === 3 || nextStatusId === 11);
+    const purchaseActionLines = [
+        '1. บันทึกข้อความเสนอผู้อำนวยการ',
+        '2. ทะเบียนครุภัณฑ์จากพัสดุ',
+        'เพื่อนำมาให้ศูนย์คอมเสนอพร้อมกับ ใบ PR และ ใบเสนอราคา',
+    ];
+
+    const equipmentText = equipmentName
+        ? `${equipmentName}${equipmentNumber ? ` (${equipmentNumber})` : ''}`
+        : '-';
+
+    const approved = missionApprove === 1;
+    const accent = approved ? '#22c55e' : '#f87171';
+    const resultText = approved ? 'หัวหน้ากลุ่มภารกิจอนุมัติ' : 'หัวหน้ากลุ่มภารกิจไม่อนุมัติ';
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box', layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? accent, flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'พิจารณาเมื่อ', value: `${thaiDate} ${thaiTime} น.` },
+        { label: 'ผลพิจารณา', value: resultText },
+        ...(assessmentName ? [{ label: 'ผลประเมินช่าง', value: assessmentName }] : []),
+        ...(approved && nextStatusName ? [{ label: 'ขั้นตอนถัดไป', value: nextStatusName, color: '#38bdf8' }] : []),
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: equipmentText },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(technicianName ? [{ label: 'ช่างผู้รับงาน', value: technicianName }] : []),
+        ...(approverName ? [{ label: 'ผู้พิจารณา', value: approverName }] : []),
+    ];
+
+    return {
+        message_title: `แจ้งผลคำร้องซ่อม: ${resultText}`,
+        message_html: `<div><p><strong>คำร้องซ่อม #${requestId}: ${resultText}</strong></p><ul>${requestedThai ? `<li><b>วันที่ส่งซ่อม:</b> ${requestedThai.thaiDate} ${requestedThai.thaiTime} น.</li>` : ''}<li><b>พิจารณาเมื่อ:</b> ${thaiDate} ${thaiTime} น.</li><li><b>ครุภัณฑ์:</b> ${equipmentText}</li>${approved && nextStatusName ? `<li><b>ขั้นตอนถัดไป:</b> ${nextStatusName}</li>` : ''}${approverName ? `<li><b>ผู้พิจารณา:</b> ${approverName}</li>` : ''}</ul>${missionComment ? `<p><b>ความเห็นหัวหน้ากลุ่มภารกิจ:</b> ${missionComment}</p>` : ''}${showPurchaseAction ? `<div style="margin-top:8px;"><p><strong>📋 สิ่งที่ท่านต้องดำเนินการต่อ</strong></p><ol><li>บันทึกข้อความเสนอผู้อำนวยการ</li><li>ทะเบียนครุภัณฑ์จากพัสดุ</li></ol><p>เพื่อนำมาให้ศูนย์คอมเสนอพร้อมกับ ใบ PR และ ใบเสนอราคา</p></div>` : ''}</div>`,
+        message_text: `คำร้องซ่อม #${requestId} ${resultText}${approved && nextStatusName ? ` ขั้นตอนถัดไป: ${nextStatusName}` : ''}${missionComment ? ` ความเห็น: ${missionComment}` : ''}${showPurchaseAction ? ` | สิ่งที่ท่านต้องดำเนินการต่อ: ${purchaseActionLines.join(' ')}` : ''}`,
+        message_type: 'HPT',
+        messages: [
+            {
+                type: 'flex',
+                altText: `คำร้องซ่อม #${requestId} ${resultText}`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: `${approved ? '✅' : '🚫'} PYHOS-EXP`, weight: 'bold', size: 'lg', color: accent },
+                            { type: 'text', text: 'IT Repair Mission Approval', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `คำร้องซ่อม #${requestId} ${resultText}`, weight: 'bold', size: 'xl', color: accent, wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box', layout: 'vertical', margin: 'lg', spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            ...(missionComment ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: approved ? '#06140b' : '#1e0a0a', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'ความเห็นหัวหน้ากลุ่มภารกิจ', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: missionComment, size: 'sm', weight: 'bold', color: accent, wrap: true },
+                                ],
+                            }] : []),
+                            ...(showPurchaseAction ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#0a1a2a', paddingAll: '12px', cornerRadius: 'md',
+                                spacing: 'sm',
+                                contents: [
+                                    { type: 'text', text: '📋 สิ่งที่ท่านต้องดำเนินการต่อ', size: 'sm', weight: 'bold', color: '#38bdf8' },
+                                    ...purchaseActionLines.map((line) => ({
+                                        type: 'text', text: line, size: 'sm', color: '#cbd5e1', wrap: true,
+                                    })),
+                                ],
+                            }] : []),
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function sendMissionApproveAlert(idCard: string, data: MissionApproveAlertData): Promise<void> {
+    const payload = { cid: [idCard], ...buildMissionApproveTemplate(data) };
+    const res = await fetch(MOPH_ALERTING_URL, {
+        method: 'POST',
+        headers: MOPH_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Alert] Mission Approve Template:', res.status, await res.text());
+}
+

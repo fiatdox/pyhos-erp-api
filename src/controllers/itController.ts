@@ -2,8 +2,8 @@ import { join } from 'path';
 import { mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { core_kon } from '../db/db';
-import { mophItMatenance, mophReceiveAssignment, mophRepairAssessment, mophRejectAssignment, mophRequestExtension, mophHeaderApprove } from '../utils/mophNotify';
-import { sendRepairRejectedAlert, sendRepairReceivedAlert, sendRepairExtensionAlert, sendHeaderApproveAlert } from '../utils/mophAlert';
+import { mophItMatenance, mophReceiveAssignment, mophRepairAssessment, mophRejectAssignment, mophRequestExtension, mophHeaderApprove, mophMissionApprove } from '../utils/mophNotify';
+import { sendRepairRejectedAlert, sendRepairReceivedAlert, sendRepairExtensionAlert, sendHeaderApproveAlert, sendMissionApproveAlert } from '../utils/mophAlert';
 
 // ดึงรายการสถานะกระบวนการ IT ทั้งหมด (เฉพาะที่ active)
 export const getProcessStatuses = async ({ set }: any) => {
@@ -946,6 +946,156 @@ export const approveByHeader = async ({ params, body, user, set }: any) => {
     }
 };
 
+// หัวหน้ากลุ่มภารกิจอนุมัติ/ไม่อนุมัติคำร้องซ่อม (จากสถานะ 9 รออนุมัติ)
+// ปฏิเสธ (2) → process_status_id = 10 (ปฏิเสธ)
+// อนุมัติ (1) → ใช้ approve_process_id ของ assessment ที่ช่างเลือกเป็นสถานะถัดไป
+//   เช่น สั่งซื้ออะไหล่(3)/จ้างภายนอก(5) → 3 (ออกใบ PR), แนะนำซื้อทดแทน(4) → 11 (อนุมัติซื้อทดแทน)
+export const approveByMission = async ({ params, body, user, set }: any) => {
+    const actionBy: number | null = user?.id ?? null;
+    if (!actionBy) {
+        set.status = 401;
+        return { success: false, message: 'Unauthorized' };
+    }
+
+    const missionApprove = (body as any)?.mission_approve;
+    const missionComment: string | null = ((body as any)?.mission_comment ?? '').trim() || null;
+
+    if (![1, 2].includes(missionApprove)) {
+        set.status = 400;
+        return { success: false, message: 'mission_approve ต้องเป็น 1 (อนุมัติ) หรือ 2 (ไม่อนุมัติ)' };
+    }
+
+    // กรณีไม่อนุมัติ ต้องระบุเหตุผล
+    if (missionApprove === 2 && !missionComment) {
+        set.status = 400;
+        return { success: false, message: 'กรุณาระบุเหตุผล (mission_comment) เมื่อไม่อนุมัติ' };
+    }
+
+    try {
+        const result = await core_kon.begin(async (sql) => {
+            // หาคำร้อง + approve_process_id ของ assessment ที่ช่างเลือก
+            const [req] = await sql`
+                SELECT r.it_repair_request_id, r.repair_assessment_id,
+                       ia.assessment_name, ia.approve_process_id
+                FROM it_repair_requests r
+                LEFT JOIN it_repair_assessments ia ON ia.repair_assessment_id = r.repair_assessment_id
+                WHERE r.it_repair_request_id = ${params.id}
+            `;
+
+            if (!req) {
+                return { notFound: true };
+            }
+
+            // อนุมัติแต่หา approve_process_id ไม่ได้ → assessment นี้ไม่รองรับขั้นอนุมัติจัดซื้อ
+            if (missionApprove === 1 && !req.approve_process_id) {
+                return { noApproveProcess: true };
+            }
+
+            const nextStatus = missionApprove === 1 ? req.approve_process_id : 10;
+
+            const updated = await sql`
+                UPDATE it_repair_requests
+                SET process_status_id = ${nextStatus}
+                WHERE it_repair_request_id = ${params.id}
+                RETURNING it_repair_request_id, process_status_id, repair_assessment_id
+            `;
+
+            const note = missionApprove === 1
+                ? `หัวหน้ากลุ่มภารกิจอนุมัติ (${req.assessment_name ?? '-'})${missionComment ? `: ${missionComment}` : ''}`
+                : `หัวหน้ากลุ่มภารกิจไม่อนุมัติ: ${missionComment}`;
+
+            await sql`
+                INSERT INTO it_repair_requests_track (
+                    it_repair_request_id, process_status_id, assigned_to, note, created_by
+                ) VALUES (
+                    ${params.id}, ${nextStatus}, ${actionBy}, ${note}, ${actionBy}
+                )
+            `;
+
+            return { request: updated[0] };
+        });
+
+        if (result.notFound) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบคำร้องซ่อม' };
+        }
+        if (result.noApproveProcess) {
+            set.status = 400;
+            return { success: false, message: 'คำร้องนี้ไม่มี approve_process_id (ผลประเมินของช่างไม่รองรับขั้นอนุมัติจัดซื้อ)' };
+        }
+
+        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง (ps = สถานะถัดไปที่เพิ่งอัปเดต, ia = ผลประเมินช่าง)
+        const [reqInfo] = await core_kon`
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
+                   et.name AS equipment_type_name,
+                   pc.name AS problem_category_name,
+                   ia.assessment_name,
+                   ps.name AS next_status_name,
+                   CONCAT(au.pname, au.fname, ' ', au.lname) AS technician_name,
+                   CONCAT(mu.pname, mu.fname, ' ', mu.lname) AS approver_name
+            FROM it_repair_requests r
+            LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
+            LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
+            LEFT JOIN it_repair_assessments ia ON ia.repair_assessment_id = r.repair_assessment_id
+            LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
+            LEFT JOIN users ru ON ru.id = r.created_by
+            LEFT JOIN users au ON au.id = r.assigned_to
+            LEFT JOIN users mu ON mu.id = ${actionBy}
+            WHERE r.it_repair_request_id = ${params.id}
+        `;
+
+        if (reqInfo) {
+            const requestedAt = reqInfo.created_at ? new Date(reqInfo.created_at).toISOString() : undefined;
+
+            // ทางที่ 1: แจ้งเข้าหน่วยงาน IT ผ่าน MOPH Notify
+            mophMissionApprove({
+                requestId: params.id,
+                equipmentNumber: reqInfo.equipment_number,
+                equipmentName: reqInfo.equipment_name,
+                location: reqInfo.location ?? undefined,
+                problemDescription: reqInfo.problem_description ?? undefined,
+                equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
+                problemCategoryName: reqInfo.problem_category_name ?? undefined,
+                technicianName: reqInfo.technician_name ?? undefined,
+                approverName: reqInfo.approver_name ?? undefined,
+                assessmentName: reqInfo.assessment_name ?? undefined,
+                nextStatusName: reqInfo.next_status_name ?? undefined,
+                requestedAt,
+                missionApprove,
+                missionComment: missionComment ?? undefined,
+            }).catch((err: any) => console.error('[MOPH Notify] Mission Approve failed:', err.message));
+
+            // ทางที่ 2: แจ้งกลับผู้ส่งซ่อม (created_by) ผ่าน MOPH Alert โดยใช้ id_card
+            if (reqInfo.id_card) {
+                sendMissionApproveAlert(reqInfo.id_card, {
+                    requestId: params.id,
+                    equipmentName: reqInfo.equipment_name ?? undefined,
+                    equipmentNumber: reqInfo.equipment_number ?? undefined,
+                    location: reqInfo.location ?? undefined,
+                    problemDescription: reqInfo.problem_description ?? undefined,
+                    equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
+                    problemCategoryName: reqInfo.problem_category_name ?? undefined,
+                    technicianName: reqInfo.technician_name ?? undefined,
+                    approverName: reqInfo.approver_name ?? undefined,
+                    assessmentName: reqInfo.assessment_name ?? undefined,
+                    nextStatusName: reqInfo.next_status_name ?? undefined,
+                    nextStatusId: result.request?.process_status_id,
+                    requestedAt,
+                    missionApprove,
+                    missionComment: missionComment ?? undefined,
+                }).catch((err: any) => console.error('[MOPH Alert] Mission Approve failed:', err.message));
+            }
+        }
+
+        const message = missionApprove === 1 ? 'หัวหน้ากลุ่มภารกิจอนุมัติเรียบร้อย' : 'บันทึกการไม่อนุมัติเรียบร้อย';
+        return { success: true, message, data: result.request };
+    } catch (error: any) {
+        console.error('[approveByMission] DB Error:', error.message);
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
 // อัปเดตผลการประเมินซ่อมในตาราง it_repair_requests
 export const updateRepairAssessment = async ({ params, body, user, set }: any) => {
     const actionBy: number | null = user?.id ?? null;
@@ -1075,7 +1225,7 @@ export const updateRepairAssessment = async ({ params, body, user, set }: any) =
 export const getRepairAssessments = async ({ set }: any) => {
     try {
         const result = await core_kon`
-            SELECT repair_assessment_id, assessment_name, is_active, created_at
+            SELECT repair_assessment_id, assessment_name, approve_process_id, is_active, created_at
             FROM it_repair_assessments
             WHERE is_active = 'Y'
             ORDER BY repair_assessment_id ASC
@@ -1091,7 +1241,7 @@ export const getRepairAssessments = async ({ set }: any) => {
 export const getRepairAssessmentById = async ({ params, set }: any) => {
     try {
         const result = await core_kon`
-            SELECT repair_assessment_id, assessment_name, is_active, created_at
+            SELECT repair_assessment_id, assessment_name, approve_process_id, is_active, created_at
             FROM it_repair_assessments
             WHERE repair_assessment_id = ${params.id}
         `;

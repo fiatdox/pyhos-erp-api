@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, rejectAssignment, requestExtension, getRepairExtensions, approveByHeader, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment } from '../controllers/itController';
+import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, rejectAssignment, requestExtension, getRepairExtensions, approveByHeader, approveByMission, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment } from '../controllers/itController';
 
 export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
     .use(authMiddleware)
@@ -192,6 +192,19 @@ export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
             tags: ['IT'],
             summary: 'หัวหน้า IT อนุมัติคำร้องซ่อม',
             description: 'อัปเดต header_approve (1=อนุมัติ, 2=ไม่อนุมัติ) และ header_comment ใน it_repair_requests — กรณีไม่อนุมัติ (2) ต้องระบุ header_comment',
+        },
+    })
+    // หัวหน้ากลุ่มภารกิจอนุมัติ/ไม่อนุมัติคำร้องซ่อม (จากสถานะ 9)
+    .patch('/repair-requests/:id/mission-approve', approveByMission, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            mission_approve: t.Numeric({ minimum: 1, maximum: 2 }),
+            mission_comment: t.Optional(t.String()),
+        }),
+        detail: {
+            tags: ['IT'],
+            summary: 'หัวหน้ากลุ่มภารกิจอนุมัติคำร้องซ่อม',
+            description: 'ปฏิเสธ (2) → process_status_id = 10; อนุมัติ (1) → ใช้ approve_process_id ของ assessment ที่ช่างเลือกเป็นสถานะถัดไป (สั่งซื้ออะไหล่/จ้างภายนอก → 3 ออกใบ PR, แนะนำซื้อทดแทน → 11 อนุมัติซื้อทดแทน) พร้อมเพิ่ม track',
         },
     })
     // เรียกดูไฟล์ภาพตาม it_repair_request_image_id
