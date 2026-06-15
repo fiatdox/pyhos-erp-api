@@ -804,3 +804,208 @@ export async function mophMissionApprove(data: MissionApproveData): Promise<void
     });
     console.log('[MOPH Notify] Mission Approve Template:', res.status, await res.text());
 }
+
+// User Account Request Template (แจ้งเข้ากลุ่มงาน IT เมื่อมีคำขอรหัสผู้ใช้งานระบบใหม่)
+export interface UserRequestNotifyData {
+    requestNo: string;
+    systemName: string;
+    requesterName: string;
+    positionName?: string;
+    department?: string;
+    phone?: string;
+    purpose?: string;
+}
+
+function buildUserRequestTemplate(data: UserRequestNotifyData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestNo, systemName, requesterName,
+        positionName, department, phone, purpose,
+    } = data;
+
+    const toRow = (row: { label: string; value: string }) => ({
+        type: 'box',
+        layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: '#38bdf8', flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: requestNo },
+        { label: 'วันที่', value: thaiDate },
+        { label: 'เวลา', value: `${thaiTime} น.` },
+        { label: 'ระบบที่ขอใช้', value: systemName },
+    ];
+
+    const requesterRows = [
+        { label: 'ผู้ขอ', value: requesterName },
+        ...(positionName ? [{ label: 'ตำแหน่ง', value: positionName }] : []),
+        ...(department ? [{ label: 'หน่วยงาน', value: department }] : []),
+        ...(phone ? [{ label: 'โทร', value: phone }] : []),
+        ...(purpose ? [{ label: 'วัตถุประสงค์', value: purpose }] : []),
+    ];
+
+    return {
+        messages: [
+            {
+                type: 'flex',
+                altText: `คำขอรหัสผู้ใช้งานใหม่ ${requestNo}`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: '🔑 PYHOS-EXP', weight: 'bold', size: 'lg', color: '#38bdf8' },
+                            { type: 'text', text: 'IT User Account Request', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `คำขอรหัสผู้ใช้งานใหม่ ${requestNo}`, weight: 'bold', size: 'xl', color: '#f8fafc', wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box',
+                                layout: 'vertical',
+                                margin: 'lg',
+                                spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            { type: 'text', text: '👤 ผู้ขอใช้งาน', size: 'sm', color: '#94a3b8', margin: 'lg', weight: 'bold' },
+                            {
+                                type: 'box',
+                                layout: 'vertical',
+                                margin: 'sm',
+                                spacing: 'sm',
+                                contents: requesterRows.map(toRow),
+                            },
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function mophUserRequestNotify(data: UserRequestNotifyData): Promise<void> {
+    const payload = buildUserRequestTemplate(data);
+    const url = `${process.env.MOPH_NOTIFY_BASE_URL}/api/notify/send`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: IT_MATENANCE_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Notify] User Account Request Template:', res.status, await res.text());
+}
+
+// ปกปิดชื่อให้เหลือเพียงคำนำหน้า + อักษรแรก เช่น "นายณรงค์ ใจดี" → "นาย ณxxxxx"
+function maskPersonName(name: string): string {
+    const raw = (name || '').trim();
+    if (!raw) return '-';
+    // เรียงคำนำหน้าจากยาวไปสั้น เพื่อจับ "นางสาว" ก่อน "นาง"
+    const prefixes = ['นางสาว', 'น.ส.', 'นาง', 'นาย', 'ด.ช.', 'ด.ญ.', 'ดร.', 'นพ.', 'พญ.'];
+    let prefix = '';
+    let body = raw;
+    for (const p of prefixes) {
+        if (raw.startsWith(p)) { prefix = p; body = raw.slice(p.length).trim(); break; }
+    }
+    const chars = [...body];
+    if (chars.length === 0) return prefix || '-';
+    const masked = chars[0] + 'x'.repeat(Math.min(Math.max(chars.length - 1, 3), 6));
+    return prefix ? `${prefix} ${masked}` : masked;
+}
+
+// Credential Issued Template (แจ้งเข้ากลุ่มงาน IT เมื่อออกรหัสแล้ว — ไม่แสดง username/password)
+export interface CredentialIssuedNotifyData {
+    requestNo: string;
+    systemName: string;
+    requesterName: string;
+    issuedBy: string;
+}
+
+function buildCredentialIssuedNotifyTemplate(data: CredentialIssuedNotifyData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const { requestNo, systemName, requesterName, issuedBy } = data;
+
+    const toRow = (row: { label: string; value: string }) => ({
+        type: 'box',
+        layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: '#22c55e', flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: requestNo },
+        { label: 'วันที่ออก', value: thaiDate },
+        { label: 'เวลา', value: `${thaiTime} น.` },
+        { label: 'ระบบที่ออกให้', value: systemName },
+        { label: 'ผู้ได้รับ', value: maskPersonName(requesterName) },
+        { label: 'ออกโดย', value: issuedBy },
+    ];
+
+    return {
+        messages: [
+            {
+                type: 'flex',
+                altText: `ออกรหัสผู้ใช้งานแล้ว ${requestNo}`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: '🔓 PYHOS-EXP', weight: 'bold', size: 'lg', color: '#22c55e' },
+                            { type: 'text', text: 'IT Credential Issued', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `ออกรหัสผู้ใช้งานแล้ว ${requestNo}`, weight: 'bold', size: 'xl', color: '#f8fafc', wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box',
+                                layout: 'vertical',
+                                margin: 'lg',
+                                spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            { type: 'text', text: 'ส่ง username/password ให้ผู้ขอผ่านหมอพร้อมเรียบร้อยแล้ว', size: 'xs', color: '#6b7280', margin: 'lg', wrap: true },
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function mophCredentialIssuedNotify(data: CredentialIssuedNotifyData): Promise<void> {
+    const payload = buildCredentialIssuedNotifyTemplate(data);
+    const url = `${process.env.MOPH_NOTIFY_BASE_URL}/api/notify/send`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: IT_MATENANCE_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Notify] Credential Issued Template:', res.status, await res.text());
+}

@@ -44,7 +44,7 @@ function buildChangePasswordTemplate(newPassword: string): object {
                         paddingAll: '20px',
                         backgroundColor: '#0d1b2a',
                         contents: [
-                            { type: 'text', text: '🔐 PYHOS-ERP', weight: 'bold', size: 'lg', color: '#10b981' },
+                            { type: 'text', text: '🔐 PYHOS-EXP', weight: 'bold', size: 'lg', color: '#10b981' },
                             { type: 'text', text: 'Ministry Hospital Portal', size: 'xs', color: '#6b7280', margin: 'xs' },
                         ],
                     },
@@ -735,5 +735,119 @@ export async function sendMissionApproveAlert(idCard: string, data: MissionAppro
         body: JSON.stringify(payload),
     });
     console.log('[MOPH Alert] Mission Approve Template:', res.status, await res.text());
+}
+
+// IT User Credential Issued Template (ส่ง username/password ให้ผู้ใช้ผ่านหมอพร้อม)
+// ข้อควรระวัง: ฟังก์ชันนี้คือ "ช่องทางส่งมอบ credential" เพียงช่องทางเดียว —
+//   username/password ต้องไม่ถูกบันทึกลง DB และต้องไม่ถูก log (จึง log แค่ status code)
+export interface CredentialIssuedData {
+    requestNo: string;
+    username: string;
+    password: string;
+    systemName?: string;
+    issuedBy?: string;
+    note?: string;
+}
+
+function buildCredentialIssuedTemplate(data: CredentialIssuedData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const { requestNo, username, password, systemName, issuedBy, note } = data;
+
+    const toRow = (label: string, value: string, color = '#10b981') => ({
+        type: 'box', layout: 'baseline',
+        contents: [
+            { type: 'text', text: label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: value, size: 'sm', weight: 'bold', color, flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        toRow('เลขที่คำร้อง', requestNo, '#f8fafc'),
+        ...(systemName ? [toRow('ระบบ', systemName, '#f8fafc')] : []),
+        toRow('วันที่ออกรหัส', `${thaiDate} ${thaiTime} น.`, '#f8fafc'),
+        ...(issuedBy ? [toRow('ออกรหัสโดย', issuedBy, '#f8fafc')] : []),
+    ];
+
+    return {
+        message_title: 'แจ้งบัญชีเข้าใช้งานระบบโรงพยาบาล',
+        message_html: `<div><p><strong>บัญชีเข้าใช้งานระบบ${systemName ? ` ${systemName}` : ''}</strong></p><ul><li><b>เลขที่คำร้อง:</b> ${requestNo}</li><li><b>Username:</b> ${username}</li><li><b>Password:</b> ${password}</li><li><b>วันที่ออกรหัส:</b> ${thaiDate} ${thaiTime} น.</li></ul><p style="color:#cc0000;">กรุณาเปลี่ยนรหัสผ่านเมื่อเข้าใช้งานครั้งแรก และห้ามเปิดเผยรหัสผ่านแก่ผู้อื่น</p></div>`,
+        message_text: `บัญชีเข้าใช้งานระบบ${systemName ? ` ${systemName}` : ''} (คำร้อง ${requestNo}) Username: ${username} Password: ${password} กรุณาเปลี่ยนรหัสผ่านเมื่อเข้าใช้ครั้งแรก`,
+        message_type: 'HPT',
+        messages: [
+            {
+                type: 'flex',
+                altText: `บัญชีเข้าใช้งานระบบ${systemName ? ` ${systemName}` : ''} (${requestNo})`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: '🔑 PYHOS-EXP', weight: 'bold', size: 'lg', color: '#10b981' },
+                            { type: 'text', text: 'IT User Credential', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: 'บัญชีเข้าใช้งานระบบโรงพยาบาล', weight: 'bold', size: 'xl', color: '#f8fafc', wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box', layout: 'vertical', margin: 'lg', spacing: 'sm',
+                                contents: rows,
+                            },
+                            {
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#0a1a12', paddingAll: '12px', cornerRadius: 'md', spacing: 'sm',
+                                contents: [
+                                    { type: 'text', text: 'Username', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: username, size: 'lg', weight: 'bold', color: '#10b981', wrap: true },
+                                    { type: 'text', text: 'Password', size: 'xs', color: '#6b7280', margin: 'md' },
+                                    { type: 'text', text: password, size: 'lg', weight: 'bold', color: '#10b981', wrap: true },
+                                ],
+                            },
+                            ...(note ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#1e293b', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'หมายเหตุ', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: note, size: 'sm', color: '#cbd5e1', wrap: true },
+                                ],
+                            }] : []),
+                            {
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#1e0a0a', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'กรุณาเปลี่ยนรหัสผ่านเมื่อเข้าใช้งานครั้งแรก และห้ามเปิดเผยรหัสผ่านแก่ผู้อื่น', size: 'sm', color: '#f87171', wrap: true, weight: 'bold' },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+// ส่ง credential ผ่านหมอพร้อม — throw เมื่อส่งไม่สำเร็จ (ให้ controller จับแล้วคืน 502 NOTIFY_FAILED)
+export async function sendCredentialIssuedAlert(idCard: string, data: CredentialIssuedData): Promise<void> {
+    const payload = { cid: [idCard], ...buildCredentialIssuedTemplate(data) };
+    const res = await fetch(MOPH_ALERTING_URL, {
+        method: 'POST',
+        headers: MOPH_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    // ห้าม log payload/credential — log เฉพาะสถานะ
+    console.log('[MOPH Alert] Credential Issued:', res.status);
+    if (!res.ok) {
+        throw new Error(`MOPH Alert credential delivery failed with status ${res.status}`);
+    }
 }
 

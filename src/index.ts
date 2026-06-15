@@ -11,6 +11,7 @@ import { hisRoutes } from "./routes/hisRoutes";
 import { itRiskRoutes } from "./routes/itRiskRoutes";
 import { itActivityRoutes } from "./routes/itActivityRoutes";
 import { itIncidentReportRoutes } from "./routes/itIncidentReportRoutes";
+import { itUserRequestRoutes } from "./routes/itUserRequestRoutes";
 import { userRolesRoutes } from "./routes/userRolesRoutes";
 import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 
@@ -33,6 +34,7 @@ const app = new Elysia()
           { name: 'IT', description: 'IT endpoints (equipment types)' },
           { name: 'IT Activity', description: 'IT Activity Log — HAIT ข้อ 4.5 บันทึกกิจกรรมเจ้าหน้าที่ IT' },
           { name: 'IT Incident Report', description: 'IT Incident Report — รายงานและติดตามเหตุการณ์ด้าน IT' },
+          { name: 'IT User Request', description: 'IT User Request — การขอรหัสผู้ใช้งานระบบ (ส่ง credential ผ่านหมอพร้อม)' },
           { name: 'IT Risk', description: 'IT Risk Management (TMI/ISO 27001)' },
           
           { name: 'System', description: 'System data endpoints (missions, majors, submajors)' },
@@ -67,6 +69,7 @@ const app = new Elysia()
   .use(itRiskRoutes)
   .use(itActivityRoutes)
   .use(itIncidentReportRoutes)
+  .use(itUserRequestRoutes)
   //.get("/", () => "Hello Elysia")
   .listen(process.env.PORT || 5000);
 
