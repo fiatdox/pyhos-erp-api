@@ -1009,3 +1009,245 @@ export async function mophCredentialIssuedNotify(data: CredentialIssuedNotifyDat
     });
     console.log('[MOPH Notify] Credential Issued Template:', res.status, await res.text());
 }
+
+// Repair PR Template (แจ้งเข้าหน่วยงาน IT เมื่อบันทึกใบ PR + เอกสารเตรียมนำเสนอ ผอ.)
+export interface RepairPrData {
+    requestId: number;
+    equipmentNumber: string;
+    equipmentName: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    prNumber: string;
+    prDetail?: string;
+    documentNames?: string[];
+    recordedByName?: string;
+    nextStatusName?: string;
+    requestedAt?: string;
+}
+
+function buildRepairPrTemplate(data: RepairPrData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentNumber, equipmentName,
+        location, problemDescription, equipmentTypeName,
+        prNumber, prDetail, documentNames,
+        recordedByName, nextStatusName, requestedAt,
+    } = data;
+
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box',
+        layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? '#38bdf8', flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'บันทึกเมื่อ', value: `${thaiDate} ${thaiTime} น.` },
+        { label: 'เลขที่ใบ PR', value: prNumber, color: '#f8fafc' },
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(recordedByName ? [{ label: 'ผู้บันทึก', value: recordedByName }] : []),
+        ...(nextStatusName ? [{ label: 'ขั้นตอนถัดไป', value: nextStatusName, color: '#22c55e' }] : []),
+    ];
+
+    const docList = (documentNames ?? []).filter(Boolean);
+
+    return {
+        messages: [
+            {
+                type: 'flex',
+                altText: `บันทึกใบ PR #${requestId} (${prNumber})`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: '🧾 PYHOS-EXP', weight: 'bold', size: 'lg', color: '#38bdf8' },
+                            { type: 'text', text: 'IT Repair PR Recorded', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `บันทึกใบ PR #${requestId}`, weight: 'bold', size: 'xl', color: '#f8fafc', wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box',
+                                layout: 'vertical',
+                                margin: 'lg',
+                                spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            ...(docList.length > 0 ? [
+                                {
+                                    type: 'box', layout: 'vertical', margin: 'lg',
+                                    backgroundColor: '#0a1a2a', paddingAll: '12px', cornerRadius: 'md', spacing: 'sm',
+                                    contents: [
+                                        { type: 'text', text: '📋 เอกสารที่เสนอ ผอ.', size: 'sm', weight: 'bold', color: '#38bdf8' },
+                                        ...docList.map((name) => ({
+                                            type: 'text', text: `• ${name}`, size: 'sm', color: '#cbd5e1', wrap: true,
+                                        })),
+                                    ],
+                                },
+                            ] : []),
+                            ...(prDetail ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#1e293b', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'รายละเอียด PR / อะไหล่ที่จัดซื้อ', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: prDetail, size: 'sm', weight: 'bold', color: '#cbd5e1', wrap: true },
+                                ],
+                            }] : []),
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function mophRepairPr(data: RepairPrData): Promise<void> {
+    const payload = buildRepairPrTemplate(data);
+    const url = `${process.env.MOPH_NOTIFY_BASE_URL}/api/notify/send`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: IT_MATENANCE_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Notify] Repair PR Template:', res.status, await res.text());
+}
+
+// Repair Progress Template (แจ้งเข้าหน่วยงาน IT เมื่อช่างอัพเดทความคืบหน้างานซ่อม)
+export interface RepairProgressData {
+    requestId: number;
+    equipmentNumber: string;
+    equipmentName: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    completedStepNames?: string[];
+    note?: string;
+    technicianName?: string;
+    requestedAt?: string;
+}
+
+function buildRepairProgressTemplate(data: RepairProgressData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentNumber, equipmentName,
+        location, problemDescription, equipmentTypeName,
+        completedStepNames, note, technicianName, requestedAt,
+    } = data;
+
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+    const stepList = (completedStepNames ?? []).filter(Boolean);
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box',
+        layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? '#38bdf8', flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'อัพเดทเมื่อ', value: `${thaiDate} ${thaiTime} น.` },
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(technicianName ? [{ label: 'ช่างผู้อัพเดท', value: technicianName }] : []),
+    ];
+
+    return {
+        messages: [
+            {
+                type: 'flex',
+                altText: `อัพเดทความคืบหน้างานซ่อม #${requestId}`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: '🔧 PYHOS-EXP', weight: 'bold', size: 'lg', color: '#38bdf8' },
+                            { type: 'text', text: 'IT Repair Progress Update', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `อัพเดทงานซ่อม #${requestId}`, weight: 'bold', size: 'xl', color: '#f8fafc', wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box',
+                                layout: 'vertical',
+                                margin: 'lg',
+                                spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            ...(stepList.length > 0 ? [
+                                {
+                                    type: 'box', layout: 'vertical', margin: 'lg',
+                                    backgroundColor: '#0a1a2a', paddingAll: '12px', cornerRadius: 'md', spacing: 'sm',
+                                    contents: [
+                                        { type: 'text', text: '✅ ขั้นงานที่ทำเสร็จแล้ว', size: 'sm', weight: 'bold', color: '#22c55e' },
+                                        ...stepList.map((name) => ({
+                                            type: 'text', text: `• ${name}`, size: 'sm', color: '#cbd5e1', wrap: true,
+                                        })),
+                                    ],
+                                },
+                            ] : []),
+                            ...(note ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#1e293b', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'หมายเหตุการดำเนินการ', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: note, size: 'sm', weight: 'bold', color: '#cbd5e1', wrap: true },
+                                ],
+                            }] : []),
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function mophRepairProgress(data: RepairProgressData): Promise<void> {
+    const payload = buildRepairProgressTemplate(data);
+    const url = `${process.env.MOPH_NOTIFY_BASE_URL}/api/notify/send`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: IT_MATENANCE_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Notify] Repair Progress Template:', res.status, await res.text());
+}

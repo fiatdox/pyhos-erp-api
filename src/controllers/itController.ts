@@ -1,9 +1,9 @@
 import { join } from 'path';
 import { mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
-import { core_kon } from '../db/db';
-import { mophItMatenance, mophReceiveAssignment, mophRepairAssessment, mophRejectAssignment, mophRequestExtension, mophHeaderApprove, mophMissionApprove } from '../utils/mophNotify';
-import { sendRepairRejectedAlert, sendRepairReceivedAlert, sendRepairExtensionAlert, sendHeaderApproveAlert, sendMissionApproveAlert } from '../utils/mophAlert';
+import { core_kon, inventoryPool } from '../db/db';
+import { mophItMatenance, mophReceiveAssignment, mophRepairAssessment, mophRejectAssignment, mophRequestExtension, mophHeaderApprove, mophMissionApprove, mophRepairPr, mophRepairProgress } from '../utils/mophNotify';
+import { sendRepairRejectedAlert, sendRepairReceivedAlert, sendRepairExtensionAlert, sendHeaderApproveAlert, sendMissionApproveAlert, sendRepairPrAlert, sendRepairProgressAlert } from '../utils/mophAlert';
 
 // ดึงรายการสถานะกระบวนการ IT ทั้งหมด (เฉพาะที่ active)
 export const getProcessStatuses = async ({ set }: any) => {
@@ -375,9 +375,20 @@ export const getRepairRequests = async ({ query, set }: any) => {
                     CONCAT(u.pname, u.fname, ' ', u.lname) AS created_by_name,
                     m1.name AS major_name,
                     m2.name AS submajor_name,
+                    up.position_name,
+                    r.assigned_to,
+                    CONCAT(au.pname, au.fname, ' ', au.lname) AS assigned_to_name,
+                    r.header_approve,
+                    r.header_comment,
+                    r.mission_approve,
+                    r.mission_comment,
                     r.repair_assessment_id,
                     ia.assessment_name,
-                    r.assessment_detail
+                    r.assessment_detail,
+                    r.parts_used,
+                    r.replacement_recommendation,
+                    r.external_service_detail,
+                    r.return_status_id
                 FROM it_repair_requests r
                 LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
                 LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
@@ -385,6 +396,8 @@ export const getRepairRequests = async ({ query, set }: any) => {
                 LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
                 LEFT JOIN it_repair_assessments ia ON ia.repair_assessment_id = r.repair_assessment_id
                 LEFT JOIN users u ON u.id = r.created_by
+                LEFT JOIN users au ON au.id = r.assigned_to
+                LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
                 LEFT JOIN majors m1 ON m1.major_id = u.major_id
                 LEFT JOIN submajors m2 ON m2.submajor_id = u.submajor_id
                 WHERE r.process_status_id = ANY(${statusIds})
@@ -402,9 +415,20 @@ export const getRepairRequests = async ({ query, set }: any) => {
                     CONCAT(u.pname, u.fname, ' ', u.lname) AS created_by_name,
                     m1.name AS major_name,
                     m2.name AS submajor_name,
+                    up.position_name,
+                    r.assigned_to,
+                    CONCAT(au.pname, au.fname, ' ', au.lname) AS assigned_to_name,
+                    r.header_approve,
+                    r.header_comment,
+                    r.mission_approve,
+                    r.mission_comment,
                     r.repair_assessment_id,
                     ia.assessment_name,
-                    r.assessment_detail
+                    r.assessment_detail,
+                    r.parts_used,
+                    r.replacement_recommendation,
+                    r.external_service_detail,
+                    r.return_status_id
                 FROM it_repair_requests r
                 LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
                 LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
@@ -412,6 +436,8 @@ export const getRepairRequests = async ({ query, set }: any) => {
                 LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
                 LEFT JOIN it_repair_assessments ia ON ia.repair_assessment_id = r.repair_assessment_id
                 LEFT JOIN users u ON u.id = r.created_by
+                LEFT JOIN users au ON au.id = r.assigned_to
+                LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
                 LEFT JOIN majors m1 ON m1.major_id = u.major_id
                 LEFT JOIN submajors m2 ON m2.submajor_id = u.submajor_id
                 WHERE DATE(r.created_at) BETWEEN ${from} AND ${to}
@@ -1287,6 +1313,504 @@ export const getRepairRequestImageFile = async ({ params, set }: any) => {
 
         return Bun.file(filepath);
     } catch (error: any) {
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// ดึงรายการประเภทเอกสารที่เสนอ ผอ. (เช็กลิสต์ในฟอร์มบันทึกใบ PR) เฉพาะที่ active
+export const getPrDocumentTypes = async ({ set }: any) => {
+    try {
+        const result = await core_kon`
+            SELECT id, doc_code, name_th, sort_order
+            FROM it_pr_document_types
+            WHERE is_active = 'Y'
+            ORDER BY sort_order ASC
+        `;
+        return { success: true, data: result };
+    } catch (error: any) {
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// ดึงใบ PR ของคำร้องซ่อม พร้อมรายการเอกสารที่ติ๊ก (1 คำร้อง → 1 ใบ PR)
+export const getRepairPr = async ({ params, set }: any) => {
+    try {
+        const [pr] = await core_kon`
+            SELECT p.id, p.it_repair_request_id, p.pr_number, p.pr_detail,
+                   p.created_by,
+                   CONCAT(u.pname, u.fname, ' ', u.lname) AS created_by_name,
+                   p.created_at, p.updated_at,
+                   COALESCE(
+                       json_agg(
+                           json_build_object('id', t.id, 'doc_code', t.doc_code, 'name_th', t.name_th)
+                           ORDER BY t.sort_order
+                       ) FILTER (WHERE t.id IS NOT NULL),
+                       '[]'
+                   ) AS documents
+            FROM it_repair_prs p
+            LEFT JOIN users u ON u.id = p.created_by
+            LEFT JOIN it_repair_pr_documents d ON d.it_repair_pr_id = p.id
+            LEFT JOIN it_pr_document_types t ON t.id = d.pr_document_type_id
+            WHERE p.it_repair_request_id = ${params.id}
+            GROUP BY p.id, u.pname, u.fname, u.lname
+        `;
+
+        if (!pr) {
+            set.status = 404;
+            return { success: false, message: 'ยังไม่มีการบันทึกใบ PR ของคำร้องนี้' };
+        }
+
+        return { success: true, data: pr };
+    } catch (error: any) {
+        console.error('[getRepairPr] DB Error:', error.message);
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// ติดตามสถานะการออกเลข PR จากระบบ inventory (MySQL)
+// ดึง pr_number ที่บันทึกไว้ (= request_id ของระบบ inventory) แล้ว query stock_request
+// ว่าออกเลขแล้วหรือยัง (stock_approve_date ไม่ว่าง = อนุมัติ/ออกเลขแล้ว) พร้อมเลขเอกสารจริง (request_no)
+export const getRepairPrStatus = async ({ params, set }: any) => {
+    try {
+        // หาใบ PR ที่บันทึกไว้ของคำร้องนี้ (1 คำร้อง → 1 ใบ PR)
+        const [pr] = await core_kon`
+            SELECT id, it_repair_request_id, pr_number
+            FROM it_repair_prs
+            WHERE it_repair_request_id = ${params.id}
+        `;
+
+        if (!pr) {
+            set.status = 404;
+            return { success: false, message: 'ยังไม่มีการบันทึกใบ PR ของคำร้องนี้' };
+        }
+
+        // pr_number ที่บันทึกไว้คือ request_id (pr_id) ของระบบ inventory — ต้องเป็นตัวเลข
+        const requestId = Number(String(pr.pr_number).trim());
+        if (!Number.isInteger(requestId) || requestId <= 0) {
+            set.status = 400;
+            return {
+                success: false,
+                message: `เลข PR ที่บันทึกไว้ (${pr.pr_number}) ไม่ใช่ request_id ที่ตรวจสอบกับระบบ inventory ได้`,
+                data: { it_repair_request_id: pr.it_repair_request_id, pr_number: pr.pr_number },
+            };
+        }
+
+        // ตรวจสอบสถานะการออกเลขในระบบ inventory
+        const [rows]: any = await inventoryPool.query(
+            `SELECT sr.stock_approve_date, sr.stock_user_approve_id, sr.request_id AS pr_id, sr.request_no,stock_po_id,request_receive_date
+             FROM stock_request sr
+             WHERE sr.request_id = ?`,
+            [requestId]
+        );
+
+        const stock = rows?.[0];
+        if (!stock) {
+            return {
+                success: true,
+                data: {
+                    it_repair_request_id: pr.it_repair_request_id,
+                    pr_number: pr.pr_number,
+                    found: false,
+                    issued: false,
+                    message: 'ไม่พบ request_id นี้ในระบบ inventory',
+                },
+            };
+        }
+
+        // ออกเลขแล้ว = มี stock_approve_date (อนุมัติ/ออกเลขในระบบ inventory)
+        const issued = stock.stock_approve_date != null;
+
+        // ถ้ามี stock_po_id → ดึงสถานะการจ่ายเงินของใบ PO (paid_status_name)
+        let paidStatusName: string | null = null;
+        if (stock.stock_po_id != null) {
+            const [poRows]: any = await inventoryPool.query(
+                `SELECT sps.paid_status_name
+                 FROM stock_po a
+                 LEFT JOIN stock_paid_status sps ON sps.paid_status_id = a.paid_status_id
+                 WHERE a.stock_po_id = ?`,
+                [stock.stock_po_id]
+            );
+            paidStatusName = poRows?.[0]?.paid_status_name ?? null;
+        }
+
+        return {
+            success: true,
+            data: {
+                it_repair_request_id: pr.it_repair_request_id,
+                pr_number: pr.pr_number,
+                found: true,
+                issued,
+                pr_id: stock.pr_id,
+                request_no: stock.request_no ?? null,
+                stock_approve_date: stock.stock_approve_date ?? null,
+                stock_user_approve_id: stock.stock_user_approve_id ?? null,
+                request_receive_date: stock.request_receive_date ?? null,
+                stock_po_id: stock.stock_po_id ?? null,
+                paid_status_name: paidStatusName,
+                message: issued ? 'PR ออกเลขแล้ว' : 'PR ยังไม่ออกเลข (รออนุมัติในระบบ inventory)',
+            },
+        };
+    } catch (error: any) {
+        console.error('[getRepairPrStatus] DB Error:', error.message);
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// บันทึกใบ PR + เอกสารเตรียมนำเสนอ ผอ. (จากสถานะ 3 ออกใบ PR) → เลื่อนไป process_status_id = 7
+// บันทึก it_repair_prs (1:1) + it_repair_pr_documents (เอกสารที่ติ๊ก) + เพิ่ม track + แจ้ง MOPH 2 ทาง
+export const recordRepairPr = async ({ params, body, user, set }: any) => {
+    const actionBy: number | null = user?.id ?? null;
+    if (!actionBy) {
+        set.status = 401;
+        return { success: false, message: 'Unauthorized' };
+    }
+
+    const prNumber: string = ((body as any)?.pr_number ?? '').trim();
+    const prDetail: string | null = ((body as any)?.pr_detail ?? '').trim() || null;
+    const rawDocIds = (body as any)?.document_type_ids;
+    const docIds: number[] = Array.isArray(rawDocIds)
+        ? rawDocIds.map(Number).filter((n: number) => !isNaN(n) && n > 0)
+        : [];
+
+    if (!prNumber) {
+        set.status = 400;
+        return { success: false, message: 'กรุณาระบุเลขที่ใบ PR (pr_number)' };
+    }
+
+    // สถานะถัดไปหลังบันทึกใบ PR = 7 (ขั้นตอน PO โดยพัสดุ / เสนอผู้อำนวยการ)
+    const NEXT_STATUS_ID = 7;
+
+    try {
+        const result = await core_kon.begin(async (sql) => {
+            // ตรวจว่าคำร้องมีอยู่จริง
+            const [req] = await sql`
+                SELECT it_repair_request_id FROM it_repair_requests
+                WHERE it_repair_request_id = ${params.id}
+            `;
+            if (!req) {
+                return { notFound: true };
+            }
+
+            // กันบันทึกซ้ำ (1 คำร้อง → 1 ใบ PR)
+            const [existing] = await sql`
+                SELECT id FROM it_repair_prs WHERE it_repair_request_id = ${params.id}
+            `;
+            if (existing) {
+                return { conflict: true };
+            }
+
+            // เก็บเฉพาะ doc id ที่มีจริงและ active + ดึงชื่อไว้ใช้แจ้งเตือน
+            const docRows = docIds.length > 0
+                ? await sql`
+                    SELECT id, name_th FROM it_pr_document_types
+                    WHERE id = ANY(${docIds}) AND is_active = 'Y'
+                    ORDER BY sort_order ASC
+                `
+                : [];
+
+            const [pr] = await sql`
+                INSERT INTO it_repair_prs (
+                    it_repair_request_id, pr_number, pr_detail, created_by
+                ) VALUES (
+                    ${params.id}, ${prNumber}, ${prDetail}, ${actionBy}
+                )
+                RETURNING id, it_repair_request_id, pr_number, pr_detail, created_at
+            `;
+
+            for (const doc of docRows) {
+                await sql`
+                    INSERT INTO it_repair_pr_documents (it_repair_pr_id, pr_document_type_id)
+                    VALUES (${pr.id}, ${doc.id})
+                `;
+            }
+
+            await sql`
+                UPDATE it_repair_requests
+                SET process_status_id = ${NEXT_STATUS_ID}
+                WHERE it_repair_request_id = ${params.id}
+            `;
+
+            const docNames = docRows.map((d: any) => d.name_th);
+            const note = `บันทึกใบ PR เลขที่ ${prNumber}${docNames.length > 0 ? ` (เอกสาร: ${docNames.join(', ')})` : ''}`;
+
+            await sql`
+                INSERT INTO it_repair_requests_track (
+                    it_repair_request_id, process_status_id, assigned_to, note, created_by
+                ) VALUES (
+                    ${params.id}, ${NEXT_STATUS_ID}, ${actionBy}, ${note}, ${actionBy}
+                )
+            `;
+
+            return { pr, docNames };
+        });
+
+        if (result.notFound) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบคำร้องซ่อม' };
+        }
+        if (result.conflict) {
+            set.status = 409;
+            return { success: false, message: 'บันทึกใบ PR ของคำร้องนี้ไปแล้ว' };
+        }
+
+        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง (ps = สถานะถัดไปที่เพิ่งอัปเดต)
+        const [reqInfo] = await core_kon`
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
+                   et.name AS equipment_type_name,
+                   ps.name AS next_status_name,
+                   CONCAT(cu.pname, cu.fname, ' ', cu.lname) AS recorded_by_name
+            FROM it_repair_requests r
+            LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
+            LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
+            LEFT JOIN users ru ON ru.id = r.created_by
+            LEFT JOIN users cu ON cu.id = ${actionBy}
+            WHERE r.it_repair_request_id = ${params.id}
+        `;
+
+        if (reqInfo) {
+            const requestedAt = reqInfo.created_at ? new Date(reqInfo.created_at).toISOString() : undefined;
+            const documentNames: string[] = result.docNames ?? [];
+
+            // ทางที่ 1: แจ้งเข้าหน่วยงาน IT ผ่าน MOPH Notify
+            mophRepairPr({
+                requestId: params.id,
+                equipmentNumber: reqInfo.equipment_number,
+                equipmentName: reqInfo.equipment_name,
+                location: reqInfo.location ?? undefined,
+                problemDescription: reqInfo.problem_description ?? undefined,
+                equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
+                prNumber,
+                prDetail: prDetail ?? undefined,
+                documentNames,
+                recordedByName: reqInfo.recorded_by_name ?? undefined,
+                nextStatusName: reqInfo.next_status_name ?? undefined,
+                requestedAt,
+            }).catch((err: any) => console.error('[MOPH Notify] Repair PR failed:', err.message));
+
+            // ทางที่ 2: แจ้งกลับผู้ส่งซ่อม (created_by) ผ่าน MOPH Alert โดยใช้ id_card
+            if (reqInfo.id_card) {
+                sendRepairPrAlert(reqInfo.id_card, {
+                    requestId: params.id,
+                    equipmentName: reqInfo.equipment_name ?? undefined,
+                    equipmentNumber: reqInfo.equipment_number ?? undefined,
+                    location: reqInfo.location ?? undefined,
+                    problemDescription: reqInfo.problem_description ?? undefined,
+                    equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
+                    prNumber,
+                    prDetail: prDetail ?? undefined,
+                    documentNames,
+                    recordedByName: reqInfo.recorded_by_name ?? undefined,
+                    nextStatusName: reqInfo.next_status_name ?? undefined,
+                    requestedAt,
+                }).catch((err: any) => console.error('[MOPH Alert] Repair PR failed:', err.message));
+            }
+        }
+
+        return { success: true, message: 'บันทึกใบ PR เรียบร้อย', data: result.pr };
+    } catch (error: any) {
+        console.error('[recordRepairPr] DB Error:', error.message);
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// ดึงรายการขั้นงานย่อย (เช็กลิสต์ในฟอร์มอัพเดทความคืบหน้า) เฉพาะที่ active
+export const getRepairWorkSteps = async ({ set }: any) => {
+    try {
+        const result = await core_kon`
+            SELECT id, step_code, name_th, sort_order
+            FROM it_repair_work_steps
+            WHERE is_active = 'Y'
+            ORDER BY sort_order ASC
+        `;
+        return { success: true, data: result };
+    } catch (error: any) {
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// ดึงประวัติการอัพเดทความคืบหน้าของคำร้องซ่อม (ล่าสุดไปเก่าสุด) พร้อมขั้นงานที่ติ๊กแต่ละครั้ง
+export const getRepairProgress = async ({ params, set }: any) => {
+    try {
+        const rows = await core_kon`
+            SELECT p.id, p.it_repair_request_id, p.note,
+                   p.created_by,
+                   CONCAT(u.pname, u.fname, ' ', u.lname) AS created_by_name,
+                   p.created_at,
+                   COALESCE(
+                       json_agg(
+                           json_build_object('id', s.id, 'step_code', s.step_code, 'name_th', s.name_th)
+                           ORDER BY s.sort_order
+                       ) FILTER (WHERE s.id IS NOT NULL),
+                       '[]'
+                   ) AS completed_steps
+            FROM it_repair_progress p
+            LEFT JOIN users u ON u.id = p.created_by
+            LEFT JOIN it_repair_progress_steps ps ON ps.it_repair_progress_id = p.id
+            LEFT JOIN it_repair_work_steps s ON s.id = ps.work_step_id
+            WHERE p.it_repair_request_id = ${params.id} AND p.is_active = 'Y'
+            GROUP BY p.id, u.pname, u.fname, u.lname
+            ORDER BY p.created_at DESC
+        `;
+
+        return { success: true, data: rows };
+    } catch (error: any) {
+        console.error('[getRepairProgress] DB Error:', error.message);
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};
+
+// บันทึกการอัพเดทความคืบหน้างานซ่อม (ระหว่าง status 2) — append-only, สถานะคงที่ 2
+// บันทึก it_repair_progress (note) + it_repair_progress_steps (ขั้นงานที่ติ๊ก) + track + แจ้ง MOPH 2 ทาง
+export const recordRepairProgress = async ({ params, body, user, set }: any) => {
+    const actionBy: number | null = user?.id ?? null;
+    if (!actionBy) {
+        set.status = 401;
+        return { success: false, message: 'Unauthorized' };
+    }
+
+    // _debug ชั่วคราว: ดู body ดิบที่ frontend ส่งมาจริง — ลบออกเมื่อแก้เสร็จ
+    console.log('[recordRepairProgress] raw body:', JSON.stringify(body));
+
+    const note: string | null = ((body as any)?.note ?? '').trim() || null;
+    const rawStepIds = (body as any)?.work_step_ids;
+    const stepIds: number[] = Array.isArray(rawStepIds)
+        ? rawStepIds.map(Number).filter((n: number) => !isNaN(n) && n > 0)
+        : [];
+
+    // ต้องมีอย่างน้อยหมายเหตุ หรือ ขั้นงานที่ติ๊ก อย่างใดอย่างหนึ่ง
+    if (!note && stepIds.length === 0) {
+        set.status = 400;
+        return { success: false, message: 'กรุณาระบุหมายเหตุ หรือติ๊กขั้นงานที่ทำเสร็จอย่างน้อย 1 รายการ' };
+    }
+
+    // สถานะคงที่ระหว่างดำเนินการ
+    const STATUS_ID = 2;
+
+    try {
+        const result = await core_kon.begin(async (sql) => {
+            const [req] = await sql`
+                SELECT it_repair_request_id FROM it_repair_requests
+                WHERE it_repair_request_id = ${params.id}
+            `;
+            if (!req) {
+                return { notFound: true };
+            }
+
+            // เก็บเฉพาะ step id ที่มีจริงและ active + ดึงชื่อไว้ใช้แจ้งเตือน
+            const stepRows = stepIds.length > 0
+                ? await sql`
+                    SELECT id, name_th FROM it_repair_work_steps
+                    WHERE id = ANY(${stepIds}) AND is_active = 'Y'
+                    ORDER BY sort_order ASC
+                `
+                : [];
+
+            // วินิจฉัย: ติ๊กมาแต่ไม่ตรง master (seed ยังไม่ได้รัน / id ไม่ตรง) → ขั้นงานจะไม่ขึ้นใน alert
+            if (stepIds.length > 0 && stepRows.length === 0) {
+                console.warn(`[recordRepairProgress] work_step_ids=[${stepIds.join(',')}] ไม่ตรงกับ it_repair_work_steps (master ว่างหรือ id ไม่ตรง/ไม่ active) — ขั้นงานจะไม่แสดงใน alert`);
+            }
+
+            const [progress] = await sql`
+                INSERT INTO it_repair_progress (
+                    it_repair_request_id, note, created_by
+                ) VALUES (
+                    ${params.id}, ${note}, ${actionBy}
+                )
+                RETURNING id, it_repair_request_id, note, created_at
+            `;
+
+            for (const step of stepRows) {
+                await sql`
+                    INSERT INTO it_repair_progress_steps (it_repair_progress_id, work_step_id)
+                    VALUES (${progress.id}, ${step.id})
+                `;
+            }
+
+            const stepNames = stepRows.map((s: any) => s.name_th);
+            const trackNote = `อัพเดทความคืบหน้า${stepNames.length > 0 ? ` (เสร็จแล้ว: ${stepNames.join(', ')})` : ''}${note ? ` — ${note}` : ''}`;
+
+            await sql`
+                INSERT INTO it_repair_requests_track (
+                    it_repair_request_id, process_status_id, assigned_to, note, created_by
+                ) VALUES (
+                    ${params.id}, ${STATUS_ID}, ${actionBy}, ${trackNote}, ${actionBy}
+                )
+            `;
+
+            return { progress, stepNames };
+        });
+
+        if (result.notFound) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบคำร้องซ่อม' };
+        }
+
+        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง
+        const [reqInfo] = await core_kon`
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
+                   et.name AS equipment_type_name,
+                   CONCAT(tu.pname, tu.fname, ' ', tu.lname) AS technician_name
+            FROM it_repair_requests r
+            LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
+            LEFT JOIN users ru ON ru.id = r.created_by
+            LEFT JOIN users tu ON tu.id = ${actionBy}
+            WHERE r.it_repair_request_id = ${params.id}
+        `;
+
+        if (reqInfo) {
+            const requestedAt = reqInfo.created_at ? new Date(reqInfo.created_at).toISOString() : undefined;
+            const completedStepNames: string[] = result.stepNames ?? [];
+
+            // ทางที่ 1: แจ้งเข้าหน่วยงาน IT ผ่าน MOPH Notify
+            mophRepairProgress({
+                requestId: params.id,
+                equipmentNumber: reqInfo.equipment_number,
+                equipmentName: reqInfo.equipment_name,
+                location: reqInfo.location ?? undefined,
+                problemDescription: reqInfo.problem_description ?? undefined,
+                equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
+                completedStepNames,
+                note: note ?? undefined,
+                technicianName: reqInfo.technician_name ?? undefined,
+                requestedAt,
+            }).catch((err: any) => console.error('[MOPH Notify] Repair Progress failed:', err.message));
+
+            // ทางที่ 2: แจ้งกลับผู้ส่งซ่อม (created_by) ผ่าน MOPH Alert โดยใช้ id_card
+            if (reqInfo.id_card) {
+                sendRepairProgressAlert(reqInfo.id_card, {
+                    requestId: params.id,
+                    equipmentName: reqInfo.equipment_name ?? undefined,
+                    equipmentNumber: reqInfo.equipment_number ?? undefined,
+                    location: reqInfo.location ?? undefined,
+                    problemDescription: reqInfo.problem_description ?? undefined,
+                    equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
+                    completedStepNames,
+                    note: note ?? undefined,
+                    technicianName: reqInfo.technician_name ?? undefined,
+                    requestedAt,
+                }).catch((err: any) => console.error('[MOPH Alert] Repair Progress failed:', err.message));
+            }
+        }
+
+        return {
+            success: true,
+            message: 'บันทึกความคืบหน้าเรียบร้อย',
+            data: result.progress,
+            // _debug: ชั่วคราวเพื่อไล่ปัญหาขั้นงานไม่ขึ้นใน alert — ลบออกได้เมื่อแก้เสร็จ
+            _debug: {
+                received_step_ids: stepIds,
+                matched_step_names: result.stepNames ?? [],
+            },
+        };
+    } catch (error: any) {
+        console.error('[recordRepairProgress] DB Error:', error.message);
         set.status = 500;
         return { success: false, message: error.message };
     }

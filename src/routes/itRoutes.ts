@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, rejectAssignment, requestExtension, getRepairExtensions, approveByHeader, approveByMission, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment } from '../controllers/itController';
+import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, rejectAssignment, requestExtension, getRepairExtensions, approveByHeader, approveByMission, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment, getPrDocumentTypes, getRepairPr, recordRepairPr, getRepairPrStatus, getRepairWorkSteps, getRepairProgress, recordRepairProgress } from '../controllers/itController';
 
 export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
     .use(authMiddleware)
@@ -205,6 +205,76 @@ export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
             tags: ['IT'],
             summary: 'หัวหน้ากลุ่มภารกิจอนุมัติคำร้องซ่อม',
             description: 'ปฏิเสธ (2) → process_status_id = 10; อนุมัติ (1) → ใช้ approve_process_id ของ assessment ที่ช่างเลือกเป็นสถานะถัดไป (สั่งซื้ออะไหล่/จ้างภายนอก → 3 ออกใบ PR, แนะนำซื้อทดแทน → 11 อนุมัติซื้อทดแทน) พร้อมเพิ่ม track',
+        },
+    })
+    // ดึงรายการขั้นงานย่อย (เช็กลิสต์ในฟอร์มอัพเดทความคืบหน้า)
+    .get('/repair-work-steps', getRepairWorkSteps, {
+        detail: {
+            tags: ['IT'],
+            summary: 'ดึงรายการขั้นงานย่อยงานซ่อม',
+            description: 'ดึง id, step_code, name_th, sort_order จากตาราง it_repair_work_steps เฉพาะที่ is_active = Y (ใช้ render checkbox ในฟอร์มอัพเดทความคืบหน้า)',
+        },
+    })
+    // ดึงประวัติการอัพเดทความคืบหน้าของคำร้องซ่อม
+    .get('/repair-requests/:id/progress', getRepairProgress, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: {
+            tags: ['IT'],
+            summary: 'ประวัติการอัพเดทความคืบหน้า',
+            description: 'ดึงรายการอัพเดทความคืบหน้าทั้งหมด (ล่าสุดไปเก่าสุด) พร้อม array ขั้นงานที่ติ๊กแต่ละครั้งและชื่อช่างผู้อัพเดท — ชุดของแถวล่าสุด = ความคืบหน้าปัจจุบัน',
+        },
+    })
+    // บันทึกการอัพเดทความคืบหน้างานซ่อม (ระหว่าง status 2, append-only)
+    .post('/repair-requests/:id/progress', recordRepairProgress, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            note: t.Optional(t.String({ maxLength: 500 })),
+            work_step_ids: t.Optional(t.Array(t.Numeric())),
+        }),
+        detail: {
+            tags: ['IT'],
+            summary: 'อัพเดทความคืบหน้างานซ่อม',
+            description: 'บันทึก it_repair_progress (note) + it_repair_progress_steps ตามขั้นงานที่ติ๊ก, คง process_status_id = 2, เพิ่ม track และแจ้งเตือน MOPH 2 ทาง — ต้องมี note หรือ work_step_ids อย่างน้อย 1 อย่าง, บันทึกได้หลายครั้ง (history)',
+        },
+    })
+    // ดึงรายการประเภทเอกสารที่เสนอ ผอ. (เช็กลิสต์ในฟอร์มบันทึกใบ PR)
+    .get('/pr-document-types', getPrDocumentTypes, {
+        detail: {
+            tags: ['IT'],
+            summary: 'ดึงรายการประเภทเอกสารที่เสนอ ผอ.',
+            description: 'ดึง id, doc_code, name_th, sort_order จากตาราง it_pr_document_types เฉพาะที่ is_active = Y (ใช้ render checkbox ในฟอร์มบันทึกใบ PR)',
+        },
+    })
+    // ดึงใบ PR ของคำร้องซ่อม พร้อมเอกสารที่ติ๊ก
+    .get('/repair-requests/:id/pr', getRepairPr, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: {
+            tags: ['IT'],
+            summary: 'ดึงใบ PR ของคำร้องซ่อม',
+            description: 'ดึง it_repair_prs (pr_number, pr_detail, ผู้บันทึก) พร้อม array เอกสารที่ติ๊กจาก it_repair_pr_documents',
+        },
+    })
+    // ติดตามสถานะการออกเลข PR จากระบบ inventory (MySQL)
+    .get('/repair-requests/:id/pr-status', getRepairPrStatus, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: {
+            tags: ['IT'],
+            summary: 'ติดตามสถานะการออกเลข PR จากระบบ inventory',
+            description: 'ดึง pr_number ที่บันทึกไว้ (= request_id ของระบบ inventory) แล้ว query stock_request เพื่อตรวจสอบว่าออกเลขแล้วหรือยัง (stock_approve_date ไม่ว่าง = ออกเลขแล้ว) พร้อมคืน request_no, stock_approve_date, stock_user_approve_id',
+        },
+    })
+    // บันทึกใบ PR + เอกสารเตรียมนำเสนอ ผอ. (จากสถานะ 3) → เลื่อนไป process_status_id = 7
+    .post('/repair-requests/:id/pr', recordRepairPr, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            pr_number: t.String({ minLength: 1 }),
+            pr_detail: t.Optional(t.String()),
+            document_type_ids: t.Optional(t.Array(t.Numeric())),
+        }),
+        detail: {
+            tags: ['IT'],
+            summary: 'บันทึกใบ PR เตรียมนำเสนอ ผอ.',
+            description: 'บันทึก it_repair_prs (1 คำร้อง → 1 ใบ PR) + it_repair_pr_documents ตามเอกสารที่ติ๊ก, เลื่อน process_status_id = 7 (ขั้นตอน PO โดยพัสดุ / เสนอผู้อำนวยการ), เพิ่ม track และแจ้งเตือน MOPH 2 ทาง — บันทึกซ้ำคำร้องเดิมจะได้ 409',
         },
     })
     // เรียกดูไฟล์ภาพตาม it_repair_request_image_id

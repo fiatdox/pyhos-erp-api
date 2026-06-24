@@ -737,6 +737,249 @@ export async function sendMissionApproveAlert(idCard: string, data: MissionAppro
     console.log('[MOPH Alert] Mission Approve Template:', res.status, await res.text());
 }
 
+// IT Repair PR Template (แจ้งกลับผู้ส่งซ่อมเมื่อบันทึกใบ PR + เตรียมเสนอ ผอ.)
+export interface RepairPrAlertData {
+    requestId: number;
+    equipmentName?: string;
+    equipmentNumber?: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    prNumber: string;
+    prDetail?: string;
+    documentNames?: string[];
+    recordedByName?: string;
+    nextStatusName?: string;
+    requestedAt?: string;
+}
+
+function buildRepairPrTemplate(data: RepairPrAlertData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentName, equipmentNumber,
+        location, problemDescription, equipmentTypeName,
+        prNumber, prDetail, documentNames,
+        recordedByName, nextStatusName, requestedAt,
+    } = data;
+
+    const equipmentText = equipmentName
+        ? `${equipmentName}${equipmentNumber ? ` (${equipmentNumber})` : ''}`
+        : '-';
+
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+    const docList = (documentNames ?? []).filter(Boolean);
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box', layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? '#38bdf8', flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'บันทึกเมื่อ', value: `${thaiDate} ${thaiTime} น.` },
+        { label: 'เลขที่ใบ PR', value: prNumber, color: '#f8fafc' },
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: equipmentText },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(recordedByName ? [{ label: 'ผู้บันทึก', value: recordedByName }] : []),
+        ...(nextStatusName ? [{ label: 'ขั้นตอนถัดไป', value: nextStatusName, color: '#22c55e' }] : []),
+    ];
+
+    return {
+        message_title: 'แจ้งผลคำร้องซ่อม: บันทึกใบ PR แล้ว',
+        message_html: `<div><p><strong>คำร้องซ่อม #${requestId}: บันทึกใบ PR แล้ว</strong></p><ul>${requestedThai ? `<li><b>วันที่ส่งซ่อม:</b> ${requestedThai.thaiDate} ${requestedThai.thaiTime} น.</li>` : ''}<li><b>บันทึกเมื่อ:</b> ${thaiDate} ${thaiTime} น.</li><li><b>เลขที่ใบ PR:</b> ${prNumber}</li><li><b>ครุภัณฑ์:</b> ${equipmentText}</li>${nextStatusName ? `<li><b>ขั้นตอนถัดไป:</b> ${nextStatusName}</li>` : ''}</ul>${docList.length > 0 ? `<p><b>เอกสารที่เสนอ ผอ.:</b></p><ul>${docList.map((n) => `<li>${n}</li>`).join('')}</ul>` : ''}${prDetail ? `<p><b>รายละเอียด PR:</b> ${prDetail}</p>` : ''}</div>`,
+        message_text: `คำร้องซ่อม #${requestId} บันทึกใบ PR เลขที่ ${prNumber} แล้ว${nextStatusName ? ` ขั้นตอนถัดไป: ${nextStatusName}` : ''}`,
+        message_type: 'HPT',
+        messages: [
+            {
+                type: 'flex',
+                altText: `คำร้องซ่อม #${requestId} บันทึกใบ PR แล้ว`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: '🧾 PYHOS-EXP', weight: 'bold', size: 'lg', color: '#38bdf8' },
+                            { type: 'text', text: 'IT Repair PR Recorded', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `คำร้องซ่อม #${requestId} บันทึกใบ PR แล้ว`, weight: 'bold', size: 'xl', color: '#38bdf8', wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box', layout: 'vertical', margin: 'lg', spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            ...(docList.length > 0 ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#0a1a2a', paddingAll: '12px', cornerRadius: 'md', spacing: 'sm',
+                                contents: [
+                                    { type: 'text', text: '📋 เอกสารที่เสนอ ผอ.', size: 'sm', weight: 'bold', color: '#38bdf8' },
+                                    ...docList.map((name) => ({
+                                        type: 'text', text: `• ${name}`, size: 'sm', color: '#cbd5e1', wrap: true,
+                                    })),
+                                ],
+                            }] : []),
+                            ...(prDetail ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#1e293b', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'รายละเอียด PR / อะไหล่ที่จัดซื้อ', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: prDetail, size: 'sm', weight: 'bold', color: '#cbd5e1', wrap: true },
+                                ],
+                            }] : []),
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function sendRepairPrAlert(idCard: string, data: RepairPrAlertData): Promise<void> {
+    const payload = { cid: [idCard], ...buildRepairPrTemplate(data) };
+    const res = await fetch(MOPH_ALERTING_URL, {
+        method: 'POST',
+        headers: MOPH_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Alert] Repair PR Template:', res.status, await res.text());
+}
+
+// IT Repair Progress Template (แจ้งกลับผู้ส่งซ่อมเมื่อช่างอัพเดทความคืบหน้า)
+export interface RepairProgressAlertData {
+    requestId: number;
+    equipmentName?: string;
+    equipmentNumber?: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    completedStepNames?: string[];
+    note?: string;
+    technicianName?: string;
+    requestedAt?: string;
+}
+
+function buildRepairProgressTemplate(data: RepairProgressAlertData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentName, equipmentNumber,
+        location, problemDescription, equipmentTypeName,
+        completedStepNames, note, technicianName, requestedAt,
+    } = data;
+
+    const equipmentText = equipmentName
+        ? `${equipmentName}${equipmentNumber ? ` (${equipmentNumber})` : ''}`
+        : '-';
+
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+    const stepList = (completedStepNames ?? []).filter(Boolean);
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box', layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? '#38bdf8', flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'อัพเดทเมื่อ', value: `${thaiDate} ${thaiTime} น.` },
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: equipmentText },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(technicianName ? [{ label: 'ช่างผู้อัพเดท', value: technicianName }] : []),
+    ];
+
+    return {
+        message_title: 'แจ้งความคืบหน้างานซ่อม',
+        message_html: `<div><p><strong>คำร้องซ่อม #${requestId}: อัพเดทความคืบหน้า</strong></p><ul>${requestedThai ? `<li><b>วันที่ส่งซ่อม:</b> ${requestedThai.thaiDate} ${requestedThai.thaiTime} น.</li>` : ''}<li><b>อัพเดทเมื่อ:</b> ${thaiDate} ${thaiTime} น.</li><li><b>ครุภัณฑ์:</b> ${equipmentText}</li>${technicianName ? `<li><b>ช่างผู้อัพเดท:</b> ${technicianName}</li>` : ''}</ul>${stepList.length > 0 ? `<p><b>ขั้นงานที่ทำเสร็จแล้ว:</b></p><ul>${stepList.map((n) => `<li>${n}</li>`).join('')}</ul>` : ''}${note ? `<p><b>หมายเหตุ:</b> ${note}</p>` : ''}</div>`,
+        message_text: `คำร้องซ่อม #${requestId} อัพเดทความคืบหน้าเมื่อ ${thaiDate} ${thaiTime} น.${note ? ` หมายเหตุ: ${note}` : ''}`,
+        message_type: 'HPT',
+        messages: [
+            {
+                type: 'flex',
+                altText: `ความคืบหน้างานซ่อม #${requestId}`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: '🔧 PYHOS-EXP', weight: 'bold', size: 'lg', color: '#38bdf8' },
+                            { type: 'text', text: 'IT Repair Progress Update', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `ความคืบหน้างานซ่อม #${requestId}`, weight: 'bold', size: 'xl', color: '#38bdf8', wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box', layout: 'vertical', margin: 'lg', spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            ...(stepList.length > 0 ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#0a1a2a', paddingAll: '12px', cornerRadius: 'md', spacing: 'sm',
+                                contents: [
+                                    { type: 'text', text: '✅ ขั้นงานที่ทำเสร็จแล้ว', size: 'sm', weight: 'bold', color: '#22c55e' },
+                                    ...stepList.map((name) => ({
+                                        type: 'text', text: `• ${name}`, size: 'sm', color: '#cbd5e1', wrap: true,
+                                    })),
+                                ],
+                            }] : []),
+                            ...(note ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#1e293b', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'หมายเหตุการดำเนินการ', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: note, size: 'sm', weight: 'bold', color: '#cbd5e1', wrap: true },
+                                ],
+                            }] : []),
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function sendRepairProgressAlert(idCard: string, data: RepairProgressAlertData): Promise<void> {
+    const payload = { cid: [idCard], ...buildRepairProgressTemplate(data) };
+    const res = await fetch(MOPH_ALERTING_URL, {
+        method: 'POST',
+        headers: MOPH_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Alert] Repair Progress Template:', res.status, await res.text());
+}
+
 // IT User Credential Issued Template (ส่ง username/password ให้ผู้ใช้ผ่านหมอพร้อม)
 // ข้อควรระวัง: ฟังก์ชันนี้คือ "ช่องทางส่งมอบ credential" เพียงช่องทางเดียว —
 //   username/password ต้องไม่ถูกบันทึกลง DB และต้องไม่ถูก log (จึง log แค่ status code)

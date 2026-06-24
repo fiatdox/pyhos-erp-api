@@ -21,6 +21,16 @@ export const hisPool = mysql.createPool({
     connectionLimit: 30,
 });
 
+export const inventoryPool = mysql.createPool({
+    host: process.env.INVENTORY_HOST,
+    port: Number(process.env.INVENTORY_PORT),
+    user: process.env.INVENTORY_USER,
+    password: process.env.INVENTORY_PASSWORD,
+    database: process.env.INVENTORY_DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 30,
+});
+
 export const core_kon = postgres({
     host: process.env.CORE_KON_HOST,
     port: Number(process.env.CORE_KON_PORT),

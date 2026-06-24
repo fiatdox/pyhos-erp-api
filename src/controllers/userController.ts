@@ -16,22 +16,31 @@ export const getAllUsers = async ({ set }: any) => {
     }
 };
 
-// ดึงข้อมูลผู้ใช้พร้อม join ตารางที่เกี่ยวข้อง
+// ดึงข้อมูลผู้ใช้พร้อม join ทุกตาราง lookup ที่เกี่ยวข้อง (คืนทั้ง id และชื่อที่ resolve แล้ว)
 export const getUserInfo = async ({ params, set }: any) => {
     try {
         const users = await core_kon`
-            SELECT id, id_card, CONCAT(pname, fname, ' ', lname) AS employee_name
-                ,m."name" as mission_name
-                ,m1."name" as major_name
-                ,m2."name" as submajor_name
-                ,up.position_name
-                ,ut.type_name as user_type_name
+            SELECT
+                u.id, u.id_card, u.pname, u.fname, u.lname,
+                CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
+                u.gender, u.birthday, u.hire_date, u.username, u.is_active,
+                u.created_at, u.updated_at,
+                u.hospital_lc_pid, u.attendance_id, u.salary_id,
+                u.mission_id,       m."name"       AS mission_name,
+                u.major_id,         m1."name"      AS major_name,
+                u.submajor_id,      m2."name"      AS submajor_name,
+                u.user_position_id, up.position_name,
+                u.user_type_id,     ut.type_name   AS user_type_name,
+                u.user_level_id,    ul.level_name  AS user_level_name,
+                u.user_status_id,   us."name"      AS user_status_name
             FROM users u
-            left join missions m on u.mission_id = m.mission_id
-            left join majors m1 on u.major_id = m1.major_id
-            left join submajors m2 on u.submajor_id = m2.submajor_id
-            left join user_positions up on up.user_position_id = u.user_position_id
-            left join user_types ut on ut.user_type_id = u.user_type_id
+            LEFT JOIN missions       m  ON m.mission_id        = u.mission_id
+            LEFT JOIN majors         m1 ON m1.major_id         = u.major_id
+            LEFT JOIN submajors      m2 ON m2.submajor_id      = u.submajor_id
+            LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
+            LEFT JOIN user_types     ut ON ut.user_type_id     = u.user_type_id
+            LEFT JOIN user_levels    ul ON ul.user_level_id    = u.user_level_id
+            LEFT JOIN user_statuses  us ON us.user_status_id   = u.user_status_id
             WHERE u.id = ${params.id}
         `;
         if (users.length === 0) {
