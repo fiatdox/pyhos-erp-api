@@ -380,8 +380,16 @@ export const getRepairRequests = async ({ query, set }: any) => {
                     CONCAT(au.pname, au.fname, ' ', au.lname) AS assigned_to_name,
                     r.header_approve,
                     r.header_comment,
+                    r.header_approve_date,
+                    CONCAT(ithu.pname, ithu.fname, ' ', ithu.lname) AS it_head_name,
+                    ithp.position_name AS it_head_position,
+                    ithl.level_name AS it_head_level,
                     r.mission_approve,
                     r.mission_comment,
+                    r.mission_approve_date,
+                    CONCAT(mhu.pname, mhu.fname, ' ', mhu.lname) AS mission_head_name,
+                    mhp.position_name AS mission_head_position,
+                    mhl.level_name AS mission_head_level,
                     r.repair_assessment_id,
                     ia.assessment_name,
                     r.assessment_detail,
@@ -400,6 +408,15 @@ export const getRepairRequests = async ({ query, set }: any) => {
                 LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
                 LEFT JOIN majors m1 ON m1.major_id = u.major_id
                 LEFT JOIN submajors m2 ON m2.submajor_id = u.submajor_id
+                -- หัวหน้าตามโครงสร้างองค์กร: derive จาก major ของช่างที่รับงาน (assigned_to)
+                LEFT JOIN majors am ON am.major_id = au.major_id
+                LEFT JOIN users ithu ON ithu.id = COALESCE(am.supervisor_id, am.acting_supervisor_id)
+                LEFT JOIN user_positions ithp ON ithp.user_position_id = ithu.user_position_id
+                LEFT JOIN user_levels ithl ON ithl.user_level_id = ithu.user_level_id
+                LEFT JOIN missions amsn ON amsn.mission_id = am.mission_id
+                LEFT JOIN users mhu ON mhu.id = COALESCE(amsn.supervisor_id, amsn.acting_supervisor_id)
+                LEFT JOIN user_positions mhp ON mhp.user_position_id = mhu.user_position_id
+                LEFT JOIN user_levels mhl ON mhl.user_level_id = mhu.user_level_id
                 WHERE r.process_status_id = ANY(${statusIds})
                   AND DATE(r.created_at) BETWEEN ${from} AND ${to}
                 ORDER BY r.created_at DESC
@@ -420,8 +437,16 @@ export const getRepairRequests = async ({ query, set }: any) => {
                     CONCAT(au.pname, au.fname, ' ', au.lname) AS assigned_to_name,
                     r.header_approve,
                     r.header_comment,
+                    r.header_approve_date,
+                    CONCAT(ithu.pname, ithu.fname, ' ', ithu.lname) AS it_head_name,
+                    ithp.position_name AS it_head_position,
+                    ithl.level_name AS it_head_level,
                     r.mission_approve,
                     r.mission_comment,
+                    r.mission_approve_date,
+                    CONCAT(mhu.pname, mhu.fname, ' ', mhu.lname) AS mission_head_name,
+                    mhp.position_name AS mission_head_position,
+                    mhl.level_name AS mission_head_level,
                     r.repair_assessment_id,
                     ia.assessment_name,
                     r.assessment_detail,
@@ -440,6 +465,15 @@ export const getRepairRequests = async ({ query, set }: any) => {
                 LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
                 LEFT JOIN majors m1 ON m1.major_id = u.major_id
                 LEFT JOIN submajors m2 ON m2.submajor_id = u.submajor_id
+                -- หัวหน้าตามโครงสร้างองค์กร: derive จาก major ของช่างที่รับงาน (assigned_to)
+                LEFT JOIN majors am ON am.major_id = au.major_id
+                LEFT JOIN users ithu ON ithu.id = COALESCE(am.supervisor_id, am.acting_supervisor_id)
+                LEFT JOIN user_positions ithp ON ithp.user_position_id = ithu.user_position_id
+                LEFT JOIN user_levels ithl ON ithl.user_level_id = ithu.user_level_id
+                LEFT JOIN missions amsn ON amsn.mission_id = am.mission_id
+                LEFT JOIN users mhu ON mhu.id = COALESCE(amsn.supervisor_id, amsn.acting_supervisor_id)
+                LEFT JOIN user_positions mhp ON mhp.user_position_id = mhu.user_position_id
+                LEFT JOIN user_levels mhl ON mhl.user_level_id = mhu.user_level_id
                 WHERE DATE(r.created_at) BETWEEN ${from} AND ${to}
                 ORDER BY r.created_at DESC
             `;
@@ -879,9 +913,10 @@ export const approveByHeader = async ({ params, body, user, set }: any) => {
                 UPDATE it_repair_requests
                 SET header_approve = ${headerApprove},
                     header_comment = ${headerComment},
+                    header_approve_date = NOW(),
                     process_status_id = ${NEXT_STATUS_ID}
                 WHERE it_repair_request_id = ${params.id}
-                RETURNING it_repair_request_id, header_approve, header_comment, process_status_id
+                RETURNING it_repair_request_id, header_approve, header_comment, header_approve_date, process_status_id
             `;
 
             if (updated.length === 0) {
@@ -1021,9 +1056,12 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
 
             const updated = await sql`
                 UPDATE it_repair_requests
-                SET process_status_id = ${nextStatus}
+                SET process_status_id = ${nextStatus},
+                    mission_approve = ${missionApprove},
+                    mission_comment = ${missionComment},
+                    mission_approve_date = NOW()
                 WHERE it_repair_request_id = ${params.id}
-                RETURNING it_repair_request_id, process_status_id, repair_assessment_id
+                RETURNING it_repair_request_id, process_status_id, repair_assessment_id, mission_approve, mission_comment, mission_approve_date
             `;
 
             const note = missionApprove === 1

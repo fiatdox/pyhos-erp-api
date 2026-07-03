@@ -1,5 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
+import { requireRoles } from '../middlewares/roleGuard';
 import {
     getAllPermissions,
     getPermissionById,
@@ -54,6 +55,8 @@ export const permissionRoutes = new Elysia({ prefix: '/api/v1/permissions' })
 
 export const roleRoutes = new Elysia({ prefix: '/api/v1/roles' })
     .use(authMiddleware)
+    // จำกัดสิทธิ์: เฉพาะ ADMIN และ CHIEF_GROUP_IT เท่านั้นที่มองเห็น/เข้าถึงได้
+    .use(requireRoles('ADMIN', 'CHIEF_GROUP_IT'))
     .get('/', getAllRoles, {
         detail: { tags: ['Users - Roles'] }
     })
@@ -91,6 +94,8 @@ export const roleRoutes = new Elysia({ prefix: '/api/v1/roles' })
 
 export const userRoleRoutes = new Elysia({ prefix: '/api/v1/users' })
     .use(authMiddleware)
+    // จำกัดสิทธิ์: เฉพาะ ADMIN และ CHIEF_GROUP_IT เท่านั้นที่มองเห็น/เข้าถึงได้
+    .use(requireRoles('ADMIN', 'CHIEF_GROUP_IT'))
     // User-Roles mapping (user_m_users_roles)
     .get('/:id/roles', getRolesByUserId, {
         params: t.Object({ id: t.Numeric() }),

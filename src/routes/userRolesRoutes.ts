@@ -1,5 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
+import { requireRoles } from '../middlewares/roleGuard';
 import {
     getAllUserRoles,
     getUserRolesByRoleId,
@@ -22,6 +23,8 @@ const createUserRoleSchema = t.Union([
 
 export const userRolesRoutes = new Elysia({ prefix: '/api/v1/user-roles' })
     .use(authMiddleware)
+    // จำกัดสิทธิ์: เฉพาะ ADMIN และ CHIEF_GROUP_IT เท่านั้นที่มองเห็น/เข้าถึงได้
+    .use(requireRoles('ADMIN', 'CHIEF_GROUP_IT'))
     // ดึงรายการ user-role ทั้งหมด
     .get('/', getAllUserRoles, {
         detail: { tags: ['Users - Roles'], summary: 'ดึงรายการ user-role ทั้งหมด', description: 'ดึงข้อมูล user_id, role_id, assigned_at จากตาราง user_m_users_roles' }
