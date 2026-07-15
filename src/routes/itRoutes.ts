@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, rejectAssignment, requestExtension, getRepairExtensions, approveByHeader, approveByMission, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment, getPrDocumentTypes, getRepairPr, recordRepairPr, getRepairPrStatus, getRepairWorkSteps, getRepairProgress, recordRepairProgress } from '../controllers/itController';
+import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, rejectAssignment, requestExtension, getRepairExtensions, approveByHeader, approveByMission, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment, getPrDocumentTypes, getRepairPr, recordRepairPr, getRepairPrStatus, getRepairWorkSteps, getRepairProgress, recordRepairProgress, completeRepair } from '../controllers/itController';
 
 export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
     .use(authMiddleware)
@@ -230,11 +230,28 @@ export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
         body: t.Object({
             note: t.Optional(t.String({ maxLength: 500 })),
             work_step_ids: t.Optional(t.Array(t.Numeric())),
+            // สถานะปลายทาง (เลือกจาก select ในโมดัลอัพเดทงาน) — ย้ายงานไปสถานะถัดไป เช่น 8 "รอรับของ / รับอะไหล่"
+            // ต้องประกาศไว้ในสคีมา ไม่งั้น Elysia จะ strip ทิ้งก่อนถึง controller ทำให้เปลี่ยนสถานะไม่ได้
+            process_status_id: t.Optional(t.Numeric()),
         }),
         detail: {
             tags: ['IT'],
             summary: 'อัพเดทความคืบหน้างานซ่อม',
-            description: 'บันทึก it_repair_progress (note) + it_repair_progress_steps ตามขั้นงานที่ติ๊ก, คง process_status_id = 2, เพิ่ม track และแจ้งเตือน MOPH 2 ทาง — ต้องมี note หรือ work_step_ids อย่างน้อย 1 อย่าง, บันทึกได้หลายครั้ง (history)',
+            description: 'บันทึก it_repair_progress (note) + it_repair_progress_steps ตามขั้นงานที่ติ๊ก, เพิ่ม track และแจ้งเตือน MOPH 2 ทาง — ต้องมี note, work_step_ids หรือ process_status_id อย่างน้อย 1 อย่าง; ถ้าส่ง process_status_id จะย้ายงานไปสถานะนั้น (เช่น 8 รอรับของ) ไม่งั้นคงสถานะเดิม, บันทึกได้หลายครั้ง (history)',
+        },
+    })
+    // ปิดงานซ่อม (รับอะไหล่ / เสร็จสิ้น) จากสถานะ 8 → process_status_id = 5 (ซ่อมเสร็จแล้ว)
+    .post('/repair-requests/:id/complete', completeRepair, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            // เวลาที่ซ่อมเสร็จจริง (ISO string) — ไม่ส่ง = ใช้เวลาปัจจุบัน
+            completed_at: t.Optional(t.String()),
+            note: t.Optional(t.String({ maxLength: 500 })),
+        }),
+        detail: {
+            tags: ['IT'],
+            summary: 'ปิดงานซ่อม (รับอะไหล่ / เสร็จสิ้น)',
+            description: 'บันทึก completed_at (เวลาซ่อมเสร็จจริง) + completion_note, เลื่อน process_status_id = 5 (ซ่อมเสร็จแล้ว) และเพิ่ม track',
         },
     })
     // ดึงรายการประเภทเอกสารที่เสนอ ผอ. (เช็กลิสต์ในฟอร์มบันทึกใบ PR)

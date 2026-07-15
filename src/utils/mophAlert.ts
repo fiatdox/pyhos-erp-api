@@ -980,6 +980,115 @@ export async function sendRepairProgressAlert(idCard: string, data: RepairProgre
     console.log('[MOPH Alert] Repair Progress Template:', res.status, await res.text());
 }
 
+// IT Repair Completed Template (แจ้งกลับผู้ส่งซ่อมเมื่อปิดงาน — ซ่อมเสร็จ/รับอะไหล่แล้ว)
+export interface RepairCompletedAlertData {
+    requestId: number;
+    equipmentName?: string;
+    equipmentNumber?: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    technicianName?: string;
+    completedAt?: string;   // ISO เวลาที่ซ่อมเสร็จจริง
+    note?: string;
+    requestedAt?: string;
+}
+
+function buildRepairCompletedTemplate(data: RepairCompletedAlertData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentName, equipmentNumber,
+        location, problemDescription, equipmentTypeName,
+        technicianName, completedAt, note, requestedAt,
+    } = data;
+
+    const equipmentText = equipmentName
+        ? `${equipmentName}${equipmentNumber ? ` (${equipmentNumber})` : ''}`
+        : '-';
+
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+    const completedThai = completedAt ? formatThaiDate(new Date(completedAt)) : { thaiDate, thaiTime };
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box', layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? '#22c55e', flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'ซ่อมเสร็จเมื่อ', value: `${completedThai.thaiDate} ${completedThai.thaiTime} น.`, color: '#22c55e' },
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: equipmentText },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(technicianName ? [{ label: 'ช่างผู้ซ่อม', value: technicianName }] : []),
+    ];
+
+    return {
+        message_title: 'แจ้งปิดงานซ่อม — ซ่อมเสร็จแล้ว',
+        message_html: `<div><p><strong>คำร้องซ่อม #${requestId}: ซ่อมเสร็จแล้ว</strong></p><ul>${requestedThai ? `<li><b>วันที่ส่งซ่อม:</b> ${requestedThai.thaiDate} ${requestedThai.thaiTime} น.</li>` : ''}<li><b>ซ่อมเสร็จเมื่อ:</b> ${completedThai.thaiDate} ${completedThai.thaiTime} น.</li><li><b>ครุภัณฑ์:</b> ${equipmentText}</li>${technicianName ? `<li><b>ช่างผู้ซ่อม:</b> ${technicianName}</li>` : ''}</ul>${note ? `<p><b>หมายเหตุ:</b> ${note}</p>` : ''}</div>`,
+        message_text: `คำร้องซ่อม #${requestId} ซ่อมเสร็จแล้วเมื่อ ${completedThai.thaiDate} ${completedThai.thaiTime} น.${note ? ` หมายเหตุ: ${note}` : ''}`,
+        message_type: 'HPT',
+        messages: [
+            {
+                type: 'flex',
+                altText: `ปิดงานซ่อม #${requestId} — ซ่อมเสร็จแล้ว`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: '✅ PYHOS-EXP', weight: 'bold', size: 'lg', color: '#22c55e' },
+                            { type: 'text', text: 'IT Repair Completed', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `ซ่อมเสร็จแล้ว #${requestId}`, weight: 'bold', size: 'xl', color: '#22c55e', wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box', layout: 'vertical', margin: 'lg', spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            ...(note ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#1e293b', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'หมายเหตุปิดงาน', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: note, size: 'sm', weight: 'bold', color: '#cbd5e1', wrap: true },
+                                ],
+                            }] : []),
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function sendRepairCompletedAlert(idCard: string, data: RepairCompletedAlertData): Promise<void> {
+    const payload = { cid: [idCard], ...buildRepairCompletedTemplate(data) };
+    const res = await fetch(MOPH_ALERTING_URL, {
+        method: 'POST',
+        headers: MOPH_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Alert] Repair Completed Template:', res.status, await res.text());
+}
+
 // IT User Credential Issued Template (ส่ง username/password ให้ผู้ใช้ผ่านหมอพร้อม)
 // ข้อควรระวัง: ฟังก์ชันนี้คือ "ช่องทางส่งมอบ credential" เพียงช่องทางเดียว —
 //   username/password ต้องไม่ถูกบันทึกลง DB และต้องไม่ถูก log (จึง log แค่ status code)

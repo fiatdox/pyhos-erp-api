@@ -1251,3 +1251,109 @@ export async function mophRepairProgress(data: RepairProgressData): Promise<void
     });
     console.log('[MOPH Notify] Repair Progress Template:', res.status, await res.text());
 }
+
+// IT Repair Completed Template (แจ้งกลุ่มเมื่อปิดงานซ่อม — รับอะไหล่/เสร็จสิ้น)
+export interface RepairCompletedData {
+    requestId: number;
+    equipmentNumber: string;
+    equipmentName: string;
+    location?: string;
+    problemDescription?: string;
+    equipmentTypeName?: string;
+    technicianName?: string;
+    completedAt?: string;   // ISO เวลาที่ซ่อมเสร็จจริง
+    note?: string;
+    requestedAt?: string;
+}
+
+function buildRepairCompletedTemplate(data: RepairCompletedData): object {
+    const { thaiDate, thaiTime } = formatThaiDate(new Date());
+    const {
+        requestId, equipmentNumber, equipmentName,
+        location, problemDescription, equipmentTypeName,
+        technicianName, completedAt, note, requestedAt,
+    } = data;
+
+    const requestedThai = requestedAt ? formatThaiDate(new Date(requestedAt)) : null;
+    const completedThai = completedAt ? formatThaiDate(new Date(completedAt)) : { thaiDate, thaiTime };
+
+    const toRow = (row: { label: string; value: string; color?: string }) => ({
+        type: 'box',
+        layout: 'baseline',
+        contents: [
+            { type: 'text', text: row.label, size: 'sm', color: '#6b7280', flex: 3 },
+            { type: 'text', text: row.value, size: 'sm', weight: 'bold', color: row.color ?? '#22c55e', flex: 5, wrap: true },
+        ],
+    });
+
+    const rows = [
+        { label: 'เลขคำร้อง', value: `#${requestId}` },
+        ...(requestedThai ? [{ label: 'วันที่ส่งซ่อม', value: `${requestedThai.thaiDate} ${requestedThai.thaiTime} น.` }] : []),
+        { label: 'ซ่อมเสร็จเมื่อ', value: `${completedThai.thaiDate} ${completedThai.thaiTime} น.`, color: '#22c55e' },
+        ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
+        { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
+        ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
+        ...(technicianName ? [{ label: 'ช่างผู้ซ่อม', value: technicianName }] : []),
+    ];
+
+    return {
+        messages: [
+            {
+                type: 'flex',
+                altText: `ปิดงานซ่อม #${requestId} — ซ่อมเสร็จแล้ว`,
+                contents: {
+                    type: 'bubble',
+                    size: 'mega',
+                    header: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0d1b2a',
+                        contents: [
+                            { type: 'text', text: '✅ PYHOS-EXP', weight: 'bold', size: 'lg', color: '#22c55e' },
+                            { type: 'text', text: 'IT Repair Completed', size: 'xs', color: '#6b7280', margin: 'xs' },
+                        ],
+                    },
+                    body: {
+                        type: 'box',
+                        layout: 'vertical',
+                        paddingAll: '20px',
+                        backgroundColor: '#0f172a',
+                        contents: [
+                            { type: 'text', text: `ปิดงานซ่อม #${requestId} — ซ่อมเสร็จแล้ว`, weight: 'bold', size: 'xl', color: '#f8fafc', wrap: true },
+                            { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
+                            { type: 'separator', margin: 'lg', color: '#1e293b' },
+                            {
+                                type: 'box',
+                                layout: 'vertical',
+                                margin: 'lg',
+                                spacing: 'sm',
+                                contents: rows.map(toRow),
+                            },
+                            ...(note ? [{
+                                type: 'box', layout: 'vertical', margin: 'lg',
+                                backgroundColor: '#1e293b', paddingAll: '12px', cornerRadius: 'md',
+                                contents: [
+                                    { type: 'text', text: 'หมายเหตุปิดงาน', size: 'xs', color: '#6b7280' },
+                                    { type: 'text', text: note, size: 'sm', weight: 'bold', color: '#cbd5e1', wrap: true },
+                                ],
+                            }] : []),
+                        ],
+                    },
+                },
+            },
+        ],
+    };
+}
+
+export async function mophRepairCompleted(data: RepairCompletedData): Promise<void> {
+    const payload = buildRepairCompletedTemplate(data);
+    const url = `${process.env.MOPH_NOTIFY_BASE_URL}/api/notify/send`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: IT_MATENANCE_HEADERS,
+        body: JSON.stringify(payload),
+    });
+    console.log('[MOPH Notify] Repair Completed Template:', res.status, await res.text());
+}
