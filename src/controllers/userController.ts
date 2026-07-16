@@ -5,9 +5,17 @@ import { sendChangePasswordAlert } from '../utils/mophAlert';
 export const getAllUsers = async ({ set }: any) => {
     try {
         const users = await core_kon`
-            SELECT id, pname, fname, lname, id_card, gender, birthday, hire_date, user_type_id, user_position_id, user_level_id, user_status_id, mission_id, major_id, submajor_id, attendance_id, salary_id, username, is_active, created_at, updated_at, hospital_lc_pid 
-            FROM users
-            ORDER BY id DESC
+            SELECT
+                u.id, u.pname, u.fname, u.lname, u.id_card, u.gender, u.birthday, u.hire_date,
+                u.user_type_id, u.user_position_id, u.user_level_id, u.user_status_id,
+                u.mission_id, u.major_id, u.submajor_id, u.attendance_id, u.salary_id,
+                u.username, u.is_active, u.created_at, u.updated_at, u.hospital_lc_pid,
+                up.position_name,
+                ut.type_name AS user_type_name
+            FROM users u
+            LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
+            LEFT JOIN user_types     ut ON ut.user_type_id     = u.user_type_id
+            ORDER BY u.id DESC
         `;
         return { success: true, data: users };
     } catch (error: any) {

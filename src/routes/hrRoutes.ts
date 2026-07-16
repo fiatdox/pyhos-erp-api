@@ -1,9 +1,39 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
+import { requireRoles } from '../middlewares/roleGuard';
 import { getLeaveTypes, getLeaveEntitlements, getLeaveEntitlementByUserTypeId, getMissionSupervisorByUserId, getMajorSupervisorByUserId, getSubMajorSupervisorByUserId, updateMissionSupervisor, updateMissionActingSupervisor, updateMajorSupervisor, updateMajorActingSupervisor, updateSubMajorSupervisor, updateSubMajorActingSupervisor } from '../controllers/hrController';
+import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitReasons, getExitMonthly, getAgeGroups, getGenders, getMissionGroups } from '../controllers/hrDashboardController';
 
 export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     .use(authMiddleware)
+    // ── HR Dashboard (แยกตามชุดข้อมูล) ───────────────────────────────────────
+    .get('/dashboard/summary', getHrSummary, {
+        detail: { tags: ['HR'], summary: 'HR Dashboard: การ์ด KPI ภาพรวม', description: 'บุคลากรทั้งหมด / ปฏิบัติงาน / ออกจากงานปีนี้ / อัตราคงอยู่' }
+    })
+    .get('/dashboard/staff-types', getStaffTypes, {
+        detail: { tags: ['HR'], summary: 'HR Dashboard: จำนวนบุคลากรตามประเภทเจ้าหน้าที่' }
+    })
+    .get('/dashboard/positions', getPositions, {
+        detail: { tags: ['HR'], summary: 'HR Dashboard: จำนวนบุคลากรตามตำแหน่ง (top 12 + อื่นๆ)' }
+    })
+    .get('/dashboard/position-bubbles', getPositionBubbles, {
+        detail: { tags: ['HR'], summary: 'HR Dashboard: Bubble chart ตามตำแหน่ง (จำนวน × อายุเฉลี่ย × สัดส่วนหญิง)' }
+    })
+    .get('/dashboard/exit-reasons', getExitReasons, {
+        detail: { tags: ['HR'], summary: 'HR Dashboard: สาเหตุการออกจากงาน (ปีปัจจุบัน)' }
+    })
+    .get('/dashboard/exit-monthly', getExitMonthly, {
+        detail: { tags: ['HR'], summary: 'HR Dashboard: การออกจากงานรายเดือน (ปีปัจจุบัน)' }
+    })
+    .get('/dashboard/age-groups', getAgeGroups, {
+        detail: { tags: ['HR'], summary: 'HR Dashboard: ช่วงอายุบุคลากร' }
+    })
+    .get('/dashboard/genders', getGenders, {
+        detail: { tags: ['HR'], summary: 'HR Dashboard: สัดส่วนเพศ' }
+    })
+    .get('/dashboard/mission-groups', getMissionGroups, {
+        detail: { tags: ['HR'], summary: 'HR Dashboard: จำนวนบุคลากรตามกลุ่มภารกิจ' }
+    })
     // ดึงรายการประเภทการลาทั้งหมด
     .get('/leave-types', getLeaveTypes, {
         detail: { tags: ['HR'], summary: 'ดึงรายการประเภทการลาทั้งหมด', description: 'ดึงข้อมูล id, code, name_th, gender_restriction, requires_document_after_days จากตาราง hr_leave_types' }
@@ -32,6 +62,9 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['HR'], summary: 'ดึงหัวหน้าหน่วยงานของพนักงาน', description: 'ดึงชื่อหน่วยงานและหัวหน้าหน่วยงานของพนักงานตาม user id' }
     })
+    // ── แต่งตั้ง/ถอดถอนหัวหน้า — จำกัดเฉพาะ role ADMIN และ HR เท่านั้น ──────────
+    // หมายเหตุ: requireRoles มีผลกับ route ที่ประกาศ "หลัง" บรรทัดนี้เท่านั้น (GET ด้านบนไม่โดน)
+    .use(requireRoles('ADMIN', 'HR'))
     // อัปเดตหัวหน้าภารกิจ
     .patch('/missions/:id/supervisor', updateMissionSupervisor, {
         params: t.Object({ id: t.Numeric() }),
