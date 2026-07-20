@@ -1,8 +1,9 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { requireRoles } from '../middlewares/roleGuard';
-import { getLeaveTypes, getLeaveEntitlements, getLeaveEntitlementByUserTypeId, getMissionSupervisorByUserId, getMajorSupervisorByUserId, getSubMajorSupervisorByUserId, updateMissionSupervisor, updateMissionActingSupervisor, updateMajorSupervisor, updateMajorActingSupervisor, updateSubMajorSupervisor, updateSubMajorActingSupervisor } from '../controllers/hrController';
+import { getLeaveTypes, getLeaveEntitlements, getLeaveEntitlementByUserTypeId, getMissionSupervisorByUserId, getMajorSupervisorByUserId, getSubMajorSupervisorByUserId, updateMissionSupervisor, updateMissionActingSupervisor, updateMajorSupervisor, updateMajorActingSupervisor, updateSubMajorSupervisor, updateSubMajorActingSupervisor, getDirector, updateDirector, updateActingDirector, getMissionHeadCheck, getLeaveTypesFull, updateLeaveType, updateLeaveEntitlement, createLeaveEntitlement, deleteLeaveEntitlement } from '../controllers/hrController';
 import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitReasons, getExitMonthly, getAgeGroups, getGenders, getMissionGroups } from '../controllers/hrDashboardController';
+import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances } from '../controllers/hrLeaveBalanceController';
 
 export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     .use(authMiddleware)
@@ -62,9 +63,119 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['HR'], summary: 'ดึงหัวหน้าหน่วยงานของพนักงาน', description: 'ดึงชื่อหน่วยงานและหัวหน้าหน่วยงานของพนักงานตาม user id' }
     })
-    // ── แต่งตั้ง/ถอดถอนหัวหน้า — จำกัดเฉพาะ role ADMIN และ HR เท่านั้น ──────────
+    // เช็คว่า user เป็นหัวหน้า/รักษาการกลุ่มภารกิจหรือไม่ (ใช้ตัดสินสายอนุมัติการลา)
+    .get('/mission-head-check/:id', getMissionHeadCheck, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['HR'], summary: 'เช็คว่า user เป็นหัวหน้า/รักษาการกลุ่มภารกิจ', description: 'true ถ้า user เป็น supervisor_id หรือ acting_supervisor_id ของ missions ใด — การลาต้องเสนอ ผอ. โดยตรง' }
+    })
+    // ดึงค่า ผอ. / รักษาการ ผอ. ปัจจุบัน
+    .get('/director', getDirector, {
+        detail: { tags: ['HR'], summary: 'ดึง ผอ. และรักษาการ ผอ. ปัจจุบัน', description: 'อ่านค่า director_id, acting_director_id จากตาราง hr_settings' }
+    })
+    // ── ตั้งค่ากำหนดสิทธิ์การลา / แต่งตั้งหัวหน้า — จำกัดเฉพาะ role ADMIN และ HR เท่านั้น ──
     // หมายเหตุ: requireRoles มีผลกับ route ที่ประกาศ "หลัง" บรรทัดนี้เท่านั้น (GET ด้านบนไม่โดน)
     .use(requireRoles('ADMIN', 'HR'))
+    // ── วันลาสะสม (ยกยอดปีงบประมาณ / ย้ายเข้าใส่ยอดยกมา) ──────────────────────
+    .get('/leave-balances/meta', getLeaveBalanceMeta, {
+        detail: { tags: ['HR'], summary: 'ปีงบประมาณปัจจุบัน + ปีที่มีข้อมูลวันลาสะสม' }
+    })
+    .get('/leave-balances', getLeaveBalances, {
+        query: t.Object({
+            fiscal_year: t.Optional(t.String()),
+            leave_type_id: t.Numeric(),
+            mission_id: t.Optional(t.String()),
+            major_id: t.Optional(t.String()),
+            submajor_id: t.Optional(t.String()),
+            search: t.Optional(t.String()),
+        }),
+        detail: { tags: ['HR'], summary: 'รายการวันลาสะสม', description: 'กรองตามกลุ่มภารกิจ/กลุ่มงาน/หน่วยงาน/ชื่อ — ต้องระบุ leave_type_id' }
+    })
+    .post('/leave-balances', createLeaveBalance, {
+        body: t.Object({
+            user_id: t.Numeric(),
+            leave_type_id: t.Numeric(),
+            fiscal_year: t.Numeric(),
+            carried_in: t.Optional(t.Numeric()),
+            used: t.Optional(t.Numeric()),
+            note: t.Optional(t.Nullable(t.String())),
+        }),
+        detail: { tags: ['HR'], summary: 'เพิ่มยอดวันลาสะสม (เช่น ข้าราชการย้ายมา)', description: 'entitled ถูก snapshot จาก hr_leave_entitlements อัตโนมัติตาม user_type + อายุงาน — 409 ถ้ามีข้อมูลปีงบนี้อยู่แล้ว' }
+    })
+    .patch('/leave-balances/:id', updateLeaveBalance, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Partial(t.Object({
+            carried_in: t.Numeric(),
+            entitled: t.Numeric(),
+            used: t.Numeric(),
+            note: t.Nullable(t.String()),
+        })),
+        detail: { tags: ['HR'], summary: 'แก้ไขยอดวันลาสะสม' }
+    })
+    .post('/leave-balances/rollover', rolloverLeaveBalances, {
+        body: t.Object({
+            from_fiscal_year: t.Numeric(),
+            to_fiscal_year: t.Numeric(),
+        }),
+        detail: { tags: ['HR'], summary: 'ยกยอดวันลาสะสมขึ้นปีงบประมาณใหม่', description: 'ทำเฉพาะลาพักผ่อน (ANNUAL) เท่านั้น — คัดลอกคงเหลือ (cap ตาม carry_over_max_days ของแต่ละคน) จาก from → to — ข้ามคนที่มีข้อมูลปีใหม่อยู่แล้ว (กันกดซ้ำ)' }
+    })
+    // ดึงประเภทการลาทั้งหมดพร้อมฟิลด์ครบ (สำหรับหน้ากำหนดสิทธิ์การลา)
+    .get('/leave-types/full', getLeaveTypesFull, {
+        detail: { tags: ['HR'], summary: 'ดึงประเภทการลาทั้งหมด (ฟิลด์ครบ)', description: 'สำหรับหน้าตั้งค่ากำหนดสิทธิ์การลา — เฉพาะ ADMIN/HR' }
+    })
+    // แก้ไขเงื่อนไขพื้นฐานของประเภทการลา
+    .patch('/leave-types/:id', updateLeaveType, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Partial(t.Object({
+            name_th: t.String(),
+            name_en: t.Nullable(t.String()),
+            requires_document: t.Boolean(),
+            requires_document_after_days: t.Nullable(t.Numeric()),
+            requires_approval: t.Boolean(),
+            gender_restriction: t.String(),
+            is_paid: t.Boolean(),
+            sort_order: t.Numeric(),
+            is_active: t.Boolean(),
+        })),
+        detail: { tags: ['HR'], summary: 'แก้ไขเงื่อนไขประเภทการลา', description: 'อัปเดต hr_leave_types (ไม่รวม code/id)' }
+    })
+    // แก้ไขเกณฑ์สิทธิ์การลา 1 รายการ
+    .patch('/leave-entitlements/:id', updateLeaveEntitlement, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Partial(t.Object({
+            max_days_per_year: t.Nullable(t.Numeric()),
+            min_service_months: t.Numeric(),
+            carry_over: t.Boolean(),
+            carry_over_max_days: t.Nullable(t.Numeric()),
+        })),
+        detail: { tags: ['HR'], summary: 'แก้ไขเกณฑ์สิทธิ์การลา', description: 'อัปเดต hr_leave_entitlements ตาม id' }
+    })
+    // เพิ่มเกณฑ์สิทธิ์การลาใหม่ (ประเภทเจ้าหน้าที่ที่ยังไม่มีเกณฑ์ หรือเพิ่ม tier ตามอายุงาน)
+    .post('/leave-entitlements', createLeaveEntitlement, {
+        body: t.Object({
+            leave_type_id: t.Numeric(),
+            user_type_id: t.Numeric(),
+            max_days_per_year: t.Optional(t.Nullable(t.Numeric())),
+            min_service_months: t.Optional(t.Numeric()),
+            carry_over: t.Optional(t.Boolean()),
+            carry_over_max_days: t.Optional(t.Nullable(t.Numeric())),
+        }),
+        detail: { tags: ['HR'], summary: 'เพิ่มเกณฑ์สิทธิ์การลา', description: 'เพิ่มแถวใหม่ใน hr_leave_entitlements' }
+    })
+    // ลบเกณฑ์สิทธิ์การลา
+    .delete('/leave-entitlements/:id', deleteLeaveEntitlement, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['HR'], summary: 'ลบเกณฑ์สิทธิ์การลา', description: 'ลบแถวออกจาก hr_leave_entitlements ตาม id' }
+    })
+    // แต่งตั้ง/ถอดถอน ผอ.
+    .patch('/director/supervisor', updateDirector, {
+        body: t.Object({ supervisor_id: t.Nullable(t.Numeric()) }),
+        detail: { tags: ['HR'], summary: 'แต่งตั้ง/ถอดถอนผู้อำนวยการ', description: 'อัปเดต hr_settings key director_id (null = ถอดถอน) — 409 ถ้าบุคคลนั้นเป็นรักษาการ ผอ. อยู่' }
+    })
+    // แต่งตั้ง/ถอดถอนรักษาการ ผอ.
+    .patch('/director/acting-supervisor', updateActingDirector, {
+        body: t.Object({ acting_supervisor_id: t.Nullable(t.Numeric()) }),
+        detail: { tags: ['HR'], summary: 'แต่งตั้ง/ถอดถอนรักษาการผู้อำนวยการ', description: 'อัปเดต hr_settings key acting_director_id (null = ถอดถอน) — 409 ถ้าบุคคลนั้นเป็น ผอ. อยู่' }
+    })
     // อัปเดตหัวหน้าภารกิจ
     .patch('/missions/:id/supervisor', updateMissionSupervisor, {
         params: t.Object({ id: t.Numeric() }),

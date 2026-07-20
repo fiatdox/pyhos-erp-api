@@ -70,87 +70,61 @@ export const getLeaveEntitlements = async ({ set }: any) => {
     }
 };
 
-// ดึงหัวหน้าภารกิจของพนักงานตาม user id
+// ดึงหัวหน้าภารกิจของพนักงานตาม user id — จับกับ missions.supervisor_id / acting_supervisor_id
+// role = 'supervisor' (ตัวจริง) | 'acting' (รักษาการ); ตัวจริงมาก่อน; ไม่คืนแถวว่างเมื่อยังไม่แต่งตั้ง
 export const getMissionSupervisorByUserId = async ({ params, set }: any) => {
     try {
+        const me = await core_kon`SELECT mission_id FROM users WHERE id = ${params.id}`;
+        if (me.length === 0) { set.status = 404; return { success: false, message: 'User not found' }; }
+        if (me[0].mission_id == null) return { success: true, data: [] };
         const result = await core_kon`
-            SELECT u1.id, m.name AS mission_name, CONCAT(u1.pname, ' ', u1.fname, ' ', u1.lname) AS mission_supervisor
-            FROM users u
-            LEFT JOIN missions m ON m.mission_id = u.mission_id
-            LEFT JOIN users u1 ON u1.id = m.supervisor_id
-            WHERE u.id = ${params.id}
-
-            UNION
-
-            SELECT u1.id, m.name AS mission_name, CONCAT(u1.pname, ' ', u1.fname, ' ', u1.lname) AS mission_supervisor
-            FROM users u
-            LEFT JOIN missions m ON m.mission_id = u.mission_id
-            LEFT JOIN users u1 ON u1.id = m.acting_supervisor_id
-            WHERE u.id = ${params.id}
-              AND m.acting_supervisor_id IS NOT NULL
+            SELECT u1.id, m.name AS mission_name, CONCAT(u1.pname, ' ', u1.fname, ' ', u1.lname) AS mission_supervisor, r.role
+            FROM missions m
+            CROSS JOIN LATERAL (VALUES ('supervisor', m.supervisor_id), ('acting', m.acting_supervisor_id)) AS r(role, sup_id)
+            JOIN users u1 ON u1.id = r.sup_id
+            WHERE m.mission_id = ${me[0].mission_id}
+            ORDER BY r.role DESC
         `;
-        if (result.length === 0) {
-            set.status = 404;
-            return { success: false, message: 'User not found' };
-        }
         return { success: true, data: result };
     } catch (error: any) {
         return serverError(set, 'getMissionSupervisorByUserId', error);
     }
 };
 
-// ดึงหัวหน้ากลุ่มงานของพนักงานตาม user id
+// ดึงหัวหน้ากลุ่มงานของพนักงานตาม user id — จับกับ majors.supervisor_id / acting_supervisor_id
 export const getMajorSupervisorByUserId = async ({ params, set }: any) => {
     try {
+        const me = await core_kon`SELECT major_id FROM users WHERE id = ${params.id}`;
+        if (me.length === 0) { set.status = 404; return { success: false, message: 'User not found' }; }
+        if (me[0].major_id == null) return { success: true, data: [] };
         const result = await core_kon`
-            SELECT u1.id, m.name AS major_name, CONCAT(u1.pname, ' ', u1.fname, ' ', u1.lname) AS major_supervisor
-            FROM users u
-            LEFT JOIN majors m ON m.major_id = u.major_id
-            LEFT JOIN users u1 ON u1.id = m.supervisor_id
-            WHERE u.id = ${params.id}
-
-            UNION
-
-            SELECT u1.id, m.name AS major_name, CONCAT(u1.pname, ' ', u1.fname, ' ', u1.lname) AS major_supervisor
-            FROM users u
-            LEFT JOIN majors m ON m.major_id = u.major_id
-            LEFT JOIN users u1 ON u1.id = m.acting_supervisor_id
-            WHERE u.id = ${params.id}
-              AND m.acting_supervisor_id IS NOT NULL
+            SELECT u1.id, m.name AS major_name, CONCAT(u1.pname, ' ', u1.fname, ' ', u1.lname) AS major_supervisor, r.role
+            FROM majors m
+            CROSS JOIN LATERAL (VALUES ('supervisor', m.supervisor_id), ('acting', m.acting_supervisor_id)) AS r(role, sup_id)
+            JOIN users u1 ON u1.id = r.sup_id
+            WHERE m.major_id = ${me[0].major_id}
+            ORDER BY r.role DESC
         `;
-        if (result.length === 0) {
-            set.status = 404;
-            return { success: false, message: 'User not found' };
-        }
         return { success: true, data: result };
     } catch (error: any) {
         return serverError(set, 'getMajorSupervisorByUserId', error);
     }
 };
 
-// ดึงหัวหน้าหน่วยงานของพนักงานตาม user id
+// ดึงหัวหน้าหน่วยงานของพนักงานตาม user id — จับกับ submajors.supervisor_id / acting_supervisor_id
 export const getSubMajorSupervisorByUserId = async ({ params, set }: any) => {
     try {
+        const me = await core_kon`SELECT submajor_id FROM users WHERE id = ${params.id}`;
+        if (me.length === 0) { set.status = 404; return { success: false, message: 'User not found' }; }
+        if (me[0].submajor_id == null) return { success: true, data: [] };
         const result = await core_kon`
-            SELECT u1.id, m.name AS major_name, CONCAT(u1.pname, ' ', u1.fname, ' ', u1.lname) AS major_supervisor
-            FROM users u
-            LEFT JOIN submajors m ON m.submajor_id = u.submajor_id
-            LEFT JOIN users u1 ON u1.id = m.supervisor_id
-            WHERE u.id = ${params.id}
-
-            UNION
-
-            SELECT u1.id, m.name AS major_name, CONCAT(u1.pname, ' ', u1.fname, ' ', u1.lname) AS major_supervisor
-            FROM users u
-            LEFT JOIN submajors m ON m.submajor_id = u.submajor_id
-            LEFT JOIN users u1 ON u1.id = m.acting_supervisor_id
-            WHERE u.id = ${params.id}
-              AND m.acting_supervisor_id IS NOT NULL
+            SELECT u1.id, m.name AS major_name, CONCAT(u1.pname, ' ', u1.fname, ' ', u1.lname) AS major_supervisor, r.role
+            FROM submajors m
+            CROSS JOIN LATERAL (VALUES ('supervisor', m.supervisor_id), ('acting', m.acting_supervisor_id)) AS r(role, sup_id)
+            JOIN users u1 ON u1.id = r.sup_id
+            WHERE m.submajor_id = ${me[0].submajor_id}
+            ORDER BY r.role DESC
         `;
-        if (result.length === 0) {
-            set.status = 404;
-            return { success: false, message: 'User not found' };
-        }
         return { success: true, data: result };
     } catch (error: any) {
         return serverError(set, 'getSubMajorSupervisorByUserId', error);
@@ -217,6 +191,76 @@ export const updateSubMajorActingSupervisor = async ({ params, body, set }: any)
     } catch (error: any) { return serverError(set, 'updateSubMajorActingSupervisor', error); }
 };
 
+// ── ผู้อำนวยการ / รักษาการผู้อำนวยการ — เก็บใน hr_settings (key-value) ─────────
+
+// ตั้ง/ถอดถอนค่าใน hr_settings แบบ atomic — กันบุคคลเดียวกันเป็นทั้ง ผอ. และรักษาการ
+// upsert ครอบกรณี key ยังไม่ถูก seed; conflict check อยู่ใน WHERE ของ DO UPDATE (single statement กัน race)
+const setDirectorKey = async (key: string, otherKey: string, empId: number | null, updatedBy: number | null) => {
+    if (empId == null) {
+        const cleared = await core_kon`
+            INSERT INTO hr_settings (name, value, updated_by) VALUES (${key}, NULL, ${updatedBy})
+            ON CONFLICT (name) DO UPDATE SET value = NULL, updated_at = now(), updated_by = ${updatedBy}
+            RETURNING name, value`;
+        return { status: 'ok' as const, row: cleared[0] };
+    }
+    const updated = await core_kon`
+        INSERT INTO hr_settings (name, value, updated_by) VALUES (${key}, ${String(empId)}, ${updatedBy})
+        ON CONFLICT (name) DO UPDATE SET value = ${String(empId)}, updated_at = now(), updated_by = ${updatedBy}
+        WHERE NOT EXISTS (SELECT 1 FROM hr_settings o WHERE o.name = ${otherKey} AND o.value = ${String(empId)})
+        RETURNING name, value`;
+    return updated.length > 0 ? { status: 'ok' as const, row: updated[0] } : { status: 'conflict' as const };
+};
+
+// ดึงค่า ผอ. / รักษาการ ผอ. ปัจจุบันจาก hr_settings (พร้อมชื่อจากตาราง users)
+export const getDirector = async ({ set }: any) => {
+    try {
+        const rows = await core_kon`
+            SELECT s.name, s.value, CONCAT(u.pname, ' ', u.fname, ' ', u.lname) AS full_name
+            FROM hr_settings s
+            LEFT JOIN users u ON u.id = NULLIF(s.value, '')::int
+            WHERE s.name IN ('director_id', 'acting_director_id')`;
+        const map: Record<string, number | string | null> = {
+            director_id: null, acting_director_id: null,
+            director_name: null, acting_director_name: null,
+        };
+        rows.forEach((r: any) => {
+            map[r.name] = r.value != null ? Number(r.value) : null;
+            const nameKey = r.name === 'director_id' ? 'director_name' : 'acting_director_name';
+            map[nameKey] = r.value != null ? (r.full_name?.trim() || null) : null;
+        });
+        return { success: true, data: map };
+    } catch (error: any) { return serverError(set, 'getDirector', error); }
+};
+
+// เช็คว่า user คนนี้เป็นหัวหน้าหรือรักษาการของกลุ่มภารกิจใดหรือไม่ — ถ้าใช่ การลาต้องเสนอ ผอ. โดยตรง
+export const getMissionHeadCheck = async ({ params, set }: any) => {
+    try {
+        const rows = await core_kon`
+            SELECT 1 FROM missions
+            WHERE supervisor_id = ${params.id} OR acting_supervisor_id = ${params.id}
+            LIMIT 1`;
+        return { success: true, data: { is_mission_head: rows.length > 0 } };
+    } catch (error: any) { return serverError(set, 'getMissionHeadCheck', error); }
+};
+
+// แต่งตั้ง/ถอดถอน ผอ. — กันซ้ำกับผู้ที่เป็นรักษาการ ผอ. อยู่
+export const updateDirector = async ({ body, set, user }: any) => {
+    try {
+        const r = await setDirectorKey('director_id', 'acting_director_id', body.supervisor_id ?? null, user?.id ?? null);
+        if (r.status === 'conflict') { set.status = 409; return { success: false, message: 'ไม่สามารถแต่งตั้งเป็นผู้อำนวยการได้ เพราะบุคลากรนี้เป็นรักษาการผู้อำนวยการอยู่แล้ว' }; }
+        return { success: true, data: r.row };
+    } catch (error: any) { return serverError(set, 'updateDirector', error); }
+};
+
+// แต่งตั้ง/ถอดถอนรักษาการ ผอ. — กันซ้ำกับผู้ที่เป็น ผอ. อยู่
+export const updateActingDirector = async ({ body, set, user }: any) => {
+    try {
+        const r = await setDirectorKey('acting_director_id', 'director_id', body.acting_supervisor_id ?? null, user?.id ?? null);
+        if (r.status === 'conflict') { set.status = 409; return { success: false, message: 'ไม่สามารถแต่งตั้งเป็นรักษาการได้ เพราะบุคลากรนี้เป็นผู้อำนวยการอยู่แล้ว' }; }
+        return { success: true, data: r.row };
+    } catch (error: any) { return serverError(set, 'updateActingDirector', error); }
+};
+
 // ดึงสิทธิ์การลาตาม user_type_id ที่ระบุ
 export const getLeaveEntitlementByUserTypeId = async ({ params, set }: any) => {
     try {
@@ -234,4 +278,82 @@ export const getLeaveEntitlementByUserTypeId = async ({ params, set }: any) => {
     } catch (error: any) {
         return serverError(set, 'getLeaveEntitlementByUserTypeId', error);
     }
+};
+
+// ── กำหนดค่าสิทธิ์การลาแต่ละประเภท (hr_leave_types + hr_leave_entitlements) ────────
+// ใช้ในเมนู HR settings: กำหนดสิทธิ์การลา — จำกัดเฉพาะ ADMIN/HR (requireRoles ใน route)
+
+// ดึงประเภทการลาทั้งหมดพร้อมฟิลด์ครบ (สำหรับหน้าแก้ไขการตั้งค่า)
+export const getLeaveTypesFull = async ({ set }: any) => {
+    try {
+        const rows = await core_kon`
+            SELECT id, code, name_th, name_en, requires_document, requires_document_after_days,
+                   requires_approval, gender_restriction, is_paid, sort_order, is_active
+            FROM hr_leave_types
+            ORDER BY sort_order ASC, id ASC`;
+        return { success: true, data: rows };
+    } catch (error: any) { return serverError(set, 'getLeaveTypesFull', error); }
+};
+
+// แก้ไขเงื่อนไขพื้นฐานของประเภทการลา (ไม่แก้ code/id — เป็นคีย์อ้างอิงของระบบ)
+export const updateLeaveType = async ({ params, body, set }: any) => {
+    try {
+        const allowed = ['name_th', 'name_en', 'requires_document', 'requires_document_after_days',
+            'requires_approval', 'gender_restriction', 'is_paid', 'sort_order', 'is_active'];
+        const patch: Record<string, any> = {};
+        for (const k of allowed) if (k in body) patch[k] = body[k];
+        if (Object.keys(patch).length === 0) {
+            set.status = 400;
+            return { success: false, message: 'ไม่มีข้อมูลให้บันทึก' };
+        }
+        patch.updated_at = new Date();
+        const rows = await core_kon`
+            UPDATE hr_leave_types SET ${core_kon(patch)}
+            WHERE id = ${params.id}
+            RETURNING id, code, name_th, name_en, requires_document, requires_document_after_days,
+                      requires_approval, gender_restriction, is_paid, sort_order, is_active`;
+        if (rows.length === 0) { set.status = 404; return { success: false, message: 'ไม่พบประเภทการลานี้' }; }
+        return { success: true, data: rows[0] };
+    } catch (error: any) { return serverError(set, 'updateLeaveType', error); }
+};
+
+// แก้ไขสิทธิ์การลา 1 เกณฑ์ (leave_type × user_type อาจมีหลายเกณฑ์ตามอายุงาน)
+export const updateLeaveEntitlement = async ({ params, body, set }: any) => {
+    try {
+        const allowed = ['max_days_per_year', 'min_service_months', 'carry_over', 'carry_over_max_days'];
+        const patch: Record<string, any> = {};
+        for (const k of allowed) if (k in body) patch[k] = body[k];
+        if (Object.keys(patch).length === 0) {
+            set.status = 400;
+            return { success: false, message: 'ไม่มีข้อมูลให้บันทึก' };
+        }
+        const rows = await core_kon`
+            UPDATE hr_leave_entitlements SET ${core_kon(patch)}
+            WHERE id = ${params.id}
+            RETURNING id, leave_type_id, user_type_id, max_days_per_year, min_service_months, carry_over, carry_over_max_days`;
+        if (rows.length === 0) { set.status = 404; return { success: false, message: 'ไม่พบเกณฑ์สิทธิ์การลานี้' }; }
+        return { success: true, data: rows[0] };
+    } catch (error: any) { return serverError(set, 'updateLeaveEntitlement', error); }
+};
+
+// เพิ่มเกณฑ์สิทธิ์การลาใหม่ — ใช้ทั้งเพิ่มประเภทเจ้าหน้าที่ที่ยังไม่มีเกณฑ์ และเพิ่มเกณฑ์ตามอายุงาน (tier) ให้ combo เดิม
+export const createLeaveEntitlement = async ({ body, set }: any) => {
+    try {
+        const { leave_type_id, user_type_id, max_days_per_year, min_service_months, carry_over, carry_over_max_days } = body;
+        const rows = await core_kon`
+            INSERT INTO hr_leave_entitlements (leave_type_id, user_type_id, max_days_per_year, min_service_months, carry_over, carry_over_max_days)
+            VALUES (${leave_type_id}, ${user_type_id}, ${max_days_per_year ?? null}, ${min_service_months ?? 0}, ${carry_over ?? false}, ${carry_over_max_days ?? null})
+            RETURNING id, leave_type_id, user_type_id, max_days_per_year, min_service_months, carry_over, carry_over_max_days`;
+        set.status = 201;
+        return { success: true, data: rows[0] };
+    } catch (error: any) { return serverError(set, 'createLeaveEntitlement', error); }
+};
+
+// ลบเกณฑ์สิทธิ์การลา (เช่น ลบ tier ที่ตั้งผิด)
+export const deleteLeaveEntitlement = async ({ params, set }: any) => {
+    try {
+        const rows = await core_kon`DELETE FROM hr_leave_entitlements WHERE id = ${params.id} RETURNING id`;
+        if (rows.length === 0) { set.status = 404; return { success: false, message: 'ไม่พบเกณฑ์สิทธิ์การลานี้' }; }
+        return { success: true, message: 'ลบเกณฑ์สิทธิ์การลาเรียบร้อย' };
+    } catch (error: any) { return serverError(set, 'deleteLeaveEntitlement', error); }
 };
