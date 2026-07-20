@@ -235,3 +235,127 @@ export const deactivateUser = async ({ params, set }: any) => {
         return { success: false, message: error.message };
     }
 };
+
+// ── เลขที่เงินเดือน (users.salary_id) ของผู้ login — ใช้ในหน้า accounting/salary ──
+// identity มาจาก JWT เท่านั้น (ไม่รับ id จาก client) กันตั้งค่าแทนคนอื่น
+
+// ดึง salary_id ของตัวเอง
+export const getMySalaryId = async ({ user, set }: any) => {
+    try {
+        const rows = await core_kon`SELECT salary_id FROM users WHERE id = ${user.id}`;
+        if (rows.length === 0) {
+            set.status = 404;
+            return { success: false, message: 'User not found' };
+        }
+        return { success: true, data: { salary_id: rows[0].salary_id ?? null } };
+    } catch (error: any) {
+        console.error('[userController] getMySalaryId:', error);
+        set.status = 500;
+        return { success: false, message: 'เกิดข้อผิดพลาดภายในระบบ' };
+    }
+};
+
+// บันทึก salary_id ของตัวเอง — ตั้งได้เฉพาะตอนที่ยังไม่มีค่า (แก้ทีหลังต้องให้ HR ทำผ่านทะเบียนบุคลากร)
+// กันเลขซ้ำกับผู้ใช้อื่นใน statement เดียว (atomic)
+export const setMySalaryId = async ({ user, body, set }: any) => {
+    try {
+        const salaryId = body.salary_id;
+        if (!Number.isInteger(salaryId) || salaryId <= 0) {
+            set.status = 400;
+            return { success: false, message: 'เลขที่เงินเดือนไม่ถูกต้อง' };
+        }
+        const updated = await core_kon`
+            UPDATE users SET salary_id = ${salaryId}, updated_at = NOW()
+            WHERE id = ${user.id}
+              AND salary_id IS NULL
+              AND NOT EXISTS (SELECT 1 FROM users o WHERE o.salary_id = ${salaryId} AND o.id <> ${user.id})
+            RETURNING salary_id
+        `;
+        if (updated.length > 0) return { success: true, data: { salary_id: updated[0].salary_id } };
+
+        // แยกสาเหตุที่อัปเดตไม่ได้: มีค่าอยู่แล้ว / เลขซ้ำกับคนอื่น
+        const me = await core_kon`SELECT salary_id FROM users WHERE id = ${user.id}`;
+        if (me.length === 0) {
+            set.status = 404;
+            return { success: false, message: 'User not found' };
+        }
+        set.status = 409;
+        if (me[0].salary_id != null) {
+            return { success: false, message: 'บัญชีของคุณมีเลขที่เงินเดือนอยู่แล้ว หากต้องการแก้ไขกรุณาติดต่องานทรัพยากรบุคคล' };
+        }
+        return { success: false, message: 'เลขที่เงินเดือนนี้ถูกใช้โดยบุคลากรท่านอื่นแล้ว กรุณาตรวจสอบอีกครั้ง' };
+    } catch (error: any) {
+        console.error('[userController] setMySalaryId:', error);
+        set.status = 500;
+        return { success: false, message: 'เกิดข้อผิดพลาดภายในระบบ' };
+    }
+};
+
+// แก้ไขรหัสประจำตัวของตัวเอง (salary_id / attendance_id) — ผู้ใช้เปลี่ยนเองได้จากหน้า account/settings
+// salary_id กันเลขซ้ำกับผู้ใช้อื่นใน statement เดียว (atomic); ส่ง null = ล้างค่า
+export const updateMyCodes = async ({ user, body, set }: any) => {
+    try {
+        const hasSalary = 'salary_id' in body;
+        const hasAttendance = 'attendance_id' in body;
+        if (!hasSalary && !hasAttendance) {
+            set.status = 400;
+            return { success: false, message: 'ไม่มีข้อมูลให้บันทึก' };
+        }
+        if (hasSalary && body.salary_id != null && (!Number.isInteger(body.salary_id) || body.salary_id <= 0)) {
+            set.status = 400;
+            return { success: false, message: 'เลขที่เงินเดือนไม่ถูกต้อง' };
+        }
+        if (hasAttendance && body.attendance_id != null && (!Number.isInteger(body.attendance_id) || body.attendance_id <= 0)) {
+            set.status = 400;
+            return { success: false, message: 'รหัสเข้าออกงานไม่ถูกต้อง' };
+        }
+
+        if (hasSalary) {
+            const salaryId = body.salary_id ?? null;
+            const updated = salaryId == null
+                ? await core_kon`UPDATE users SET salary_id = NULL, updated_at = NOW() WHERE id = ${user.id} RETURNING id`
+                : await core_kon`
+                    UPDATE users SET salary_id = ${salaryId}, updated_at = NOW()
+                    WHERE id = ${user.id}
+                      AND NOT EXISTS (SELECT 1 FROM users o WHERE o.salary_id = ${salaryId} AND o.id <> ${user.id})
+                    RETURNING id`;
+            if (updated.length === 0) {
+                set.status = 409;
+                return { success: false, message: 'เลขที่เงินเดือนนี้ถูกใช้โดยบุคลากรท่านอื่นแล้ว กรุณาตรวจสอบอีกครั้ง' };
+            }
+        }
+        if (hasAttendance) {
+            await core_kon`UPDATE users SET attendance_id = ${body.attendance_id ?? null}, updated_at = NOW() WHERE id = ${user.id}`;
+        }
+
+        const rows = await core_kon`SELECT salary_id, attendance_id FROM users WHERE id = ${user.id}`;
+        return { success: true, data: rows[0] };
+    } catch (error: any) {
+        console.error('[userController] updateMyCodes:', error);
+        set.status = 500;
+        return { success: false, message: 'เกิดข้อผิดพลาดภายในระบบ' };
+    }
+};
+
+// ดึงรายชื่อเพื่อนร่วมกลุ่มภารกิจของผู้ login — ใช้เลือก "ผู้ปฏิบัติงานแทน" ตอนลา (ให้ผู้ใช้เลือกเองในวงกว้างขึ้น)
+export const getMyColleagues = async ({ user, set }: any) => {
+    try {
+        const me = await core_kon`SELECT mission_id FROM users WHERE id = ${user.id}`;
+        if (me.length === 0) { set.status = 404; return { success: false, message: 'User not found' }; }
+        const { mission_id } = me[0];
+
+        if (mission_id == null) return { success: true, data: { scope: 'none', colleagues: [] } };
+
+        const rows = await core_kon`
+            SELECT id, pname, fname, lname, up.position_name
+            FROM users u
+            LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
+            WHERE u.mission_id = ${mission_id} AND u.id <> ${user.id} AND u.is_active = 'Y'
+            ORDER BY u.fname`;
+        return { success: true, data: { scope: 'mission', colleagues: rows } };
+    } catch (error: any) {
+        console.error('[userController] getMyColleagues:', error);
+        set.status = 500;
+        return { success: false, message: 'เกิดข้อผิดพลาดภายในระบบ' };
+    }
+};

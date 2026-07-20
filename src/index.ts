@@ -13,6 +13,7 @@ import { itActivityRoutes } from "./routes/itActivityRoutes";
 import { itIncidentReportRoutes } from "./routes/itIncidentReportRoutes";
 import { itUserRequestRoutes } from "./routes/itUserRequestRoutes";
 import { userRolesRoutes } from "./routes/userRolesRoutes";
+import { accountingRoutes } from "./routes/accountingRoutes";
 import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 
 const app = new Elysia()
@@ -70,6 +71,7 @@ const app = new Elysia()
   .use(itActivityRoutes)
   .use(itIncidentReportRoutes)
   .use(itUserRequestRoutes)
+  .use(accountingRoutes)
   //.get("/", () => "Hello Elysia")
   .listen(process.env.PORT || 5000);
 

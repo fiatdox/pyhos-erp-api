@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { getAllUsers, getUserById, getUserInfo, createUser, updateUser, deactivateUser, activateUser, changePassword } from '../controllers/userController';
+import { getAllUsers, getUserById, getUserInfo, createUser, updateUser, deactivateUser, activateUser, changePassword, getMySalaryId, setMySalaryId, updateMyCodes, getMyColleagues } from '../controllers/userController';
 
 // สร้าง Schema สำหรับตรวจสอบข้อมูล (Validation) ให้ตรงกับโครงสร้างตาราง users
 const userSchema = t.Object({
@@ -30,6 +30,25 @@ export const userRoutes = new Elysia({ prefix: '/api/v1/users' })
     .use(authMiddleware)
     .get('/', getAllUsers, {
         detail: { tags: ['Users'] }
+    })
+    // เลขที่เงินเดือนของผู้ login (identity จาก JWT) — ประกาศก่อน /:id กันชนกับ dynamic route
+    .get('/me/colleagues', getMyColleagues, {
+        detail: { tags: ['Users'], summary: 'ดึงเพื่อนร่วมกลุ่มภารกิจของตัวเอง', description: 'ดึงบุคลากรทั้งหมดใน mission_id เดียวกัน — ใช้เลือกผู้ปฏิบัติงานแทนตอนลา (ผู้ใช้เลือกเองจากทั้งกลุ่มภารกิจ)' }
+    })
+    .get('/me/salary-id', getMySalaryId, {
+        detail: { tags: ['Users'], summary: 'ดึงเลขที่เงินเดือนของตัวเอง', description: 'อ่าน users.salary_id ของผู้ login — ใช้เช็คก่อนแสดงข้อมูลเงินเดือน' }
+    })
+    .patch('/me/salary-id', setMySalaryId, {
+        body: t.Object({ salary_id: t.Numeric() }),
+        detail: { tags: ['Users'], summary: 'บันทึกเลขที่เงินเดือนของตัวเอง', description: 'ตั้งได้เฉพาะตอน salary_id ยังว่าง — 409 ถ้ามีค่าแล้วหรือเลขซ้ำกับผู้ใช้อื่น' }
+    })
+    // แก้ไขรหัสประจำตัวของตัวเอง (เปลี่ยนเองได้จากหน้า account/settings)
+    .patch('/me/codes', updateMyCodes, {
+        body: t.Object({
+            salary_id: t.Optional(t.Nullable(t.Numeric())),
+            attendance_id: t.Optional(t.Nullable(t.Numeric())),
+        }),
+        detail: { tags: ['Users'], summary: 'แก้ไขรหัสประจำตัวของตัวเอง', description: 'อัปเดต users.salary_id / attendance_id ของผู้ login — salary_id กันซ้ำกับผู้ใช้อื่น (409), null = ล้างค่า' }
     })
     .get('/:id', getUserById, {
         params: t.Object({ id: t.Numeric() }),
