@@ -6,7 +6,10 @@ import { jwt } from '@elysiajs/jwt';
  * It verifies the JWT from the Authorization header and adds the user payload to the context.
  */
 if (!process.env.JWT_SECRET) {
-    throw new Error('JWT_SECRET environment variable is required for authentication');
+    throw new Error(
+        'JWT_SECRET environment variable is required for authentication. ' +
+        'คัดลอก .env.example เป็น .env ที่ root ของโปรเจกต์ แล้วกรอกค่าจริงก่อนรัน (ไฟล์ .env ไม่ได้ติดไปกับ git ตั้งใจ ต้องสร้างเองทุก host)'
+    );
 }
 
 export const authMiddleware = (app: Elysia) =>

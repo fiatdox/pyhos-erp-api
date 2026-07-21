@@ -27,6 +27,8 @@ yarn-error.log*
 # local env files
 .env
 .env.*
+# ...ยกเว้นไฟล์ตัวอย่าง (ไม่มีค่าลับจริง) — ใช้เป็น template ตอน deploy host ใหม่
+!.env.example
 
 # vercel
 .vercel
