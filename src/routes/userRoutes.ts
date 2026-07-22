@@ -23,6 +23,7 @@ const userSchema = t.Object({
     username: t.String(),
     password: t.String(),
     is_active: t.Optional(t.Nullable(t.String())),
+    work_end_date: t.Optional(t.Nullable(t.String())),
     hospital_lc_pid: t.Optional(t.Nullable(t.Numeric()))
 });
 

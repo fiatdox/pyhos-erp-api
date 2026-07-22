@@ -6,7 +6,7 @@ export const loginCOREKON = async ({ body, set, jwt }: Context & { jwt: any }) =
 
     try {
         const rows = await core_kon`
-            SELECT id,username, password, id_card, CONCAT(pname, fname, ' ', lname) AS employee_name ,m."name" as mission_name,m1."name" as major_name,up.position_name
+            SELECT u.id,u.username, u.password, u.id_card, u.is_active, u.work_end_date, CONCAT(pname, fname, ' ', lname) AS employee_name ,m."name" as mission_name,m1."name" as major_name,up.position_name
             ,ut.user_type_id,ut.type_name as user_type_name
             FROM users u
             left join missions m on u.mission_id =m.mission_id
@@ -27,6 +27,16 @@ export const loginCOREKON = async ({ body, set, jwt }: Context & { jwt: any }) =
         if (!isMatch) {
             set.status = 401;
             return { success: false, message: 'Invalid username or password' };
+        }
+
+        // ตรวจสอบสถานะการใช้งาน — ผู้ที่ไม่ได้ปฏิบัติงาน (is_active = 'N') ห้าม login
+        // ตรวจหลังยืนยันรหัสผ่านถูกต้อง เพื่อไม่เปิดเผยสถานะบัญชีให้ผู้ที่ไม่รู้รหัสผ่าน
+        if (String(user.is_active ?? '').toUpperCase() === 'N') {
+            set.status = 403;
+            return {
+                success: false,
+                message: 'บัญชีนี้ถูกระงับการใช้งาน (ไม่ได้ปฏิบัติงาน) กรุณาติดต่อฝ่ายบุคคล'
+            };
         }
 
         const roleRows = await core_kon`

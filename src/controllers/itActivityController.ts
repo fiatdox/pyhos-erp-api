@@ -48,7 +48,8 @@ export const getActivityMaster = async ({ set }: any) => {
 export const getActivityLogs = async ({ query, set }: any) => {
     try {
         const page = Math.max(1, Number(query?.page) || 1);
-        const limit = Math.min(200, Math.max(1, Number(query?.limit) || 50));
+        // เพดานสูงพอให้ดึงข้อมูลทั้งปีงบมาสรุป Dashboard ฝั่ง client ได้ (เดิม 200 ทำให้เห็นแค่เดือนล่าสุด)
+        const limit = Math.min(20000, Math.max(1, Number(query?.limit) || 50));
         const offset = (page - 1) * limit;
 
         let start: string | null = query?.date_from || null;

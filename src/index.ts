@@ -14,6 +14,8 @@ import { itIncidentReportRoutes } from "./routes/itIncidentReportRoutes";
 import { itUserRequestRoutes } from "./routes/itUserRequestRoutes";
 import { userRolesRoutes } from "./routes/userRolesRoutes";
 import { accountingRoutes } from "./routes/accountingRoutes";
+import { medicalStatRoutes } from "./routes/medicalStatRoutes";
+import { itRoadmapRoutes, itRoadmapSwaggerTags } from "./routes/itRoadmapRoutes";
 import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 
 const app = new Elysia()
@@ -41,7 +43,9 @@ const app = new Elysia()
           { name: 'System', description: 'System data endpoints (missions, majors, submajors)' },
           { name: 'Users', description: 'User management endpoints' },
           { name: 'Users - Permissions', description: 'Permission management endpoints' },
-          { name: 'Users - Roles', description: 'Role management and role-permission mapping endpoints' }
+          { name: 'Users - Roles', description: 'Role management and role-permission mapping endpoints' },
+          // แท็กของโมดูล IT Roadmap — นิยามไว้ในไฟล์ route (แก้ที่เดียว)
+          ...itRoadmapSwaggerTags,
         ],
         components: {
           securitySchemes: {
@@ -72,6 +76,8 @@ const app = new Elysia()
   .use(itIncidentReportRoutes)
   .use(itUserRequestRoutes)
   .use(accountingRoutes)
+  .use(medicalStatRoutes)
+  .use(itRoadmapRoutes)
   //.get("/", () => "Hello Elysia")
   .listen(process.env.PORT || 5000);
 

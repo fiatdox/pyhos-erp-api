@@ -9,7 +9,7 @@ export const getAllUsers = async ({ set }: any) => {
                 u.id, u.pname, u.fname, u.lname, u.id_card, u.gender, u.birthday, u.hire_date,
                 u.user_type_id, u.user_position_id, u.user_level_id, u.user_status_id,
                 u.mission_id, u.major_id, u.submajor_id, u.attendance_id, u.salary_id,
-                u.username, u.is_active, u.created_at, u.updated_at, u.hospital_lc_pid,
+                u.username, u.is_active, u.work_end_date, u.created_at, u.updated_at, u.hospital_lc_pid,
                 up.position_name,
                 ut.type_name AS user_type_name
             FROM users u
@@ -66,8 +66,8 @@ export const getUserInfo = async ({ params, set }: any) => {
 export const getUserById = async ({ params, set }: any) => {
     try {
         const users = await core_kon`
-            SELECT id, pname, fname, lname, id_card, gender, birthday, hire_date, user_type_id, user_position_id, user_level_id, user_status_id, mission_id, major_id, submajor_id, attendance_id, salary_id, username, is_active, created_at, updated_at, hospital_lc_pid 
-            FROM users 
+            SELECT id, pname, fname, lname, id_card, gender, birthday, hire_date, user_type_id, user_position_id, user_level_id, user_status_id, mission_id, major_id, submajor_id, attendance_id, salary_id, username, is_active, work_end_date, created_at, updated_at, hospital_lc_pid
+            FROM users
             WHERE id = ${params.id}
         `;
         if (users.length === 0) {
