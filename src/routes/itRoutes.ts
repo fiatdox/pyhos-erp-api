@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, rejectAssignment, requestExtension, getRepairExtensions, approveByHeader, approveByMission, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment, getPrDocumentTypes, getRepairPr, recordRepairPr, getRepairPrStatus, getRepairWorkSteps, getRepairProgress, recordRepairProgress, completeRepair } from '../controllers/itController';
+import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, rejectAssignment, requestExtension, getRepairExtensions, approveByHeader, approveByMission, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment, getPrDocumentTypes, getRepairPr, recordRepairPr, getRepairPrStatus, getRepairWorkSteps, getRepairProgress, recordRepairProgress, completeRepair, getRepairStats } from '../controllers/itController';
 
 export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
     .use(authMiddleware)
@@ -44,6 +44,14 @@ export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
     .get('/process-statuses/:id', getProcessStatusById, {
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['IT'], summary: 'ดึงสถานะกระบวนการ IT ตาม id' }
+    })
+    // สรุปข้อมูล Dashboard งานซ่อม (สถิติจริงจาก it_repair_requests)
+    .get('/repair-requests/stats', getRepairStats, {
+        detail: {
+            tags: ['IT'],
+            summary: 'สรุปข้อมูล Dashboard งานซ่อม',
+            description: 'สถิติจริงจาก it_repair_requests: จำนวนตามสถานะ, ประเภทอุปกรณ์ที่ซ่อมบ่อย, ระยะเวลาซ่อมเฉลี่ย/มัธยฐาน (รวม+แยกตามประเภทอุปกรณ์), heatmap ประเภทอุปกรณ์×เดือน, แนวโน้มรายเดือน (รับแจ้ง/ซ่อมเสร็จ), สัดส่วนผลประเมินซ่อม (ความยากง่าย)',
+        },
     })
     // ดึงรายการซ่อมทั้งหมด ย้อนหลัง 1 ปี หรือกรองตามช่วงวันที่
     .post('/repair-requests/all', getAllRepairRequests, {

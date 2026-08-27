@@ -43,3 +43,5 @@ package-lock.json
 
 # uploads
 /uploads/
+# build output ของ bun build (สร้างใหม่ได้ ไม่ต้องเก็บใน git)
+/dist/

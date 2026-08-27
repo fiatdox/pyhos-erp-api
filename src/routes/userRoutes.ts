@@ -1,6 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { getAllUsers, getUserById, getUserInfo, createUser, updateUser, deactivateUser, activateUser, changePassword, getMySalaryId, setMySalaryId, updateMyCodes, getMyColleagues } from '../controllers/userController';
+import { requireRoles } from '../middlewares/roleGuard';
+import { getAllUsers, getUserById, getUserInfo, createUser, updateUser, deactivateUser, activateUser, changePassword, getMyPasswordStatus, getMyUsernameStatus, checkMyUsername, changeMyUsername, getMySalaryId, setMySalaryId, updateMyCodes, getMyColleagues } from '../controllers/userController';
 
 // สร้าง Schema สำหรับตรวจสอบข้อมูล (Validation) ให้ตรงกับโครงสร้างตาราง users
 const userSchema = t.Object({
@@ -36,6 +37,37 @@ export const userRoutes = new Elysia({ prefix: '/api/v1/users' })
     .get('/me/colleagues', getMyColleagues, {
         detail: { tags: ['Users'], summary: 'ดึงเพื่อนร่วมกลุ่มภารกิจของตัวเอง', description: 'ดึงบุคลากรทั้งหมดใน mission_id เดียวกัน — ใช้เลือกผู้ปฏิบัติงานแทนตอนลา (ผู้ใช้เลือกเองจากทั้งกลุ่มภารกิจ)' }
     })
+    .get('/me/password-status', getMyPasswordStatus, {
+        detail: {
+            tags: ['Users'],
+            summary: 'สถานะอายุรหัสผ่านของตัวเอง',
+            description: 'คำนวณจากวันที่เปลี่ยนรหัสผ่านล่าสุด — คืน ageDays, daysLeft, expired, shouldWarn (ปิดนโยบายอยู่จะคืนค่า null ทั้งหมด)'
+        }
+    })
+    // นโยบายชื่อผู้ใช้ — เจ้าของบัญชีตั้งชื่อใหม่เองได้ (ต้องเรียกได้แม้ติดด่านบังคับใน authMiddleware)
+    .get('/me/username-status', getMyUsernameStatus, {
+        detail: {
+            tags: ['Users'],
+            summary: 'สถานะชื่อผู้ใช้ของตัวเอง',
+            description: 'ตรวจว่า username เป็นเลขบัตรประชาชนหรือไม่ และนโยบายปัจจุบันสั่งให้เตือน (warn) หรือบังคับเปลี่ยน (required)'
+        }
+    })
+    .get('/me/username-check', checkMyUsername, {
+        query: t.Object({ username: t.String() }),
+        detail: {
+            tags: ['Users'],
+            summary: 'ตรวจชื่อผู้ใช้ก่อนบันทึก',
+            description: 'คืน available + เหตุผล ใช้ตรรกะชุดเดียวกับตอนบันทึกจริง — ให้หน้าจอบอกชื่อซ้ำได้ทันทีขณะพิมพ์'
+        }
+    })
+    .patch('/me/username', changeMyUsername, {
+        body: t.Object({ username: t.String() }),
+        detail: {
+            tags: ['Users'],
+            summary: 'ตั้งชื่อผู้ใช้ใหม่ด้วยตัวเอง',
+            description: 'ตรวจรูปแบบ 4-50 ตัว (a-z A-Z 0-9 . _ -), ห้ามเป็นเลขบัตร/ตัวเลข 13 หลัก, กันชื่อซ้ำ (409) — สำเร็จแล้วคืน token ใหม่ ต้องเก็บทับของเดิม'
+        }
+    })
     .get('/me/salary-id', getMySalaryId, {
         detail: { tags: ['Users'], summary: 'ดึงเลขที่เงินเดือนของตัวเอง', description: 'อ่าน users.salary_id ของผู้ login — ใช้เช็คก่อนแสดงข้อมูลเงินเดือน' }
     })
@@ -59,23 +91,8 @@ export const userRoutes = new Elysia({ prefix: '/api/v1/users' })
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['Users'], summary: 'ดึงข้อมูลผู้ใช้พร้อมรายละเอียด' }
     })
-    .post('/', createUser, {
-        body: userSchema,
-        detail: { tags: ['Users'] }
-    })
-    .put('/:id', updateUser, {
-        params: t.Object({ id: t.Numeric() }),
-        body: t.Partial(userSchema), // ใช้ Partial เพื่อให้สามารถเลือกอัปเดตแค่บางฟิลด์ได้
-        detail: { tags: ['Users'] }
-    })
-    .patch('/:id/deactivate', deactivateUser, {
-        params: t.Object({ id: t.Numeric() }),
-        detail: { tags: ['Users'] }
-    })
-    .patch('/:id/activate', activateUser, {
-        params: t.Object({ id: t.Numeric() }),
-        detail: { tags: ['Users'] }
-    })
+    // เปลี่ยนรหัสผ่าน — เจ้าของบัญชีทำเองได้ (ตรวจสิทธิ์เจ้าของ/ADMIN ใน controller)
+    // ประกาศ "ก่อน" requireRoles ด้านล่าง เพื่อไม่ให้ผู้ใช้ทั่วไปเปลี่ยนรหัสของตัวเองไม่ได้
     .patch('/:id/change-password', changePassword, {
         params: t.Object({ id: t.Numeric() }),
         body: t.Object({
@@ -83,4 +100,25 @@ export const userRoutes = new Elysia({ prefix: '/api/v1/users' })
             new_password: t.String()
         }),
         detail: { tags: ['Users'], summary: 'เปลี่ยนรหัสผ่าน', description: 'ตรวจสอบรหัสเก่าก่อน ถ้าตรงจึงเข้ารหัสใหม่ด้วย Argon2id แล้วอัปเดต' }
+    })
+    // ── สร้าง/แก้ไข/ระงับบัญชีผู้ใช้ — จำกัดสิทธิ์ ──────────────────────────────
+    // เดิมไม่มี guard ทำให้ผู้ใช้ที่ล็อกอินคนใดก็ได้แก้ username/รหัสผ่าน/เลขบัตรของคนอื่นได้
+    // หมายเหตุ: requireRoles มีผลกับ route ที่ประกาศ "หลัง" บรรทัดนี้เท่านั้น
+    .use(requireRoles('ADMIN', 'HR', 'IT_STAFF'))
+    .post('/', createUser, {
+        body: userSchema,
+        detail: { tags: ['Users'], description: 'เฉพาะ ADMIN, HR, IT_STAFF' }
+    })
+    .put('/:id', updateUser, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Partial(userSchema), // ใช้ Partial เพื่อให้สามารถเลือกอัปเดตแค่บางฟิลด์ได้
+        detail: { tags: ['Users'], description: 'เฉพาะ ADMIN, HR, IT_STAFF' }
+    })
+    .patch('/:id/deactivate', deactivateUser, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['Users'], description: 'เฉพาะ ADMIN, HR, IT_STAFF' }
+    })
+    .patch('/:id/activate', activateUser, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['Users'], description: 'เฉพาะ ADMIN, HR, IT_STAFF' }
     });

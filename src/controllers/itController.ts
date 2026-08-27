@@ -1996,3 +1996,103 @@ export const completeRepair = async ({ params, body, user, set }: any) => {
         return { success: false, message: error.message };
     }
 };
+
+// ── Dashboard สรุปข้อมูลงานซ่อม (คำนวณจากข้อมูลจริงใน it_repair_requests) ──────
+// สถานะ: 1=รอดำเนินการ, 5=ซ่อมเสร็จแล้ว, 10=ปฏิเสธ, อื่นๆ = กำลังดำเนินการ
+export const getRepairStats = async ({ set }: any) => {
+    try {
+        const [
+            totalsRows, equipmentRows, durationRows, durationByEquipRows,
+            heatmapRows, monthlyReceivedRows, monthlyCompletedRows, assessmentRows, slaRows,
+        ] = await Promise.all([
+            core_kon`
+                SELECT
+                    COUNT(*)::int AS all_count,
+                    COUNT(*) FILTER (WHERE process_status_id = 1)::int AS pending,
+                    COUNT(*) FILTER (WHERE process_status_id = 5)::int AS completed,
+                    COUNT(*) FILTER (WHERE process_status_id = 10)::int AS cancelled,
+                    COUNT(*) FILTER (WHERE process_status_id NOT IN (1, 5, 10))::int AS in_progress
+                FROM it_repair_requests`,
+            core_kon`
+                SELECT COALESCE(et.name, 'ไม่ระบุ') AS name, COUNT(*)::int AS value
+                FROM it_repair_requests r
+                LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
+                GROUP BY et.name ORDER BY value DESC`,
+            core_kon`
+                SELECT
+                    AVG(EXTRACT(EPOCH FROM (completed_at - created_at)) / 3600)::float AS avg_hours,
+                    (PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - created_at)) / 3600))::float AS median_hours,
+                    COUNT(*)::int AS n
+                FROM it_repair_requests
+                WHERE completed_at IS NOT NULL`,
+            core_kon`
+                SELECT COALESCE(et.name, 'ไม่ระบุ') AS name,
+                       AVG(EXTRACT(EPOCH FROM (r.completed_at - r.created_at)) / 3600)::float AS avg_hours,
+                       COUNT(*)::int AS n
+                FROM it_repair_requests r
+                LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
+                WHERE r.completed_at IS NOT NULL
+                GROUP BY et.name ORDER BY avg_hours DESC`,
+            core_kon`
+                SELECT COALESCE(et.name, 'ไม่ระบุ') AS name,
+                       to_char(date_trunc('month', r.created_at), 'YYYY-MM') AS ym,
+                       COUNT(*)::int AS value
+                FROM it_repair_requests r
+                LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
+                WHERE r.created_at >= (CURRENT_DATE - INTERVAL '11 months')
+                GROUP BY et.name, 2 ORDER BY et.name, ym`,
+            core_kon`
+                SELECT to_char(date_trunc('month', created_at), 'YYYY-MM') AS ym, COUNT(*)::int AS value
+                FROM it_repair_requests
+                WHERE created_at >= (CURRENT_DATE - INTERVAL '11 months')
+                GROUP BY 1 ORDER BY 1`,
+            core_kon`
+                SELECT to_char(date_trunc('month', completed_at), 'YYYY-MM') AS ym, COUNT(*)::int AS value
+                FROM it_repair_requests
+                WHERE completed_at IS NOT NULL AND completed_at >= (CURRENT_DATE - INTERVAL '11 months')
+                GROUP BY 1 ORDER BY 1`,
+            core_kon`
+                SELECT COALESCE(ia.assessment_name, 'ยังไม่ประเมิน') AS name, COUNT(*)::int AS value
+                FROM it_repair_requests r
+                LEFT JOIN it_repair_assessments ia ON ia.repair_assessment_id = r.repair_assessment_id
+                GROUP BY ia.assessment_name ORDER BY value DESC`,
+            core_kon`
+                SELECT
+                    COUNT(*) FILTER (WHERE completed_at::date <= estimated_completion_date)::int AS on_time,
+                    COUNT(*)::int AS with_estimate
+                FROM it_repair_requests
+                WHERE completed_at IS NOT NULL AND estimated_completion_date IS NOT NULL`,
+        ]);
+
+        const t = totalsRows[0] ?? { all_count: 0, pending: 0, completed: 0, cancelled: 0, in_progress: 0 };
+        const d = durationRows[0] ?? { avg_hours: null, median_hours: null, n: 0 };
+        const sla = slaRows[0] ?? { on_time: 0, with_estimate: 0 };
+
+        return {
+            success: true,
+            data: {
+                totals: {
+                    all: t.all_count, pending: t.pending, inProgress: t.in_progress,
+                    completed: t.completed, cancelled: t.cancelled,
+                    avgHours: d.avg_hours != null ? Math.round(d.avg_hours * 10) / 10 : null,
+                    medianHours: d.median_hours != null ? Math.round(d.median_hours * 10) / 10 : null,
+                    completedWithDuration: d.n,
+                    onTimePct: sla.with_estimate > 0 ? Math.round((sla.on_time / sla.with_estimate) * 100) : null,
+                    onTimeSample: sla.with_estimate,
+                },
+                byEquipmentType: equipmentRows,
+                durationByEquipmentType: durationByEquipRows.map((r: any) => ({
+                    name: r.name, avgHours: r.avg_hours != null ? Math.round(r.avg_hours * 10) / 10 : null, n: r.n,
+                })),
+                heatmap: heatmapRows,
+                monthlyReceived: monthlyReceivedRows,
+                monthlyCompleted: monthlyCompletedRows,
+                byAssessment: assessmentRows,
+            },
+        };
+    } catch (error: any) {
+        console.error('[getRepairStats] DB Error:', error.message);
+        set.status = 500;
+        return { success: false, message: error.message };
+    }
+};

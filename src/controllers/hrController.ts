@@ -243,6 +243,57 @@ export const getMissionHeadCheck = async ({ params, set }: any) => {
     } catch (error: any) { return serverError(set, 'getMissionHeadCheck', error); }
 };
 
+// ── สิทธิ์เข้าถึงหน้าอนุมัติการลา ────────────────────────────────────────────
+// อนุมัติการลาได้เฉพาะผู้ที่ "เป็นหัวหน้า/รักษาการ" ของหน่วยใดหน่วยหนึ่งจริงเท่านั้น
+// (กลุ่มภารกิจ / กลุ่มงาน / หน่วยงาน) หรือเป็น ผอ./รักษาการ ผอ. — ADMIN เข้าดูได้เพื่อดูแลระบบ
+// ใช้ user.id จาก JWT เสมอ (ไม่รับ param) เพื่อไม่ให้เช็คสิทธิ์แทนคนอื่นได้
+export const getLeaveApproverCheck = async ({ user, set }: any) => {
+    try {
+        const uid = Number(user?.id);
+        const [missions, majors, submajors, directorRows, roleRows] = await Promise.all([
+            core_kon`
+                SELECT mission_id AS id, name, (supervisor_id = ${uid}) AS is_primary
+                FROM missions
+                WHERE is_active = 'Y' AND (supervisor_id = ${uid} OR acting_supervisor_id = ${uid})
+                ORDER BY name`,
+            core_kon`
+                SELECT major_id AS id, name, (supervisor_id = ${uid}) AS is_primary
+                FROM majors
+                WHERE is_active = 'Y' AND (supervisor_id = ${uid} OR acting_supervisor_id = ${uid})
+                ORDER BY name`,
+            core_kon`
+                SELECT submajor_id AS id, name, (supervisor_id = ${uid}) AS is_primary
+                FROM submajors
+                WHERE is_active = 'Y' AND (supervisor_id = ${uid} OR acting_supervisor_id = ${uid})
+                ORDER BY name`,
+            core_kon`
+                SELECT name, value FROM hr_settings
+                WHERE name IN ('director_id', 'acting_director_id')`,
+            core_kon`
+                SELECT r.role_name
+                FROM core_kon.user_m_users_roles mu
+                LEFT JOIN core_kon.user_roles r ON r.id = mu.role_id
+                WHERE mu.user_id = ${uid}`,
+        ]);
+
+        const isDirector = directorRows.some((r: any) => r.value != null && Number(r.value) === uid);
+        const roles = roleRows.map((r: any) => String(r.role_name ?? '').toUpperCase());
+        const isAdmin = roles.includes('ADMIN');
+
+        return {
+            success: true,
+            data: {
+                is_approver: missions.length > 0 || majors.length > 0 || submajors.length > 0 || isDirector || isAdmin,
+                is_director: isDirector,
+                is_admin: isAdmin,
+                missions,
+                majors,
+                submajors,
+            },
+        };
+    } catch (error: any) { return serverError(set, 'getLeaveApproverCheck', error); }
+};
+
 // แต่งตั้ง/ถอดถอน ผอ. — กันซ้ำกับผู้ที่เป็นรักษาการ ผอ. อยู่
 export const updateDirector = async ({ body, set, user }: any) => {
     try {

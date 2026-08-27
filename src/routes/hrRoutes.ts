@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { requireRoles } from '../middlewares/roleGuard';
-import { getLeaveTypes, getLeaveEntitlements, getLeaveEntitlementByUserTypeId, getMissionSupervisorByUserId, getMajorSupervisorByUserId, getSubMajorSupervisorByUserId, updateMissionSupervisor, updateMissionActingSupervisor, updateMajorSupervisor, updateMajorActingSupervisor, updateSubMajorSupervisor, updateSubMajorActingSupervisor, getDirector, updateDirector, updateActingDirector, getMissionHeadCheck, getLeaveTypesFull, updateLeaveType, updateLeaveEntitlement, createLeaveEntitlement, deleteLeaveEntitlement } from '../controllers/hrController';
+import { getLeaveTypes, getLeaveEntitlements, getLeaveEntitlementByUserTypeId, getMissionSupervisorByUserId, getMajorSupervisorByUserId, getSubMajorSupervisorByUserId, updateMissionSupervisor, updateMissionActingSupervisor, updateMajorSupervisor, updateMajorActingSupervisor, updateSubMajorSupervisor, updateSubMajorActingSupervisor, getDirector, updateDirector, updateActingDirector, getMissionHeadCheck, getLeaveApproverCheck, getLeaveTypesFull, updateLeaveType, updateLeaveEntitlement, createLeaveEntitlement, deleteLeaveEntitlement } from '../controllers/hrController';
 import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitReasons, getExitMonthly, getAgeGroups, getGenders, getMissionGroups } from '../controllers/hrDashboardController';
 import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances } from '../controllers/hrLeaveBalanceController';
 
@@ -67,6 +67,14 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     .get('/mission-head-check/:id', getMissionHeadCheck, {
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['HR'], summary: 'เช็คว่า user เป็นหัวหน้า/รักษาการกลุ่มภารกิจ', description: 'true ถ้า user เป็น supervisor_id หรือ acting_supervisor_id ของ missions ใด — การลาต้องเสนอ ผอ. โดยตรง' }
+    })
+    // เช็คสิทธิ์เข้าหน้าอนุมัติการลาของผู้ใช้ที่ล็อกอินอยู่ (ใช้ user จาก JWT ไม่รับ param)
+    .get('/leave-approver-check', getLeaveApproverCheck, {
+        detail: {
+            tags: ['HR'],
+            summary: 'เช็คสิทธิ์เข้าหน้าอนุมัติการลา',
+            description: 'is_approver = true เมื่อผู้ใช้เป็นหัวหน้า/รักษาการของกลุ่มภารกิจ, กลุ่มงาน หรือหน่วยงาน (หรือเป็น ผอ./รักษาการ ผอ./ADMIN) พร้อมคืนรายชื่อหน่วยที่ดูแล'
+        }
     })
     // ดึงค่า ผอ. / รักษาการ ผอ. ปัจจุบัน
     .get('/director', getDirector, {

@@ -16,6 +16,10 @@ import { userRolesRoutes } from "./routes/userRolesRoutes";
 import { accountingRoutes } from "./routes/accountingRoutes";
 import { medicalStatRoutes } from "./routes/medicalStatRoutes";
 import { itRoadmapRoutes, itRoadmapSwaggerTags } from "./routes/itRoadmapRoutes";
+import { assetDonationRoutes } from "./routes/assetDonationRoutes";
+import { mfaAdminRoutes } from "./routes/mfaAdminRoutes";
+import { userCredentialRoutes } from "./routes/userCredentialRoutes";
+import { appModuleRoutes } from "./routes/appModuleRoutes";
 import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 
 const app = new Elysia()
@@ -46,6 +50,9 @@ const app = new Elysia()
           { name: 'Users - Roles', description: 'Role management and role-permission mapping endpoints' },
           // แท็กของโมดูล IT Roadmap — นิยามไว้ในไฟล์ route (แก้ที่เดียว)
           ...itRoadmapSwaggerTags,
+          { name: 'AssetDonation', description: 'ระบบรับบริจาคครุภัณฑ์โรงพยาบาล — เจ้าหน้าที่รับบริจาค → กรรมการ 3 ท่านลงมติ → ฝ่ายพัสดุขึ้นทะเบียน' },
+          { name: 'MFA', description: 'ตั้งค่าการยืนยันตัวตนสองชั้น (OTP ผ่าน Line หมอพร้อม) — เฉพาะ ADMIN' },
+          { name: 'UserCredential', description: 'จัดการ username / รหัสผ่าน / เลขบัตรประชาชนของบุคลากร — เฉพาะ ADMIN และ IT_STAFF' },
         ],
         components: {
           securitySchemes: {
@@ -78,6 +85,10 @@ const app = new Elysia()
   .use(accountingRoutes)
   .use(medicalStatRoutes)
   .use(itRoadmapRoutes)
+  .use(assetDonationRoutes)
+  .use(mfaAdminRoutes)
+  .use(userCredentialRoutes)
+  .use(appModuleRoutes)
   //.get("/", () => "Hello Elysia")
   .listen(process.env.PORT || 5000);
 

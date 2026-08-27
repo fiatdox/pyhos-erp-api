@@ -1,5 +1,8 @@
 import { core_kon } from '../db/db';
 import { sendChangePasswordAlert } from '../utils/mophAlert';
+import { getPasswordPolicy, evaluatePassword } from '../utils/passwordPolicy';
+import { checkPassword } from '../utils/passwordStrength';
+import { getUsernamePolicy, evaluateUsername, checkUsername } from '../utils/usernamePolicy';
 
 // ดึงรายชื่อผู้ใช้ทั้งหมด (ไม่ดึง password ออกมาเพื่อความปลอดภัย)
 export const getAllUsers = async ({ set }: any) => {
@@ -115,8 +118,11 @@ export const updateUser = async ({ params, body, set }: any) => {
             userData.password = await Bun.password.hash(userData.password, {
                 algorithm: "argon2id",
             });
+            // รหัสที่ผู้ดูแลตั้งให้ = รหัสชั่วคราว → ล้างวันเปลี่ยนรหัส เพื่อบังคับให้เจ้าของบัญชี
+            // ตั้งรหัสของตัวเองเมื่อ login ครั้งถัดไป (มีผลเฉพาะตอนเปิดนโยบายอายุรหัสผ่าน)
+            userData.password_changed_at = null;
         }
-        
+
         userData.updated_at = new Date(); // อัปเดต timestamp ล่าสุด
 
         const result = await core_kon`
@@ -159,6 +165,132 @@ export const activateUser = async ({ params, set }: any) => {
 };
 
 // เปลี่ยนรหัสผ่าน
+// สถานะรหัสผ่านของผู้ใช้ที่ล็อกอินอยู่ — คำนวณจากวันที่เปลี่ยนรหัสล่าสุด
+// ใช้แสดงแถบเตือนบนทุกหน้า (ไม่บล็อกการใช้งาน)
+export const getMyPasswordStatus = async ({ user, set }: any) => {
+    try {
+        const [row] = await core_kon`SELECT password_changed_at FROM users WHERE id = ${Number(user?.id)}`;
+        if (!row) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบผู้ใช้' };
+        }
+        const policy = await getPasswordPolicy();
+        return {
+            success: true,
+            data: { ...evaluatePassword(row.password_changed_at ?? null, policy), policy_enabled: policy.enabled, expiry_days: policy.expiryDays },
+        };
+    } catch (error: any) {
+        console.error('[userController] getMyPasswordStatus:', error);
+        set.status = 500;
+        return { success: false, message: 'เกิดข้อผิดพลาดภายในระบบ' };
+    }
+};
+
+// ── นโยบายชื่อผู้ใช้: ตั้งชื่อผู้ใช้ใหม่ด้วยตัวเอง ────────────────────────────
+// ผู้ใช้ 98.9% ของระบบมี username = เลขบัตรประชาชน (หน้าเพิ่มบุคลากรตั้งให้อัตโนมัติ)
+// สองฟังก์ชันนี้เปิดทางให้เจ้าของบัญชีแก้เองได้ โดยไม่ต้องรอ IT ทีละคน
+export const getMyUsernameStatus = async ({ user, set }: any) => {
+    try {
+        const [row] = await core_kon`SELECT username, id_card FROM users WHERE id = ${Number(user?.id)}`;
+        if (!row) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบผู้ใช้' };
+        }
+        const policy = await getUsernamePolicy();
+        return {
+            success: true,
+            data: { ...evaluateUsername(row.username, row.id_card, policy), username: row.username },
+        };
+    } catch (error: any) {
+        console.error('[userController] getMyUsernameStatus:', error);
+        set.status = 500;
+        return { success: false, message: 'เกิดข้อผิดพลาดภายในระบบ' };
+    }
+};
+
+// ตรวจชื่อผู้ใช้ก่อนบันทึก — ให้หน้าจอบอกได้ทันทีว่าชื่อนี้ซ้ำหรือไม่
+// ใช้ตรรกะชุดเดียวกับตอนบันทึกจริง (checkUsername + คิวรีชื่อซ้ำ) ผลจึงตรงกันเสมอ
+export const checkMyUsername = async ({ query, user, set }: any) => {
+    try {
+        const uid = Number(user?.id);
+        const v = String(query?.username ?? '').trim();
+        if (!v) return { success: true, data: { available: false, message: '' } };
+
+        const [row] = await core_kon`SELECT username, id_card FROM users WHERE id = ${uid}`;
+        if (!row) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบผู้ใช้' };
+        }
+        if (v === row.username)
+            return { success: true, data: { available: false, message: 'ชื่อผู้ใช้ใหม่ต้องไม่ซ้ำกับชื่อเดิม' } };
+
+        const check = checkUsername(v, { idCard: row.id_card });
+        if (!check.ok) return { success: true, data: { available: false, message: check.message } };
+
+        const [dup] = await core_kon`
+            SELECT 1 FROM users WHERE LOWER(username) = LOWER(${v}) AND id <> ${uid}`;
+        return dup
+            ? { success: true, data: { available: false, message: `ชื่อผู้ใช้ "${v}" ถูกใช้แล้ว กรุณาเลือกชื่ออื่น` } }
+            : { success: true, data: { available: true, message: `ใช้ชื่อ "${v}" ได้` } };
+    } catch (error: any) {
+        console.error('[userController] checkMyUsername:', error);
+        set.status = 500;
+        return { success: false, message: 'เกิดข้อผิดพลาดภายในระบบ' };
+    }
+};
+
+export const changeMyUsername = async ({ body, set, user, jwt, request, server }: any) => {
+    try {
+        const uid = Number(user?.id);
+        const next = String(body?.username ?? '').trim();
+
+        const [row] = await core_kon`SELECT username, id_card FROM users WHERE id = ${uid}`;
+        if (!row) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบผู้ใช้' };
+        }
+        if (next === row.username) {
+            set.status = 400;
+            return { success: false, message: 'ชื่อผู้ใช้ใหม่ต้องไม่ซ้ำกับชื่อเดิม' };
+        }
+
+        const check = checkUsername(next, { idCard: row.id_card });
+        if (!check.ok) {
+            set.status = 400;
+            return { success: false, message: check.message };
+        }
+
+        // เทียบแบบไม่สนตัวพิมพ์ กันสร้างชื่อที่คนอ่านแยกไม่ออกจากของคนอื่น
+        const [dup] = await core_kon`
+            SELECT id FROM users WHERE LOWER(username) = LOWER(${next}) AND id <> ${uid}`;
+        if (dup) {
+            set.status = 409;
+            return { success: false, message: `ชื่อผู้ใช้ "${next}" ถูกใช้แล้ว กรุณาเลือกชื่ออื่น` };
+        }
+
+        await core_kon`UPDATE users SET username = ${next}, updated_at = NOW() WHERE id = ${uid}`;
+
+        const ip = server?.requestIP?.(request)?.address
+            ?? request?.headers?.get?.('x-forwarded-for') ?? 'unknown';
+        try {
+            await core_kon`
+                INSERT INTO user_credential_audit
+                    (target_user_id, target_username, actor_user_id, actor_username, field, old_value, new_value, client_ip)
+                VALUES (${uid}, ${row.username}, ${uid}, ${row.username}, 'username', ${row.username}, ${next}, ${ip})`;
+        } catch (e: any) {
+            console.error('[userController] เขียน audit ชื่อผู้ใช้ไม่สำเร็จ:', e?.message);
+        }
+
+        // token เดิมยังถือ username เก่าและ claim unc=true อยู่ — ต้องออกใบใหม่ ไม่งั้นผู้ใช้ยังติดด่านเดิม
+        const token = await jwt.sign({ id: uid, username: next, unc: false });
+        return { success: true, data: { username: next }, token, message: 'เปลี่ยนชื่อผู้ใช้เรียบร้อยแล้ว' };
+    } catch (error: any) {
+        console.error('[userController] changeMyUsername:', error);
+        set.status = 500;
+        return { success: false, message: 'เกิดข้อผิดพลาดภายในระบบ' };
+    }
+};
+
 export const changePassword = async ({ params, body, set, user }: any) => {
     try {
         const { old_password, new_password } = body;
@@ -180,11 +312,18 @@ export const changePassword = async ({ params, body, set, user }: any) => {
         }
 
         const users = await core_kon`
-            SELECT id, password, id_card, pname, fname, lname FROM users WHERE id = ${params.id}
+            SELECT id, username, password, id_card, pname, fname, lname FROM users WHERE id = ${params.id}
         `;
         if (users.length === 0) {
             set.status = 404;
             return { success: false, message: 'User not found' };
+        }
+
+        // ตรวจความแข็งแรงฝั่ง server — เดิมตรวจแค่ในหน้าเว็บ ซึ่งเลี่ยงได้ด้วยการยิง API ตรง
+        const check = checkPassword(new_password, { idCard: users[0].id_card, username: users[0].username });
+        if (!check.ok) {
+            set.status = 400;
+            return { success: false, message: check.message, failed: check.failed };
         }
 
         if (isOwner) {
@@ -198,7 +337,7 @@ export const changePassword = async ({ params, body, set, user }: any) => {
         const hashed = await Bun.password.hash(new_password, { algorithm: 'argon2id' });
 
         await core_kon`
-            UPDATE users SET password = ${hashed}, updated_at = NOW() WHERE id = ${params.id}
+            UPDATE users SET password = ${hashed}, password_changed_at = NOW(), updated_at = NOW() WHERE id = ${params.id}
         `;
 
         // ส่งแจ้งเตือนผ่านหมอพร้อม (ไม่ block response หากส่งไม่สำเร็จ)
