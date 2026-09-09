@@ -12,9 +12,17 @@ export const searchEquipment = async ({ query, set }: any) => {
     try {
         const [rows] = await equipmentPool.execute(
             `SELECT a.noid, a.names, a.models, a.locates,
-                    a.fy, a.docno, a.notes, c.companyname,a.perunits
+                    a.fy, a.docno, a.notes, c.companyname, a.perunits,
+                    -- แปลงเป็นสตริงใน SQL เลย: receive เก็บเป็นเที่ยงคืนเวลาไทย
+                    -- ถ้าปล่อยเป็น Date แล้วให้ JSON แปลงเอง จะกลายเป็น UTC และวันเพี้ยนไป 1 วัน
+                    DATE_FORMAT(a.receive, '%Y-%m-%d') AS receive,
+                    -- ใช้คำนวณค่าเสื่อมราคา: expired = อายุการใช้งาน (ปี), deprec = อัตราต่อปี (%)
+                    a.expired, a.deprec,
+                    -- ประเภทสินทรัพย์ ใช้เทียบกับช่วงอายุตามตารางที่ 1 ของหลักเกณฑ์ภาครัฐ
+                    a.assetcatid, cat.catdesc AS assetcatname
              FROM   deprecia a
              LEFT OUTER JOIN company c ON c.companycode = a.company
+             LEFT OUTER JOIN assetcat cat ON cat.assetcatid = a.assetcatid
              WHERE  a.noid        LIKE ?
                 OR  a.names       LIKE ?
                 OR  a.models      LIKE ?
