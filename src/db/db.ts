@@ -11,6 +11,18 @@ export const equipmentPool = mysql.createPool({
     connectionLimit: 30,
 });
 
+// ทะเบียนครุภัณฑ์ระบบใหม่ (V2) — คนละเครื่อง คนละฐานข้อมูลกับ equipmentPool
+// โครงสร้างตาราง deprecia คล้ายกันแต่ไม่เหมือนเป๊ะ และรหัส assetcatid คนละชุด
+export const equipmentV2Pool = mysql.createPool({
+    host: process.env.EQUIPMENT_V2_HOST,
+    port: Number(process.env.EQUIPMENT_V2_PORT),
+    user: process.env.EQUIPMENT_V2_USER,
+    password: process.env.EQUIPMENT_V2_PASSWORD,
+    database: process.env.EQUIPMENT_V2_DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 30,
+});
+
 export const hisPool = mysql.createPool({
     host: process.env.HIS_HOST,
     port: Number(process.env.HIS_PORT),

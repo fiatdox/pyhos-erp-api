@@ -6,7 +6,7 @@ import { systemRoutes } from "./routes/systemRoutes";
 import { permissionRoutes, roleRoutes, userRoleRoutes } from "./routes/permissionRoutes";
 import { hrRoutes } from "./routes/hrRoutes";
 import { itRoutes } from "./routes/itRoutes";
-import { equipmentRoutes } from "./routes/equipmentRoutes";
+import { equipmentRoutes, equipmentV2Routes } from "./routes/equipmentRoutes";
 import { hisRoutes } from "./routes/hisRoutes";
 import { itRiskRoutes } from "./routes/itRiskRoutes";
 import { itActivityRoutes } from "./routes/itActivityRoutes";
@@ -77,6 +77,7 @@ const app = new Elysia()
   .use(hrRoutes)
   .use(itRoutes)
   .use(equipmentRoutes)
+  .use(equipmentV2Routes)
   .use(hisRoutes)
   .use(itRiskRoutes)
   .use(itActivityRoutes)
