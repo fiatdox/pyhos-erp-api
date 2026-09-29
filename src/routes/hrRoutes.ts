@@ -3,6 +3,12 @@ import { authMiddleware } from '../middlewares/authMiddleware';
 import { requireRoles } from '../middlewares/roleGuard';
 import { getLeaveTypes, getLeaveEntitlements, getLeaveEntitlementByUserTypeId, getMissionSupervisorByUserId, getMajorSupervisorByUserId, getSubMajorSupervisorByUserId, updateMissionSupervisor, updateMissionActingSupervisor, updateMajorSupervisor, updateMajorActingSupervisor, updateSubMajorSupervisor, updateSubMajorActingSupervisor, getDirector, updateDirector, updateActingDirector, getMissionHeadCheck, getLeaveApproverCheck, getLeaveTypesFull, updateLeaveType, updateLeaveEntitlement, createLeaveEntitlement, deleteLeaveEntitlement } from '../controllers/hrController';
 import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitReasons, getExitMonthly, getAgeGroups, getGenders, getMissionGroups } from '../controllers/hrDashboardController';
+import {
+    createLeaveRequest, previewApprovalChain, getMyLeaveRequests, getPendingApprovals,
+    approveLeaveRequest, rejectLeaveRequest, requestCancellation,
+    approveCancellation, rejectCancellation, getLeaveRequestById, getLeaveSummary, getLeaveQuota,
+    deleteLeaveRequest,
+} from '../controllers/hrLeaveRequestController';
 import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances } from '../controllers/hrLeaveBalanceController';
 
 export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
@@ -80,6 +86,109 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     .get('/director', getDirector, {
         detail: { tags: ['HR'], summary: 'ดึง ผอ. และรักษาการ ผอ. ปัจจุบัน', description: 'อ่านค่า director_id, acting_director_id จากตาราง hr_settings' }
     })
+    // ── ใบลา ────────────────────────────────────────────────────────────────
+    // ทุกเส้นทางใช้ user.id จาก JWT เสมอ ไม่รับ user_id จาก body
+    // สิทธิ์กดอนุมัติเช็คจาก approval_chain ในใบ ไม่ได้เช็คจากตำแหน่งปัจจุบัน
+    .get('/leave-requests/approval-chain', previewApprovalChain, {
+        detail: { tags: ['HR'], summary: 'ดูสายอนุมัติของตัวเองก่อนยื่นใบลา' }
+    })
+    .get('/leave-requests/summary', getLeaveSummary, {
+        query: t.Object({ from: t.Optional(t.String()), to: t.Optional(t.String()) }),
+        detail: {
+            tags: ['HR'],
+            summary: 'สรุปรายการลาตามขอบเขตที่ผู้เรียกมีสิทธิ์เห็น',
+            description: 'ADMIN/HR เห็นทุกคน · หัวหน้าเห็นเฉพาะหน่วยที่ตัวเองคุม · พนักงานทั่วไปเห็นเฉพาะของตัวเอง',
+        }
+    })
+    .get('/leave-requests/quota', getLeaveQuota, {
+        query: t.Object({ leave_type_id: t.String(), start_date: t.Optional(t.String()) }),
+        detail: { tags: ['HR'], summary: 'สิทธิ์วันลาคงเหลือของตัวเอง (ตามประเภทการลาและปีงบ)' }
+    })
+    .get('/leave-requests/mine', getMyLeaveRequests, {
+        query: t.Object({ status: t.Optional(t.String()) }),
+        detail: { tags: ['HR'], summary: 'ใบลาของฉัน' }
+    })
+    .get('/leave-requests/pending-approval', getPendingApprovals, {
+        query: t.Object({ scope: t.Optional(t.String()) }),
+        detail: {
+            tags: ['HR'],
+            summary: 'ใบลาที่รอฉันอนุมัติ',
+            description: 'scope=pending (ค่าตั้งต้น) = เฉพาะที่รอขั้นของฉันตอนนี้ · scope=all = ใบที่ผ่านมือฉันทั้งหมด',
+        }
+    })
+    .get('/leave-requests/:id', getLeaveRequestById, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['HR'], summary: 'รายละเอียดใบลา (เจ้าของใบ / ผู้อยู่ในสายอนุมัติ / ADMIN)' }
+    })
+    .delete('/leave-requests/:id', deleteLeaveRequest, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: {
+            tags: ['HR'],
+            summary: 'ลบใบลาของตัวเอง',
+            description: 'ลบได้เฉพาะใบที่ยังไม่มีผู้อนุมัติคนใดกด — ถ้ามีการกดแล้วต้องใช้การถอนใบลาแทน',
+        }
+    })
+    .post('/leave-requests', createLeaveRequest, {
+        body: t.Object({
+            leave_type_id: t.Numeric(),
+            start_date: t.String({ minLength: 10, maxLength: 10 }),
+            end_date: t.String({ minLength: 10, maxLength: 10 }),
+            total_days: t.Numeric(),
+            is_half_day: t.Optional(t.Boolean()),
+            half_day_period: t.Optional(t.Nullable(t.String())),
+            reason: t.Optional(t.Nullable(t.String())),
+            document_url: t.Optional(t.Nullable(t.String())),
+        }),
+        detail: { tags: ['HR'], summary: 'ยื่นใบลา' },
+        error({ code, set }) {
+            if (code === 'VALIDATION') {
+                set.status = 400;
+                return { success: false, message: 'ข้อมูลใบลาไม่ครบถ้วนหรือรูปแบบไม่ถูกต้อง' };
+            }
+        },
+    })
+    .post('/leave-requests/:id/approve', approveLeaveRequest, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({ comment: t.Optional(t.Nullable(t.String())) }),
+        detail: { tags: ['HR'], summary: 'อนุมัติใบลา (ขั้นที่ใบกำลังรออยู่)' }
+    })
+    .post('/leave-requests/:id/reject', rejectLeaveRequest, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({ comment: t.String({ minLength: 1 }) }),
+        detail: { tags: ['HR'], summary: 'ไม่อนุมัติใบลา (ต้องระบุเหตุผล)' },
+        error({ code, set }) {
+            if (code === 'VALIDATION') {
+                set.status = 400;
+                return { success: false, message: 'กรุณาระบุเหตุผลที่ไม่อนุมัติ' };
+            }
+        },
+    })
+    .post('/leave-requests/:id/cancel', requestCancellation, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({ reason: t.Optional(t.Nullable(t.String())) }),
+        detail: {
+            tags: ['HR'],
+            summary: 'ขอยกเลิกใบลา',
+            description: 'ใบที่ยังไม่มีใครอนุมัติ = ถอนได้ทันที · ใบที่อนุมัติแล้ว = เข้าสายอนุมัติชุดเดิมอีกรอบ',
+        }
+    })
+    .post('/leave-requests/:id/cancel/approve', approveCancellation, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({ comment: t.Optional(t.Nullable(t.String())) }),
+        detail: { tags: ['HR'], summary: 'อนุมัติการยกเลิกใบลา' }
+    })
+    .post('/leave-requests/:id/cancel/reject', rejectCancellation, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({ comment: t.String({ minLength: 1 }) }),
+        detail: { tags: ['HR'], summary: 'ไม่อนุมัติการยกเลิกใบลา' },
+        error({ code, set }) {
+            if (code === 'VALIDATION') {
+                set.status = 400;
+                return { success: false, message: 'กรุณาระบุเหตุผลที่ไม่อนุมัติการยกเลิก' };
+            }
+        },
+    })
+
     // ── ตั้งค่ากำหนดสิทธิ์การลา / แต่งตั้งหัวหน้า — จำกัดเฉพาะ role ADMIN และ HR เท่านั้น ──
     // หมายเหตุ: requireRoles มีผลกับ route ที่ประกาศ "หลัง" บรรทัดนี้เท่านั้น (GET ด้านบนไม่โดน)
     .use(requireRoles('ADMIN', 'HR'))
@@ -220,5 +329,3 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         body: t.Object({ acting_supervisor_id: t.Nullable(t.Numeric()) }),
         detail: { tags: ['HR'], summary: 'อัปเดตรักษาการหน่วยงาน', description: 'แก้ไข acting_supervisor_id ในตาราง submajors ตาม submajor_id' }
     });
-
-    

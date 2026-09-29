@@ -237,7 +237,8 @@ export const getMissionHeadCheck = async ({ params, set }: any) => {
     try {
         const rows = await core_kon`
             SELECT 1 FROM missions
-            WHERE supervisor_id = ${params.id} OR acting_supervisor_id = ${params.id}
+            WHERE is_active = 'Y'
+              AND (supervisor_id = ${params.id} OR acting_supervisor_id = ${params.id})
             LIMIT 1`;
         return { success: true, data: { is_mission_head: rows.length > 0 } };
     } catch (error: any) { return serverError(set, 'getMissionHeadCheck', error); }
