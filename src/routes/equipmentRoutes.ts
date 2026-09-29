@@ -19,7 +19,7 @@ export const equipmentRoutes = new Elysia({ prefix: '/api/v1/equipment' })
         },
     })
     .get('/depreciation-year', getDepreciationYearAssets, {
-        query: t.Object({ fy: t.String({ minLength: 4 }) }),
+        query: t.Object({ fy: t.String({ minLength: 4 }), scope: t.Optional(t.String()) }),
         detail: {
             tags: ['Equipment'],
             summary: 'ครุภัณฑ์ที่ยังคิดค่าเสื่อมในปีงบที่ระบุ',
@@ -51,7 +51,7 @@ export const equipmentV2Routes = new Elysia({ prefix: '/api/v1/equipment-v2' })
         },
     })
     .get('/depreciation-year', getDepreciationYearAssetsV2, {
-        query: t.Object({ fy: t.String({ minLength: 4 }) }),
+        query: t.Object({ fy: t.String({ minLength: 4 }), scope: t.Optional(t.String()) }),
         detail: {
             tags: ['Equipment'],
             summary: 'ครุภัณฑ์ที่ยังคิดค่าเสื่อมในปีงบที่ระบุ (ระบบ V2)',
