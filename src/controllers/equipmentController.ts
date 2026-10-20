@@ -205,3 +205,88 @@ export const getDepreciationYearAssets = ({ query, set }: any) =>
 export const getDepreciationYearAssetsV2 = ({ query, set }: any) =>
     depreciationYearQuery(equipmentV2Pool, query, set, 'EquipmentV2',
         { excludeTransferred: true, excludeIsCode2: true });
+
+// ── รายงานครุภัณฑ์แยกตามหน่วยงาน (ทะเบียน V2) ──────────────────────────────
+// พอร์ตจากรายงาน deprecia_v2_dep ของระบบเดิม และแก้จุดที่ทำให้ช้า/ผิด:
+//  - ตารางคำอธิบาย (หมวด ประเภท หน่วยงาน ผู้ขาย ฯลฯ) มีแค่หลักสิบถึงหลักพันแถว
+//    ส่งแยกไปครั้งเดียวแทนการ join ซ้ำทุกแถว ข้อความไทยยาว ๆ ไม่ต้องวิ่งซ้ำหมื่นรอบ
+//    วัดกับฐานจริง (12,722 รายการ): 5.4 วินาที / 16.4 MB → 0.46 วินาที / 6.6 MB
+//  - ตัด GROUP BY noid, code_bps ทิ้ง — noid ไม่ซ้ำในชุดนี้และตารางคำอธิบายไม่มีคีย์ซ้ำ
+//    จึงไม่ได้กันแถวซ้ำอะไร แค่บังคับให้ MySQL sort ลง temp table
+//  - ไม่ดึงทั้งทะเบียนซ้ำรอบที่สองเพื่อทำหัวรายงาน หน้าเว็บจัดกลุ่มตามหน่วยงานจากชุดเดียวกัน
+//  - ตัดเงื่อนไขที่ไม่ได้กรองอะไร: fy IN (2500..2580) ซึ่งพิมพ์ผิดจน fy 2534/2535 หลุด
+//    และ assetcatid IN (1..12) ซึ่งครอบทุกหมวดที่มีอยู่แล้ว
+//  - ตัวกรองปีงบ/หมวด/หน่วยงานย้ายไปทำที่หน้าเว็บ ข้อมูลทั้งทะเบียนเล็กพอ เปลี่ยนตัวกรองได้ทันที
+//    (ของเดิมเช็ค $request->department แต่ใช้ $request->departments จึงไม่เคยกรองหน่วยงานได้จริง)
+//  - ค่าจากผู้ใช้ไม่ได้ต่อเข้า SQL ตรง ๆ อีก (ของเดิมเปิดช่อง SQL injection ทุกตัวกรอง)
+
+// สถานะที่นับเป็นครุภัณฑ์ที่ยังถือครองอยู่: 1 ส่งซ่อม, 4 อยู่ในหน่วยงาน, W กำลังดำเนินการ
+// (ไม่รวม 2 ขายทอดตลาด, 3 โอนย้าย, 6 ย้ายไป V3)
+const DEPT_REPORT_ISCODES = ['1', '4', 'W'];
+
+// สถานีอนามัย 21 แห่ง (202102–202122) ที่แยกออกไปแล้ว — รายงานเดิมตัดทิ้งเสมอ
+// รายการเดิมตกจุลภาคระหว่าง '202119' '202120' MySQL เลยต่อเป็นสตริงเดียว สองรหัสนี้จึงไม่ถูกตัด
+const DETACHED_HEALTH_STATIONS = Array.from({ length: 21 }, (_, i) => String(202102 + i));
+
+// แปลงแถวของตารางคำอธิบายเป็น { รหัส: ค่า } — คีย์ของ JSON เป็นสตริงเสมอ
+// หน้าเว็บจึงเทียบได้ทั้งรหัสที่เก็บเป็นตัวเลขและเป็นข้อความ (เช่น typeid int กับ hsro_typecode varchar)
+const toDict = <T>(rows: any[], key: string, value: (r: any) => T): Record<string, T> => {
+    const out: Record<string, T> = {};
+    for (const r of rows) if (r[key] != null) out[String(r[key])] = value(r);
+    return out;
+};
+
+export const getAssetsByDepartmentV2 = async ({ set }: any) => {
+    try {
+        const rowsSql =
+            `SELECT d.noid, d.noid_old, d.numbers, d.assetcatid, d.typeid, d.subtypeid, d.code_bps,
+                    d.names, d.models,
+                    -- receive เป็น timestamp ส่งเป็นสตริงวันที่ กันวันเพี้ยนตอนแปลงเป็น UTC
+                    DATE_FORMAT(d.receive, '%Y-%m-%d') AS receive,
+                    d.fy, d.locates, d.divs, d.docno, d.company, d.kmoney, d.tmoney,
+                    d.perunits, d.deprec, d.expired, d.gf, d.notes, d.iscode
+             FROM   deprecia d
+             WHERE  d.iscode IN (${DEPT_REPORT_ISCODES.map(() => '?').join(', ')})
+               AND  (d.trans IS NULL OR d.trans = '')
+               -- เผื่อ NULL ไว้: ครุภัณฑ์ที่ไม่ได้ระบุหน่วยงานต้องยังเห็นในรายงาน ไม่ใช่หายไปเงียบ ๆ
+               AND  (d.divs IS NULL OR d.divs NOT IN (${DETACHED_HEALTH_STATIONS.map(() => '?').join(', ')}))
+             ORDER BY d.divs, d.assetcatid, d.noid`;
+
+        const [[rows], [cat], [type], [subtype], [kind], [supplier], [kmoney], [tmoney], [iscode], [dept]] =
+            await Promise.all([
+                equipmentV2Pool.execute(rowsSql, [...DEPT_REPORT_ISCODES, ...DETACHED_HEALTH_STATIONS]),
+                equipmentV2Pool.query(`SELECT assetcatid, catdesc FROM assetcat`),
+                equipmentV2Pool.query(`SELECT hsro_typecode, hsro_typename FROM hsro_type`),
+                equipmentV2Pool.query(`SELECT hsro_subtype, hsro_sutypename FROM hsro_subtype`),
+                equipmentV2Pool.query(`SELECT bps_code, hsro_kindname FROM hsro_kind`),
+                // ทะเบียน V2 ผูกผู้ขายกับ stock_supplier (ตาราง company จับคู่ได้น้อยกว่าและชื่อไม่ตรงกันหลายพันแถว)
+                equipmentV2Pool.query(`SELECT supplier_id, supplier_name, supplier_address1, supplier_phone FROM stock_supplier`),
+                equipmentV2Pool.query(`SELECT kmoneyid, kmoneydesc FROM kmoney`),
+                equipmentV2Pool.query(`SELECT tmoneyid, tmoneydesc FROM tmoney`),
+                equipmentV2Pool.query(`SELECT iscode, iscodename FROM iscode`),
+                equipmentV2Pool.query(`SELECT depcode, department FROM department`),
+            ]) as any[];
+
+        return {
+            success: true,
+            data: rows,
+            lookups: {
+                category: toDict(cat, 'assetcatid', r => r.catdesc),
+                type: toDict(type, 'hsro_typecode', r => r.hsro_typename),
+                subtype: toDict(subtype, 'hsro_subtype', r => r.hsro_sutypename),
+                kind: toDict(kind, 'bps_code', r => r.hsro_kindname),
+                supplier: toDict(supplier, 'supplier_id', r => ({
+                    name: r.supplier_name, address: r.supplier_address1, phone: r.supplier_phone,
+                })),
+                moneyType: toDict(kmoney, 'kmoneyid', r => r.kmoneydesc),
+                acquireMethod: toDict(tmoney, 'tmoneyid', r => r.tmoneydesc),
+                status: toDict(iscode, 'iscode', r => r.iscodename),
+                department: toDict(dept, 'depcode', r => r.department),
+            },
+        };
+    } catch (error: any) {
+        console.error('[EquipmentV2] By-department DB Error:', error.message, error.code);
+        set.status = 500;
+        return { success: false, message: 'ดึงข้อมูลทะเบียนครุภัณฑ์ไม่สำเร็จ' };
+    }
+};
