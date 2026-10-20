@@ -215,18 +215,22 @@ const setDirectorKey = async (key: string, otherKey: string, empId: number | nul
 export const getDirector = async ({ set }: any) => {
     try {
         const rows = await core_kon`
-            SELECT s.name, s.value, CONCAT(u.pname, ' ', u.fname, ' ', u.lname) AS full_name
+            SELECT s.name, s.value, CONCAT(u.pname, ' ', u.fname, ' ', u.lname) AS full_name,
+                   -- แบบที่ใช้พิมพ์ในเอกสารราชการ: คำนำหน้าติดชื่อ (นายยอดปิติ ตั้งตรงจิตร)
+                   CONCAT(COALESCE(u.pname, ''), u.fname, ' ', u.lname) AS display_name
             FROM hr_settings s
             LEFT JOIN users u ON u.id = NULLIF(s.value, '')::int
             WHERE s.name IN ('director_id', 'acting_director_id')`;
         const map: Record<string, number | string | null> = {
             director_id: null, acting_director_id: null,
             director_name: null, acting_director_name: null,
+            director_display_name: null, acting_director_display_name: null,
         };
         rows.forEach((r: any) => {
             map[r.name] = r.value != null ? Number(r.value) : null;
-            const nameKey = r.name === 'director_id' ? 'director_name' : 'acting_director_name';
-            map[nameKey] = r.value != null ? (r.full_name?.trim() || null) : null;
+            const prefix = r.name === 'director_id' ? 'director' : 'acting_director';
+            map[`${prefix}_name`] = r.value != null ? (r.full_name?.trim() || null) : null;
+            map[`${prefix}_display_name`] = r.value != null ? (r.display_name?.trim() || null) : null;
         });
         return { success: true, data: map };
     } catch (error: any) { return serverError(set, 'getDirector', error); }
