@@ -109,6 +109,8 @@ export const getIncidents = async ({ query, set }: any) => {
                 r.id, r.incident_no,
                 r.incident_date::text, r.detected_date::text, r.report_date::text,
                 r.reported_by, r.department,
+                -- ฟอร์มแก้ไขผูก Select ด้วย id ไม่ใช่ชื่อ ต้องส่ง id กลับไปด้วย
+                r.threat_type_id, r.attack_vector_id, r.affected_system_id,
                 tt.name_th   AS threat_type,   tt.ncsa_category,
                 av.name_th   AS attack_vector,
                 asy.name_th  AS affected_system, asy.system_category,
@@ -273,6 +275,8 @@ export const getIncidentById = async ({ params, set }: any) => {
                 r.id, r.incident_no,
                 r.incident_date::text, r.detected_date::text, r.report_date::text,
                 r.reported_by, r.department,
+                -- ฟอร์มแก้ไขผูก Select ด้วย id ไม่ใช่ชื่อ ต้องส่ง id กลับไปด้วย
+                r.threat_type_id, r.attack_vector_id, r.affected_system_id,
                 tt.name_th   AS threat_type,   tt.ncsa_category,
                 av.name_th   AS attack_vector,
                 asy.name_th  AS affected_system, asy.system_category,
