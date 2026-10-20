@@ -154,9 +154,13 @@ const depreciationYearQuery = async (
         const sql =
             `SELECT a.noid, a.names, a.perunits, a.expired,
                     DATE_FORMAT(a.receive, '%Y-%m-%d') AS receive,
-                    a.assetcatid, cat.catdesc AS assetcatname
+                    a.assetcatid, cat.catdesc AS assetcatname,
+                    -- ประเภทเงินที่ใช้ซื้อ/ได้มา เก็บเป็นรหัสใน deprecia ต้อง join คำอธิบาย
+                    -- (ใช้เป็นตัวกรองในรายงานสรุป เช่น ดูเฉพาะเงินงบประมาณ)
+                    a.kmoney AS moneycode, km.kmoneydesc AS moneytype
              FROM   deprecia a
              LEFT OUTER JOIN assetcat cat ON cat.assetcatid = a.assetcatid
+             LEFT OUTER JOIN kmoney km ON km.kmoneyid = a.kmoney
              -- ไม่กรองราคา/อายุออกที่นี่ เพราะของที่ข้อมูลไม่ครบก็ยังเป็นทรัพย์สินที่ถือครองอยู่
              -- ต้องเห็นในทะเบียนและในรายการที่ไม่เข้าเงื่อนไข ไม่ใช่หายไปเงียบ ๆ
              -- (หน้าเว็บเป็นคนแยกว่ารายการไหนคิดค่าเสื่อมได้หรือไม่ได้ พร้อมบอกสาเหตุ)
