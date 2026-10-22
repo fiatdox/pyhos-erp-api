@@ -68,11 +68,11 @@ const kpiBody = t.Object({
 
 export const itRoadmapRoutes = new Elysia({ prefix: '/api/v1/it/roadmap' })
     .use(authMiddleware)
-    // ── อ่านได้ทุกคนที่ล็อกอิน ──
+    // ── ทั้งอ่านและแก้ไข เฉพาะเจ้าหน้าที่ IT (มีผลกับ route ที่ประกาศหลังบรรทัดนี้) ──
+    // แผนโครงการ IT ไม่เปิดให้ผู้ใช้ทั่วไปเห็น หน้าเว็บซ่อนเมนูและกั้น URL ไว้ด้วย
+    .use(requireRoles(...IT_ROLES))
     .get('/', getRoadmap, { detail: d('ดึงแผนงานทั้งหมด (tasks + links)') })
     .get('/meta', getRoadmapMeta, { detail: d('ตัวเลือก master (สถานะ/ลำดับ/กลุ่มงาน/KPI/หน่วยงาน) + รายชื่อเจ้าหน้าที่ IT') })
-    // ── แก้ไข เฉพาะเจ้าหน้าที่ IT (มีผลกับ route ที่ประกาศหลังบรรทัดนี้) ──
-    .use(requireRoles(...IT_ROLES))
     .post('/tasks', createTask, { body: taskBody, detail: d('เพิ่มโครงการ/กิจกรรม/หมุดหมาย') })
     .put('/tasks/:id', updateTask, { params: t.Object({ id: t.Numeric() }), body: taskBody, detail: d('แก้ไขงาน') })
     .delete('/tasks/:id', deleteTask, { params: t.Object({ id: t.Numeric() }), detail: d('ลบงาน (งานย่อย/ลิงก์/ล็อก cascade)') })
