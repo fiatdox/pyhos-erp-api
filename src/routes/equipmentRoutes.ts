@@ -1,6 +1,9 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
-import { searchEquipment, searchEquipmentV2, getDepreciationYearAssets, getDepreciationYearAssetsV2, getAssetsByDepartmentV2 } from '../controllers/equipmentController';
+import {
+    searchEquipment, searchEquipmentV2, getDepreciationYearAssets, getDepreciationYearAssetsV2,
+    getAssetsByDepartment, getAssetsByDepartmentV2,
+} from '../controllers/equipmentController';
 
 export const equipmentRoutes = new Elysia({ prefix: '/api/v1/equipment' })
     .use(authMiddleware)
@@ -30,6 +33,13 @@ export const equipmentRoutes = new Elysia({ prefix: '/api/v1/equipment' })
                 set.status = 400;
                 return { success: false, message: 'กรุณาระบุปีงบประมาณ (พ.ศ.)' };
             }
+        },
+    })
+    .get('/by-department', getAssetsByDepartment, {
+        detail: {
+            tags: ['Equipment'],
+            summary: 'รายงานครุภัณฑ์แยกตามหน่วยงาน (ระบบ V3)',
+            description: 'ครุภัณฑ์ที่ยังถือครองอยู่ทั้งทะเบียน (iscode 1/4) พร้อมตารางคำอธิบายรหัสแยกส่งครั้งเดียว — รูปแบบเดียวกับ /api/v1/equipment-v2/by-department หน้าเว็บกรองปีงบ/หมวด/หน่วยงานเอง',
         },
     });
 

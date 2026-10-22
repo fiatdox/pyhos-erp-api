@@ -290,3 +290,82 @@ export const getAssetsByDepartmentV2 = async ({ set }: any) => {
         return { success: false, message: 'ดึงข้อมูลทะเบียนครุภัณฑ์ไม่สำเร็จ' };
     }
 };
+
+// ── รายงานครุภัณฑ์แยกตามหน่วยงาน (ทะเบียน V3) ──────────────────────────────
+// พอร์ตจากรายงาน deprecia_v3_dep ของระบบเดิม ส่งข้อมูลรูปแบบเดียวกับ V2 ทุกฟิลด์
+// หน้าเว็บจึงใช้โค้ดชุดเดียวกันได้ — คอลัมน์ของ V3 ที่ชื่อไม่ตรงกับ V2 ตั้งชื่อแทนไว้:
+//   divs      ← depcode       (รหัสหน่วยงานที่รายงานเดิมใช้ คอลัมน์ dept เป็นรหัสคนละชุด)
+//   typeid    ← groupclassid  (hsrogroupclass — ระดับบนของประเภท)
+//   subtypeid ← hsrotypeid    (hsrotype)
+// แก้จุดเดียวกับ V2 (ส่งตารางคำอธิบายแยก, ไม่ดึงหัวรายงานซ้ำ, ไม่ต่อค่าผู้ใช้เข้า SQL)
+// และเงื่อนไขของรายงานเดิมที่ทำให้ครุภัณฑ์หายจากรายงาน — ตรวจกับฐานจริงแล้ว:
+//  - รายชื่อหน่วยงานที่เขียนตายตัวไม่เคยเพิ่มหน่วยงาน 212179–212190 (11 หน่วยงานที่ยังใช้งาน
+//    เช่น อายุรกรรม 1–2, ICU4, อำนวยการ) ครุภัณฑ์ 472 รายการจึงไม่เคยขึ้นรายงาน
+//    ส่วนหน่วยงานที่ตั้งใจตัดออก (สถานีอนามัยที่ปิดแล้ว ห้อง OR เก่า ฯลฯ) ไม่มีครุภัณฑ์สถานะ 1/4 เหลือ
+//    จึงเลิกกรองหน่วยงาน
+//  - หมวด IN (1..15) ตกหมวด 16 กีฬา และ 17 สินทรัพย์ไม่มีตัวตน ที่เพิ่มมาทีหลัง (4 รายการ)
+//  - ปีงบ IN (2500..2580) พิมพ์ '2554' แทน '2534' ปี 2534 จึงหลุด (1 รายการ)
+//  - GROUP BY noid, code_bps มีไว้ยุบแถวซ้ำจากการ join hsrotype (hsrotypeid ซ้ำ 5 รหัส)
+//    ตอนนี้ยุบรหัสซ้ำในตารางคำอธิบายก่อนส่ง แถวครุภัณฑ์จึงไม่ซ้ำตั้งแต่ต้น (noid ไม่ซ้ำในชุดนี้)
+
+// สถานะที่รายงานเดิมนับ: 1 ส่งซ่อม, 4 อยู่ในหน่วยงาน
+// (ไม่รวม 6 แจ้งชำรุด, 8 รอจำหน่าย, 2 ขายทอดตลาด)
+const DEPT_REPORT_ISCODES_V3 = ['1', '4'];
+
+export const getAssetsByDepartment = async ({ set }: any) => {
+    try {
+        const rowsSql =
+            `SELECT d.noid, d.noid_old, d.numbers, d.assetcatid,
+                    d.groupclassid AS typeid, d.hsrotypeid AS subtypeid, d.code_bps,
+                    d.names, d.models,
+                    DATE_FORMAT(d.receive, '%Y-%m-%d') AS receive,
+                    d.fy, d.locates, d.depcode AS divs, d.docno, d.company, d.kmoney, d.tmoney,
+                    d.perunits, d.deprec, d.expired, d.gf, d.notes, d.iscode
+             FROM   deprecia d
+             WHERE  d.iscode IN (${DEPT_REPORT_ISCODES_V3.map(() => '?').join(', ')})
+             ORDER BY d.depcode, d.assetcatid, d.noid`;
+
+        const [[rows], [cat], [type], [subtype], [kind], [supplier], [kmoney], [tmoney], [iscode], [dept]] =
+            await Promise.all([
+                equipmentPool.execute(rowsSql, DEPT_REPORT_ISCODES_V3),
+                equipmentPool.query(`SELECT assetcatid, catdesc FROM assetcat`),
+                // รหัสในสองตารางนี้ไม่ได้เป็นคีย์หลัก — hsrotypeid ซ้ำอยู่ 5 รหัส 4 รหัสต่างกันแค่ \r\n
+                // แต่ 6515-030 มีสองชื่อจริง ใช้แถวแรก (id น้อยสุด) ให้ตรงกับที่รายงานเดิมแสดง
+                equipmentPool.query(`SELECT g.groupclassid, TRIM(g.groupclassname) AS groupclassname
+                                     FROM hsrogroupclass g
+                                     JOIN (SELECT MIN(id) AS id FROM hsrogroupclass GROUP BY groupclassid) f ON f.id = g.id`),
+                equipmentPool.query(`SELECT h.hsrotypeid, TRIM(h.hsrotypename) AS hsrotypename
+                                     FROM hsrotype h
+                                     JOIN (SELECT MIN(id) AS id FROM hsrotype GROUP BY hsrotypeid) f ON f.id = h.id`),
+                equipmentPool.query(`SELECT code_bps, hsro_desc FROM hsrodescription`),
+                // ทะเบียน V3 ผูกผู้ขายกับ stocksupplier.id (ไม่ใช่ตาราง company แบบหน้าค้นหา)
+                equipmentPool.query(`SELECT id, supplier_name, supplier_address1, supplier_phone FROM stocksupplier`),
+                equipmentPool.query(`SELECT kmoneyid, kmoneydesc FROM kmoney`),
+                equipmentPool.query(`SELECT tmoneyid, tmoneydesc FROM tmoney`),
+                equipmentPool.query(`SELECT iscode, iscodename FROM iscode`),
+                equipmentPool.query(`SELECT deprecia_depcode, department FROM departments`),
+            ]) as any[];
+
+        return {
+            success: true,
+            data: rows,
+            lookups: {
+                category: toDict(cat, 'assetcatid', r => r.catdesc),
+                type: toDict(type, 'groupclassid', r => r.groupclassname),
+                subtype: toDict(subtype, 'hsrotypeid', r => r.hsrotypename),
+                kind: toDict(kind, 'code_bps', r => r.hsro_desc),
+                supplier: toDict(supplier, 'id', r => ({
+                    name: r.supplier_name, address: r.supplier_address1, phone: r.supplier_phone,
+                })),
+                moneyType: toDict(kmoney, 'kmoneyid', r => r.kmoneydesc),
+                acquireMethod: toDict(tmoney, 'tmoneyid', r => r.tmoneydesc),
+                status: toDict(iscode, 'iscode', r => r.iscodename),
+                department: toDict(dept, 'deprecia_depcode', r => r.department),
+            },
+        };
+    } catch (error: any) {
+        console.error('[Equipment] By-department DB Error:', error.message, error.code);
+        set.status = 500;
+        return { success: false, message: 'ดึงข้อมูลทะเบียนครุภัณฑ์ไม่สำเร็จ' };
+    }
+};
