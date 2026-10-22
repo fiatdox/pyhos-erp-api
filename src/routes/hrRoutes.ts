@@ -2,7 +2,7 @@ import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { requireRoles } from '../middlewares/roleGuard';
 import { getLeaveTypes, getLeaveEntitlements, getLeaveEntitlementByUserTypeId, getMissionSupervisorByUserId, getMajorSupervisorByUserId, getSubMajorSupervisorByUserId, updateMissionSupervisor, updateMissionActingSupervisor, updateMajorSupervisor, updateMajorActingSupervisor, updateSubMajorSupervisor, updateSubMajorActingSupervisor, getDirector, updateDirector, updateActingDirector, getMissionHeadCheck, getLeaveApproverCheck, getLeaveTypesFull, updateLeaveType, updateLeaveEntitlement, createLeaveEntitlement, deleteLeaveEntitlement } from '../controllers/hrController';
-import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitReasons, getExitMonthly, getAgeGroups, getGenders, getMissionGroups } from '../controllers/hrDashboardController';
+import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitReasons, getExitMonthly, getAgeGroups, getGenders, getMissionGroups, getHrPeople, getHrAgeIssues } from '../controllers/hrDashboardController';
 import {
     createLeaveRequest, previewApprovalChain, getMyLeaveRequests, getPendingApprovals,
     approveLeaveRequest, rejectLeaveRequest, requestCancellation,
@@ -328,4 +328,18 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         params: t.Object({ id: t.Numeric() }),
         body: t.Object({ acting_supervisor_id: t.Nullable(t.Numeric()) }),
         detail: { tags: ['HR'], summary: 'อัปเดตรักษาการหน่วยงาน', description: 'แก้ไข acting_supervisor_id ในตาราง submajors ตาม submajor_id' }
+    })
+    // HR Dashboard เชิงลึก — ข้อมูลรายบุคคล (ไม่ระบุตัวตน) แยกได้ถึงหน่วยงาน จึงอยู่หลัง requireRoles เหมือนกัน
+    .get('/dashboard/people', getHrPeople, {
+        detail: {
+            tags: ['HR'], summary: 'HR Dashboard: ข้อมูลรายบุคคลแบบไม่ระบุตัวตน (ADMIN/HR)',
+            description: 'บุคลากรปัจจุบัน + ผู้ที่ออกจากงาน: รหัสหน่วยงาน/ประเภท/ตำแหน่ง เพศ อายุ ปีงบเกษียณ ปีงบที่ออก พร้อมตารางชื่อ — หน้าเว็บสรุปตามตัวกรองเอง',
+        },
+    })
+    // รายชื่อที่ข้อมูลอายุต้องแก้ (มีชื่อ + วันเกิด) — ADMIN/HR เท่านั้น
+    .get('/dashboard/age-issues', getHrAgeIssues, {
+        detail: {
+            tags: ['HR'], summary: 'HR Dashboard: บุคลากรที่เลยปีงบเกษียณ / วันเกิดผิดปกติ (ADMIN/HR)',
+            description: 'overdue = เลยปีงบเกษียณแต่ยังเป็นบุคลากรปัจจุบัน, implausible = อายุคำนวณได้นอกช่วง 18–70 ปี',
+        },
     });
