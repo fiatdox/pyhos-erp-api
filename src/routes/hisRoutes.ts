@@ -1,9 +1,15 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
+import { requireRoles } from '../middlewares/roleGuard';
 import { getSessions, deleteSession, deleteSessionsBulk } from '../controllers/hisController';
+
+// เคลียร์เซสชัน HIS เตะผู้ใช้ HOSxP ออกได้ (รวมแพทย์/พยาบาลระหว่างตรวจ) — เฉพาะเจ้าหน้าที่ IT
+// ทั้งดูรายการและลบ (รายการเปิดเผยชื่อผู้ใช้/เครื่องที่ online อยู่)
+const IT_ROLES = ['ADMIN', 'CHIEF_GROUP_IT', 'CHIEF_MISSION_IT', 'IT_STAFF'];
 
 export const hisRoutes = new Elysia({ prefix: '/api/v1/his' })
     .use(authMiddleware)
+    .use(requireRoles(...IT_ROLES))
     .get('/sessions', getSessions, {
         detail: { tags: ['HIS'], summary: 'ดึงรายการ session ที่ online อยู่', description: 'ดึง onlineid, kskloginname, computername, servername, client_version, department จากตาราง onlineuser' }
     })
