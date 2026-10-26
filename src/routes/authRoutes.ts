@@ -5,6 +5,10 @@ import { loginCOREKON, verifyOtp, resendOtp } from '../controllers/authControlle
 
 export const authRoutes = new Elysia({ prefix: '/api/v1/auth' })
     .use(rateLimit({
+        // จำกัดเฉพาะ route ใน authRoutes (login/OTP) — ค่าตั้งต้นของ elysia-rate-limit คือ 'global'
+        // ซึ่งไปนับทุก API ของทั้งระบบรวมกัน และเพราะทุก request มาผ่าน Next.js server (IP เดียว)
+        // ทั้งโรงพยาบาลจึงเคยถูกจำกัดรวมกันแค่ 100 ครั้ง/นาที
+        scoping: 'scoped',
         duration: 60000,
         max: 100,
         generator: (req, server) => server?.requestIP(req)?.address ?? req.headers.get('x-forwarded-for') ?? 'unknown',
