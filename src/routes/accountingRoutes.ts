@@ -15,7 +15,7 @@ export const accountingRoutes = new Elysia({ prefix: '/api/v1/accounting' })
         params: t.Object({ mt: t.String({ pattern: '^\\d{8}$' }) }),
         detail: { tags: ['Accounting'], summary: 'สลิปเงินเดือนงวดเดียวของตัวเอง', description: 'รายการรายรับ (payrolltype=1) / รายการหัก (payrolltype=2) จาก dgpn_payrollmt JOIN cpayroll + ยอดรวมและบัญชีธนาคาร' }
     })
-    // ── จัดการเลขที่เงินเดือนของบุคลากร (FINANCE / IT_STAFF / ADMIN) ─────────
+    // ── จัดการเลขที่เงินเดือนของบุคลากร (IT_STAFF / ADMIN) ───────────────────
     // เช็คสิทธิ์ใน controller เพื่อไม่ให้ requireRoles กระทบ 2 route ด้านบนที่ทุกคนใช้ได้
     .get('/salary-ids/meta', getSalaryIdMeta, {
         detail: { tags: ['Accounting'], summary: 'กลุ่มงานสำหรับตัวกรองหน้าจัดการเลขที่เงินเดือน' }
@@ -31,7 +31,7 @@ export const accountingRoutes = new Elysia({ prefix: '/api/v1/accounting' })
         detail: {
             tags: ['Accounting'],
             summary: 'รายชื่อบุคลากร + เลขที่เงินเดือน',
-            description: 'ค้นหาจากชื่อ/ชื่อผู้ใช้/เลขที่เงินเดือน · status = all|missing|filled · เรียงผู้ที่ยังไม่มีเลขขึ้นก่อน — เฉพาะ FINANCE, IT_STAFF, ADMIN',
+            description: 'ค้นหาจากชื่อ/ชื่อผู้ใช้/เลขที่เงินเดือน · status = all|missing|filled · เรียงผู้ที่ยังไม่มีเลขขึ้นก่อน — เฉพาะ IT_STAFF, ADMIN',
         }
     })
     .get('/salary-ids/:id', getUserSalaryIds, {

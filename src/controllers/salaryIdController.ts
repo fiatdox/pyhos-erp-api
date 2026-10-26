@@ -1,11 +1,11 @@
 // จัดการเลขที่เงินเดือน (user_salary_ids) ของบุคลากรทั้งองค์กร
-// สิทธิ์: FINANCE (เจ้าหน้าที่การเงิน) · IT_STAFF · ADMIN
+// สิทธิ์: IT_STAFF · ADMIN (เครื่องมือผู้ดูแล — เมนูอยู่ใน sidebar ขวา)
 //
 // 1 คนมีได้หลายเลข — เจ้าหน้าที่ที่เริ่มเป็นลูกจ้างแล้วได้บรรจุจะได้เลขใหม่
 // ต้องผูกครบทุกเลขเพื่อให้ดูสลิปย้อนหลังได้ต่อเนื่อง
 import { core_kon, salaryPool } from '../db/db';
 
-export const SALARY_ID_ROLES = ['ADMIN', 'FINANCE', 'IT_STAFF'];
+export const SALARY_ID_ROLES = ['ADMIN', 'IT_STAFF'];
 
 const err = (set: any, status: number, message: string) => {
     set.status = status;
