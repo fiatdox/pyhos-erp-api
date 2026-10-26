@@ -1,5 +1,5 @@
 import { Elysia } from "elysia";
-import { swagger } from "@elysiajs/swagger";
+import { openapi } from "@elysiajs/openapi";
 import { authRoutes } from "./routes/authRoutes";
 import { userRoutes } from "./routes/userRoutes";
 import { systemRoutes } from "./routes/systemRoutes";
@@ -25,7 +25,8 @@ import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 const app = new Elysia()
   .use(loggerMiddleware)
   .use(
-    swagger({
+    // เอกสาร API (เดิม @elysiajs/swagger ซึ่งดึง zod/nanoid เวอร์ชันมีช่องโหว่มาด้วย — openapi ไม่มี dependency)
+    openapi({
       path: '/docs',
       documentation: {
         info: {
