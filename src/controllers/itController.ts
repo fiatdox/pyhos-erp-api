@@ -1014,7 +1014,10 @@ export const approveByHeader = async ({ params, body, user, set }: any) => {
 // หัวหน้ากลุ่มภารกิจอนุมัติ/ไม่อนุมัติคำร้องซ่อม (จากสถานะ 9 รออนุมัติ)
 // ปฏิเสธ (2) → process_status_id = 10 (ปฏิเสธ)
 // อนุมัติ (1) → ใช้ approve_process_id ของ assessment ที่ช่างเลือกเป็นสถานะถัดไป
-//   เช่น สั่งซื้ออะไหล่(3)/จ้างภายนอก(5) → 3 (ออกใบ PR), แนะนำซื้อทดแทน(4) → 11 (อนุมัติซื้อทดแทน)
+//   เช่น สั่งซื้ออะไหล่(3) → 3 (ออกใบ PR), แนะนำซื้อทดแทน(4) → 11 (อนุมัติซื้อทดแทน)
+//   จ้างบริษัทภายนอก(5) → จบงานทันที (5 ซ่อมเสร็จแล้ว + completed_at)
+const EXTERNAL_SERVICE_ASSESSMENT_ID = 5;
+
 export const approveByMission = async ({ params, body, user, set }: any) => {
     const actionBy: number | null = user?.id ?? null;
     if (!actionBy) {
@@ -1051,12 +1054,14 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
                 return { notFound: true };
             }
 
-            // อนุมัติแต่หา approve_process_id ไม่ได้ → assessment นี้ไม่รองรับขั้นอนุมัติจัดซื้อ
-            if (missionApprove === 1 && !req.approve_process_id) {
+            // อนุมัติแต่หา approve_process_id ไม่ได้ (assessment 5 ปิดงานเอง จึงไม่ต้องใช้) → assessment นี้ไม่รองรับขั้นอนุมัติจัดซื้อ
+            if (missionApprove === 1 && !req.approve_process_id && req.repair_assessment_id !== EXTERNAL_SERVICE_ASSESSMENT_ID) {
                 return { noApproveProcess: true };
             }
 
-            const nextStatus = missionApprove === 1 ? req.approve_process_id : 10;
+            // จ้างบริษัทภายนอกซ่อม (assessment 5): หัวหน้ากลุ่มภารกิจอนุมัติ = จบงาน (5 ซ่อมเสร็จแล้ว) ไม่ต้องออก PR ต่อ
+            const closesJob = missionApprove === 1 && req.repair_assessment_id === EXTERNAL_SERVICE_ASSESSMENT_ID;
+            const nextStatus = missionApprove === 1 ? (closesJob ? 5 : req.approve_process_id) : 10;
 
             const updated = await sql`
                 UPDATE it_repair_requests
@@ -1064,6 +1069,7 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
                     mission_approve = ${missionApprove},
                     mission_comment = ${missionComment},
                     mission_approve_date = NOW()
+                    ${closesJob ? sql`, completed_at = NOW(), completed_by = ${actionBy}, completion_note = ${'ปิดงานอัตโนมัติ: หัวหน้ากลุ่มภารกิจอนุมัติให้จ้างบริษัทภายนอกซ่อม'}` : sql``}
                 WHERE it_repair_request_id = ${params.id}
                 RETURNING it_repair_request_id, process_status_id, repair_assessment_id, mission_approve, mission_comment, mission_approve_date
             `;
