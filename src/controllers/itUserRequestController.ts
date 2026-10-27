@@ -48,6 +48,36 @@ const nextRequestNo = async (d = new Date()): Promise<string> => {
     return `REQ-${ym}${seq}`;
 };
 
+// ── เลขที่ใบอนุญาตประกอบวิชาชีพ ─────────────────────────────────────
+// ระบบที่ it_user_systems.requires_license = 'Y' (HIS) + ตำแหน่งที่ user_positions.license_type ไม่ว่าง → บังคับกรอก
+// ตำแหน่งยึดจาก users ในระบบก่อน (กันผู้ยื่นแก้ position_name เอง) ไม่มี user ค่อยใช้ชื่อตำแหน่งที่ส่งมา
+const LICENSE_NO_RE = /^(?=.*\d)[0-9A-Za-z\u0E00-\u0E7F.\-\/ ]{3,30}$/;
+
+const positionLicense = async (userId: number | null, positionName: string | null) => {
+    if (userId) {
+        const [u] = await core_kon`
+            SELECT up.position_name, up.license_type
+            FROM users u LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
+            WHERE u.id = ${userId}
+        `;
+        if (u?.position_name) return { position_name: u.position_name as string, license_type: (u.license_type as string) ?? null };
+    }
+    if (!positionName) return { position_name: null, license_type: null };
+    const [p] = await core_kon`
+        SELECT position_name, license_type FROM user_positions WHERE position_name = ${positionName.trim()} LIMIT 1
+    `;
+    return { position_name: positionName, license_type: (p?.license_type as string) ?? null };
+};
+
+const isItStaff = async (userId: number) => {
+    const [r] = await core_kon`
+        SELECT 1 FROM user_m_users_roles mu JOIN user_roles r ON r.id = mu.role_id
+        WHERE mu.user_id = ${userId} AND UPPER(r.role_name) IN ('ADMIN', 'IT_STAFF')
+        LIMIT 1
+    `;
+    return !!r;
+};
+
 // SELECT มาตรฐานของคำร้อง (JOIN ระบบ + resolve ชื่อผู้บันทึก/ผู้ออกรหัสจาก user id) — ใช้ทั้ง list และ detail
 // created_by/updated_by/issued_by เก็บเป็น user id (VARCHAR) → cast ปลอดภัยเฉพาะค่าตัวเลขล้วน
 // (เผื่อข้อมูลเก่าที่เคยเก็บเป็น username string จะไม่ join และ *_name = NULL)
@@ -56,7 +86,7 @@ const requestSelect = (whereExtra: any) => core_kon`
         r.id, r.request_no, r.request_date::text,
         r.requester_user_id, r.requester_name, r.position_name, r.department, r.phone,
         r.system_id, s.system_code, s.name_th AS system_name,
-        r.purpose, r.status,
+        r.purpose, r.license_type, r.license_no, r.status,
         r.issued_by,
         NULLIF(TRIM(CONCAT(ui.pname, ui.fname, ' ', ui.lname)), '') AS issued_by_name,
         r.issued_date::text, r.notified_at, r.note,
@@ -83,7 +113,8 @@ export const getUserSystems = async ({ query, set }: any) => {
     try {
         const activeOnly = query?.active_only !== 'false';
         const rows = await core_kon`
-            SELECT id, system_code, name_th AS label, name_en, icon_key, color, sort_order, is_active
+            SELECT id, system_code, name_th AS label, name_en, icon_key, color, sort_order, is_active,
+                   requires_license
             FROM it_user_systems
             ${activeOnly ? core_kon`WHERE is_active = 'Y'` : core_kon``}
             ORDER BY sort_order ASC, id ASC
@@ -120,6 +151,7 @@ export const getUserRequests = async ({ query, set }: any) => {
                 OR r.requester_name ILIKE ${'%' + search + '%'}
                 OR r.department    ILIKE ${'%' + search + '%'}
                 OR r.purpose       ILIKE ${'%' + search + '%'}
+                OR r.license_no    ILIKE ${'%' + search + '%'}
                 OR s.name_th       ILIKE ${'%' + search + '%'}
             )` : core_kon``}
         `;
@@ -168,11 +200,31 @@ export const createUserRequest = async ({ body, user, set }: any) => {
 
         // ตรวจว่าระบบที่ขอมีอยู่จริงและเปิดใช้งาน (ไม่มี FK constraint จึงเช็คเอง)
         const [sys] = await core_kon`
-            SELECT id, name_th FROM it_user_systems WHERE id = ${system_id} AND is_active = 'Y'
+            SELECT id, name_th, requires_license FROM it_user_systems WHERE id = ${system_id} AND is_active = 'Y'
         `;
         if (!sys) {
             set.status = 400;
             return { success: false, error: { code: 'VALIDATION_ERROR', message: 'system_id ไม่พบหรือถูกปิดใช้งาน', field: 'system_id' } };
+        }
+
+        // ระบบ HIS + ตำแหน่งวิชาชีพ → ต้องมีเลขใบอนุญาตประกอบวิชาชีพ
+        const licenseNoRaw = typeof body.license_no === 'string' ? body.license_no.trim().replace(/\s+/g, ' ') : '';
+        let licenseType: string | null = null;
+        let licenseNo: string | null = null;
+        if (sys.requires_license === 'Y') {
+            const pos = await positionLicense(requester_user_id, position_name);
+            licenseType = pos.license_type;
+            if (licenseType && !licenseNoRaw) {
+                set.status = 400;
+                return { success: false, error: { code: 'VALIDATION_ERROR', message: `ตำแหน่ง${pos.position_name} ต้องระบุเลขที่ใบอนุญาตประกอบวิชาชีพ (${licenseType}) เพื่อขอรหัส ${sys.name_th}`, field: 'license_no' } };
+            }
+        }
+        if (licenseNoRaw) {
+            if (!LICENSE_NO_RE.test(licenseNoRaw)) {
+                set.status = 400;
+                return { success: false, error: { code: 'VALIDATION_ERROR', message: 'รูปแบบเลขที่ใบอนุญาตไม่ถูกต้อง (3–30 ตัว ต้องมีตัวเลข ใช้ได้เฉพาะตัวอักษร ตัวเลข . - /)', field: 'license_no' } };
+            }
+            licenseNo = licenseNoRaw;
         }
 
         const createdBy: string | null = user?.id != null ? String(user.id) : null;
@@ -185,10 +237,12 @@ export const createUserRequest = async ({ body, user, set }: any) => {
                 const [row] = await core_kon`
                     INSERT INTO it_user_requests (
                         request_no, requester_user_id, requester_name, position_name,
-                        department, phone, system_id, purpose, note, status, created_by
+                        department, phone, system_id, purpose, note, status, created_by,
+                        license_type, license_no
                     ) VALUES (
                         ${requestNo}, ${requester_user_id}, ${requester_name}, ${position_name},
-                        ${department}, ${phone}, ${system_id}, ${purpose}, ${note}, 'pending', ${createdBy}
+                        ${department}, ${phone}, ${system_id}, ${purpose}, ${note}, 'pending', ${createdBy},
+                        ${licenseType}, ${licenseNo}
                     )
                     RETURNING id, request_no, status, created_at
                 `;
@@ -202,6 +256,7 @@ export const createUserRequest = async ({ body, user, set }: any) => {
                         department: department ?? undefined,
                         phone: phone ?? undefined,
                         purpose: purpose ?? undefined,
+                        licenseNo: licenseNo ? `${licenseNo}${licenseType ? ` (${licenseType})` : ''}` : undefined,
                     });
                 } catch (notifyErr: any) {
                     console.error('[createUserRequest] MOPH notify failed:', notifyErr.message);
@@ -216,6 +271,44 @@ export const createUserRequest = async ({ body, user, set }: any) => {
             }
         }
         throw lastErr;
+    } catch (error: any) {
+        set.status = 500;
+        return { success: false, error: { code: 'INTERNAL_ERROR', message: error.message } };
+    }
+};
+
+// ────────────────────────────────────────────────────────────────
+// GET /license-rule?user_id=  — ตำแหน่งต้องใช้ใบอนุญาตหรือไม่ + เลขที่เคยกรอกล่าสุด (ไว้เติมฟอร์ม)
+//   ไม่ส่ง user_id = ตัวเอง; ดูของคนอื่นได้เฉพาะ ADMIN / IT_STAFF
+// ────────────────────────────────────────────────────────────────
+export const getLicenseRule = async ({ query, user, set }: any) => {
+    try {
+        const selfId = Number(user?.id);
+        const targetId = query?.user_id ? Number(query.user_id) : selfId;
+        if (!targetId) {
+            set.status = 400;
+            return { success: false, error: { code: 'VALIDATION_ERROR', message: 'ไม่พบผู้ใช้', field: 'user_id' } };
+        }
+        if (targetId !== selfId && !(await isItStaff(selfId))) {
+            set.status = 403;
+            return { success: false, error: { code: 'FORBIDDEN', message: 'ไม่มีสิทธิ์ดูข้อมูลผู้ใช้อื่น' } };
+        }
+        const pos = await positionLicense(targetId, null);
+        const [last] = await core_kon`
+            SELECT license_no FROM it_user_requests
+            WHERE requester_user_id = ${targetId} AND license_no IS NOT NULL AND is_active = 'Y'
+            ORDER BY created_at DESC LIMIT 1
+        `;
+        const systems = await core_kon`SELECT id FROM it_user_systems WHERE requires_license = 'Y' AND is_active = 'Y'`;
+        return {
+            success: true,
+            data: {
+                position_name: pos.position_name,
+                license_type: pos.license_type,
+                last_license_no: last?.license_no ?? null,
+                license_system_ids: systems.map((x: any) => Number(x.id)),
+            },
+        };
     } catch (error: any) {
         set.status = 500;
         return { success: false, error: { code: 'INTERNAL_ERROR', message: error.message } };

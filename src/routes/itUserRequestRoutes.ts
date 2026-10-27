@@ -9,6 +9,7 @@ import {
     rejectUserRequest,
     cancelUserRequest,
     getUserRequestDashboard,
+    getLicenseRule,
 } from '../controllers/itUserRequestController';
 
 const CreateBody = t.Object({
@@ -20,6 +21,7 @@ const CreateBody = t.Object({
     system_id:         t.Integer({ minimum: 1 }),
     purpose:           t.Optional(t.Union([t.String({ maxLength: 2000 }), t.Null()])),
     note:              t.Optional(t.Union([t.String({ maxLength: 2000 }), t.Null()])),
+    license_no:        t.Optional(t.Union([t.String({ maxLength: 30 }), t.Null()])),
 });
 
 const IssueBody = t.Object({
@@ -54,6 +56,12 @@ export const itUserRequestRoutes = new Elysia({ prefix: '/api/v1/it/user-request
             date_to:   t.Optional(t.String()),
         }),
         detail: { tags: ['IT User Request'], summary: 'แดชบอร์ดสรุป — KPI + ทุก chart ใน 1 request' },
+    })
+
+    // กติกาเลขใบอนุญาตประกอบวิชาชีพของผู้ขอ (ต้องมาก่อน /:id)
+    .get('/license-rule', getLicenseRule, {
+        query: t.Object({ user_id: t.Optional(t.Numeric()) }),
+        detail: { tags: ['IT User Request'], summary: 'ตำแหน่งต้องใช้ใบอนุญาตประกอบวิชาชีพหรือไม่ + เลขล่าสุด (ระบบ HIS)' },
     })
 
     // 2) รายการคำร้อง

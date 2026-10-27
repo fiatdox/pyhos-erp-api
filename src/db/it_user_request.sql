@@ -157,3 +157,5 @@ CREATE INDEX idx_ur_status            ON core_kon.it_user_requests (status);
 CREATE INDEX idx_ur_system_id         ON core_kon.it_user_requests (system_id);
 CREATE INDEX idx_ur_requester_user_id ON core_kon.it_user_requests (requester_user_id);
 CREATE INDEX idx_ur_is_active         ON core_kon.it_user_requests (is_active);
+
+-- ต่อด้วย it_user_request_license.sql (เลขใบอนุญาตประกอบวิชาชีพสำหรับระบบ HIS)

@@ -814,13 +814,14 @@ export interface UserRequestNotifyData {
     department?: string;
     phone?: string;
     purpose?: string;
+    licenseNo?: string;
 }
 
 function buildUserRequestTemplate(data: UserRequestNotifyData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestNo, systemName, requesterName,
-        positionName, department, phone, purpose,
+        positionName, department, phone, purpose, licenseNo,
     } = data;
 
     const toRow = (row: { label: string; value: string }) => ({
@@ -842,6 +843,7 @@ function buildUserRequestTemplate(data: UserRequestNotifyData): object {
     const requesterRows = [
         { label: 'ผู้ขอ', value: requesterName },
         ...(positionName ? [{ label: 'ตำแหน่ง', value: positionName }] : []),
+        ...(licenseNo ? [{ label: 'เลขใบอนุญาต', value: licenseNo }] : []),
         ...(department ? [{ label: 'หน่วยงาน', value: department }] : []),
         ...(phone ? [{ label: 'โทร', value: phone }] : []),
         ...(purpose ? [{ label: 'วัตถุประสงค์', value: purpose }] : []),
