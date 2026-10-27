@@ -78,6 +78,13 @@ const isItStaff = async (userId: number) => {
     return !!r;
 };
 
+// ── แบบยินยอมเงื่อนไขการใช้งาน ───────────────────────────────────────
+// clauses เก็บ 1 บรรทัด = 1 ข้อ → ส่งออกเป็น array
+const toConsentTerm = (t: any) => t && ({
+    id: Number(t.id), version: t.version, title: t.title,
+    clauses: String(t.clauses ?? '').split(/\r?\n/).map((x: string) => x.trim()).filter(Boolean),
+});
+
 // SELECT มาตรฐานของคำร้อง (JOIN ระบบ + resolve ชื่อผู้บันทึก/ผู้ออกรหัสจาก user id) — ใช้ทั้ง list และ detail
 // created_by/updated_by/issued_by เก็บเป็น user id (VARCHAR) → cast ปลอดภัยเฉพาะค่าตัวเลขล้วน
 // (เผื่อข้อมูลเก่าที่เคยเก็บเป็น username string จะไม่ join และ *_name = NULL)
@@ -87,6 +94,7 @@ const requestSelect = (whereExtra: any) => core_kon`
         r.requester_user_id, r.requester_name, r.position_name, r.department, r.phone,
         r.system_id, s.system_code, s.name_th AS system_name,
         r.purpose, r.license_type, r.license_no, r.status,
+        r.consent_term_id, ct.version AS consent_version, r.consent_accepted_at, r.consent_method,
         r.issued_by,
         NULLIF(TRIM(CONCAT(ui.pname, ui.fname, ' ', ui.lname)), '') AS issued_by_name,
         r.issued_date::text, r.notified_at, r.note,
@@ -99,6 +107,7 @@ const requestSelect = (whereExtra: any) => core_kon`
         r.updated_at
     FROM it_user_requests r
     JOIN it_user_systems s ON r.system_id = s.id
+    LEFT JOIN it_user_consent_terms ct ON ct.id = r.consent_term_id
     LEFT JOIN users uc ON uc.id = CASE WHEN r.created_by ~ '^[0-9]+$' THEN r.created_by::int END
     LEFT JOIN users uu ON uu.id = CASE WHEN r.updated_by ~ '^[0-9]+$' THEN r.updated_by::int END
     LEFT JOIN users ui ON ui.id = CASE WHEN r.issued_by  ~ '^[0-9]+$' THEN r.issued_by::int  END
@@ -207,6 +216,19 @@ export const createUserRequest = async ({ body, user, set }: any) => {
             return { success: false, error: { code: 'VALIDATION_ERROR', message: 'system_id ไม่พบหรือถูกปิดใช้งาน', field: 'system_id' } };
         }
 
+        // ต้องยอมรับข้อตกลงฉบับปัจจุบัน — ฉบับเปลี่ยนระหว่างกรอกฟอร์ม ให้อ่านใหม่
+        const [term] = await core_kon`SELECT id FROM it_user_consent_terms WHERE is_active = 'Y'`;
+        if (term) {
+            if (body.consent_accepted !== true || Number(body.consent_term_id) !== Number(term.id)) {
+                set.status = body.consent_accepted === true ? 409 : 400;
+                return { success: false, error: { code: 'CONSENT_REQUIRED', message: body.consent_accepted === true ? 'ข้อตกลงการใช้งานมีการปรับปรุง กรุณาอ่านและยอมรับฉบับปัจจุบันอีกครั้ง' : 'กรุณาอ่านและยอมรับข้อตกลงการใช้งานระบบก่อนส่งคำร้อง', field: 'consent_accepted' } };
+            }
+        }
+        // ผู้ขอกดเอง = self, เจ้าหน้าที่บันทึกแทน = staff (ผู้ขอลงนามในแบบพิมพ์)
+        const consentTermId: number | null = term ? Number(term.id) : null;
+        const consentMethod = !term ? null
+            : (requester_user_id != null && Number(user?.id) === Number(requester_user_id) ? 'self' : 'staff');
+
         // ระบบ HIS + ตำแหน่งวิชาชีพ → ต้องมีเลขใบอนุญาตประกอบวิชาชีพ
         const licenseNoRaw = typeof body.license_no === 'string' ? body.license_no.trim().replace(/\s+/g, ' ') : '';
         let licenseType: string | null = null;
@@ -238,11 +260,13 @@ export const createUserRequest = async ({ body, user, set }: any) => {
                     INSERT INTO it_user_requests (
                         request_no, requester_user_id, requester_name, position_name,
                         department, phone, system_id, purpose, note, status, created_by,
-                        license_type, license_no
+                        license_type, license_no,
+                        consent_term_id, consent_accepted_at, consent_method
                     ) VALUES (
                         ${requestNo}, ${requester_user_id}, ${requester_name}, ${position_name},
                         ${department}, ${phone}, ${system_id}, ${purpose}, ${note}, 'pending', ${createdBy},
-                        ${licenseType}, ${licenseNo}
+                        ${licenseType}, ${licenseNo},
+                        ${consentTermId}, ${consentTermId ? core_kon`NOW()` : null}, ${consentMethod}
                     )
                     RETURNING id, request_no, status, created_at
                 `;
@@ -271,6 +295,25 @@ export const createUserRequest = async ({ body, user, set }: any) => {
             }
         }
         throw lastErr;
+    } catch (error: any) {
+        set.status = 500;
+        return { success: false, error: { code: 'INTERNAL_ERROR', message: error.message } };
+    }
+};
+
+// ────────────────────────────────────────────────────────────────
+// GET /consent-terms/current | /consent-terms/:id  — ข้อตกลงการใช้งาน (ฉบับปัจจุบัน / ฉบับที่คำร้องยอมรับ)
+// ────────────────────────────────────────────────────────────────
+export const getConsentTerm = async ({ params, set }: any) => {
+    try {
+        const [row] = params?.id === 'current' || params?.id == null
+            ? await core_kon`SELECT id, version, title, clauses FROM it_user_consent_terms WHERE is_active = 'Y'`
+            : await core_kon`SELECT id, version, title, clauses FROM it_user_consent_terms WHERE id = ${Number(params.id)}`;
+        if (!row) {
+            set.status = 404;
+            return { success: false, error: { code: 'NOT_FOUND', message: 'ไม่พบข้อตกลงการใช้งาน' } };
+        }
+        return { success: true, data: toConsentTerm(row) };
     } catch (error: any) {
         set.status = 500;
         return { success: false, error: { code: 'INTERNAL_ERROR', message: error.message } };

@@ -159,3 +159,4 @@ CREATE INDEX idx_ur_requester_user_id ON core_kon.it_user_requests (requester_us
 CREATE INDEX idx_ur_is_active         ON core_kon.it_user_requests (is_active);
 
 -- ต่อด้วย it_user_request_license.sql (เลขใบอนุญาตประกอบวิชาชีพสำหรับระบบ HIS)
+-- ต่อด้วย it_user_request_consent.sql (แบบยินยอมเงื่อนไขการใช้งาน)

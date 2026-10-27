@@ -10,6 +10,7 @@ import {
     cancelUserRequest,
     getUserRequestDashboard,
     getLicenseRule,
+    getConsentTerm,
 } from '../controllers/itUserRequestController';
 
 const CreateBody = t.Object({
@@ -22,6 +23,8 @@ const CreateBody = t.Object({
     purpose:           t.Optional(t.Union([t.String({ maxLength: 2000 }), t.Null()])),
     note:              t.Optional(t.Union([t.String({ maxLength: 2000 }), t.Null()])),
     license_no:        t.Optional(t.Union([t.String({ maxLength: 30 }), t.Null()])),
+    consent_term_id:   t.Optional(t.Union([t.Integer(), t.Null()])),
+    consent_accepted:  t.Optional(t.Boolean()),
 });
 
 const IssueBody = t.Object({
@@ -56,6 +59,12 @@ export const itUserRequestRoutes = new Elysia({ prefix: '/api/v1/it/user-request
             date_to:   t.Optional(t.String()),
         }),
         detail: { tags: ['IT User Request'], summary: 'แดชบอร์ดสรุป — KPI + ทุก chart ใน 1 request' },
+    })
+
+    // ข้อตกลงการใช้งาน — ฉบับปัจจุบัน (current) หรือตาม id ที่คำร้องยอมรับไว้ (ต้องมาก่อน /:id)
+    .get('/consent-terms/:id', getConsentTerm, {
+        params: t.Object({ id: t.Union([t.Literal('current'), t.String({ pattern: '^\\d{1,5}$' })]) }),
+        detail: { tags: ['IT User Request'], summary: 'ข้อตกลงและเงื่อนไขการใช้งานระบบ (consent form)' },
     })
 
     // กติกาเลขใบอนุญาตประกอบวิชาชีพของผู้ขอ (ต้องมาก่อน /:id)
