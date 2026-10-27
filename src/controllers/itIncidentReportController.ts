@@ -314,7 +314,8 @@ export const updateIncident = async ({ params, body, set }: any) => {
         const id = Number(params.id);
 
         const [existing] = await core_kon`
-            SELECT id, incident_no, incident_date::text, detected_date::text, report_date::text, status, ncsa_reported
+            SELECT id, incident_no, incident_date::text, detected_date::text, report_date::text, status, ncsa_reported,
+                   resolved_date::text, ncsa_report_date::text
             FROM it_incident_report WHERE id = ${id} AND is_active = 'Y'
         `;
         if (!existing) {
@@ -340,8 +341,8 @@ export const updateIncident = async ({ params, body, set }: any) => {
         const effReportDate    = report_date    ?? existing.report_date;
         const effStatus        = status         ?? existing.status;
         const effNcsaReported  = ncsa_reported  ?? existing.ncsa_reported;
-        const effResolvedDate  = resolved_date  !== undefined ? resolved_date : undefined;
-        const effNcsaReportDate = ncsa_report_date !== undefined ? ncsa_report_date : undefined;
+        const effResolvedDate  = resolved_date  !== undefined ? resolved_date : existing.resolved_date;
+        const effNcsaReportDate = ncsa_report_date !== undefined ? ncsa_report_date : existing.ncsa_report_date;
 
         if (new Date(effDetectedDate) < new Date(effIncidentDate)) {
             set.status = 400;
@@ -351,11 +352,11 @@ export const updateIncident = async ({ params, body, set }: any) => {
             set.status = 400;
             return { success: false, error: { code: 'VALIDATION_ERROR', message: 'report_date ต้องไม่ก่อน detected_date', field: 'report_date' } };
         }
-        if ((effStatus === 'resolved' || effStatus === 'closed') && effResolvedDate === null) {
+        if ((effStatus === 'resolved' || effStatus === 'closed') && !effResolvedDate) {
             set.status = 400;
             return { success: false, error: { code: 'VALIDATION_ERROR', message: 'resolved_date ต้องระบุเมื่อ status เป็น resolved หรือ closed', field: 'resolved_date' } };
         }
-        if (effNcsaReported === 'Y' && effNcsaReportDate === null) {
+        if (effNcsaReported === 'Y' && !effNcsaReportDate) {
             set.status = 400;
             return { success: false, error: { code: 'VALIDATION_ERROR', message: 'ncsa_report_date ต้องระบุเมื่อ ncsa_reported เป็น Y', field: 'ncsa_report_date' } };
         }
