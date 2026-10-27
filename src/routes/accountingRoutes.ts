@@ -1,6 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { getSalarySummary, getSalarySlip } from '../controllers/accountingController';
+import { getSalaryRegister, getSalaryRegisterDetail, getSalaryIdLookup } from '../controllers/salaryRegisterController';
 import { getSalaryIdList, getUserSalaryIds, addUserSalaryId, updateUserSalaryId, removeUserSalaryId, getSalaryIdMeta } from '../controllers/salaryIdController';
 
 export const accountingRoutes = new Elysia({ prefix: '/api/v1/accounting' })
@@ -15,7 +16,26 @@ export const accountingRoutes = new Elysia({ prefix: '/api/v1/accounting' })
         params: t.Object({ mt: t.String({ pattern: '^\\d{8}$' }) }),
         detail: { tags: ['Accounting'], summary: 'สลิปเงินเดือนงวดเดียวของตัวเอง', description: 'รายการรายรับ (payrolltype=1) / รายการหัก (payrolltype=2) จาก dgpn_payrollmt JOIN cpayroll + ยอดรวมและบัญชีธนาคาร' }
     })
-    // ── จัดการเลขที่เงินเดือนของบุคลากร (IT_STAFF / ADMIN) ───────────────────
+    // ── ทะเบียนเงินเดือนบุคลากร จาก salarydb (IT_STAFF / ADMIN) — อ่านอย่างเดียว เช็คสิทธิ์ใน controller ──
+    .get('/salary-register', getSalaryRegister, {
+        query: t.Object({
+            mt: t.Optional(t.String({ pattern: '^\\d{8}$' })),
+            search: t.Optional(t.String({ maxLength: 100 })),
+            ptype: t.Optional(t.String({ maxLength: 10 })),
+            seccode: t.Optional(t.String({ maxLength: 10 })),
+            link: t.Optional(t.Union([t.Literal('all'), t.Literal('linked'), t.Literal('unlinked')])),
+            scope: t.Optional(t.Union([t.Literal('period'), t.Literal('all')])),
+            limit: t.Optional(t.Numeric()),
+            offset: t.Optional(t.Numeric()),
+        }),
+        detail: { tags: ['Accounting'], summary: 'ทะเบียนเงินเดือนบุคลากร (salarydb)', description: 'รายชื่อจาก dgpn_payroll + ยอดรายรับ/หัก/สุทธิของงวดที่เลือก + ผู้ใช้ที่ผูกเลขไว้ — ไม่ส่งเลขบัตรประชาชน/เลขภาษี เลขบัญชีส่งเฉพาะ 4 ตัวท้าย — เฉพาะ IT_STAFF, ADMIN, ACCOUNT, FINANCE' }
+    })
+    .get('/salary-register/:i\d', getSalaryRegisterDetail, {
+        params: t.Object({ id: t.String({ pattern: '^\\d{1,13}$' }) }),
+        query: t.Object({ year: t.Optional(t.String({ pattern: '^\\d{4}$' })) }),
+        detail: { tags: ['Accounting'], summary: 'ประวัติเงินเดือนรายงวดของ 1 เลขที่เงินเดือน', description: 'เฉพาะ IT_STAFF, ADMIN, ACCOUNT, FINANCE' }
+    })
+    // ── จัดการเลขที่เงินเดือนของบุคลากร (IT_STAFF / ADMIN / ACCOUNT / FINANCE) ───────────────────
     // เช็คสิทธิ์ใน controller เพื่อไม่ให้ requireRoles กระทบ 2 route ด้านบนที่ทุกคนใช้ได้
     .get('/salary-ids/meta', getSalaryIdMeta, {
         detail: { tags: ['Accounting'], summary: 'กลุ่มงานสำหรับตัวกรองหน้าจัดการเลขที่เงินเดือน' }
@@ -31,8 +51,13 @@ export const accountingRoutes = new Elysia({ prefix: '/api/v1/accounting' })
         detail: {
             tags: ['Accounting'],
             summary: 'รายชื่อบุคลากร + เลขที่เงินเดือน',
-            description: 'ค้นหาจากชื่อ/ชื่อผู้ใช้/เลขที่เงินเดือน · status = all|missing|filled · เรียงผู้ที่ยังไม่มีเลขขึ้นก่อน — เฉพาะ IT_STAFF, ADMIN',
+            description: 'ค้นหาจากชื่อ/ชื่อผู้ใช้/เลขที่เงินเดือน · status = all|missing|filled · เรียงผู้ที่ยังไม่มีเลขขึ้นก่อน — เฉพาะ IT_STAFF, ADMIN, ACCOUNT, FINANCE',
         }
+    })
+    .get('/salary-ids/lookup/:salaryId', getSalaryIdLookup, {
+        params: t.Object({ salaryId: t.String({ pattern: '^\\d{1,13}$' }) }),
+        query: t.Object({ user_id: t.Optional(t.Numeric()) }),
+        detail: { tags: ['Accounting'], summary: 'ดูข้อมูลเลขที่เงินเดือนก่อนผูก (ชื่อ/ประเภท/ช่วงงวด/ผู้ที่ผูกอยู่ + เทียบชื่อกับผู้ใช้)' }
     })
     .get('/salary-ids/:id', getUserSalaryIds, {
         params: t.Object({ id: t.Numeric() }),

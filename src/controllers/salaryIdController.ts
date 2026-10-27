@@ -1,18 +1,18 @@
 // จัดการเลขที่เงินเดือน (user_salary_ids) ของบุคลากรทั้งองค์กร
-// สิทธิ์: IT_STAFF · ADMIN (เครื่องมือผู้ดูแล — เมนูอยู่ใน sidebar ขวา)
+// สิทธิ์: IT_STAFF · ADMIN · ACCOUNT · FINANCE (เครื่องมือผู้ดูแล — เมนูอยู่ใน sidebar ขวา)
 //
 // 1 คนมีได้หลายเลข — เจ้าหน้าที่ที่เริ่มเป็นลูกจ้างแล้วได้บรรจุจะได้เลขใหม่
 // ต้องผูกครบทุกเลขเพื่อให้ดูสลิปย้อนหลังได้ต่อเนื่อง
 import { core_kon, salaryPool } from '../db/db';
 
-export const SALARY_ID_ROLES = ['ADMIN', 'IT_STAFF'];
+export const SALARY_ID_ROLES = ['ADMIN', 'IT_STAFF', 'ACCOUNT', 'FINANCE'];
 
 const err = (set: any, status: number, message: string) => {
     set.status = status;
     return { success: false, message };
 };
 
-async function userRoles(userId: number): Promise<string[]> {
+export async function userRoles(userId: number): Promise<string[]> {
     const rows = await core_kon`
         SELECT r.role_name
         FROM core_kon.user_m_users_roles mu
@@ -21,7 +21,26 @@ async function userRoles(userId: number): Promise<string[]> {
     return rows.map((r: any) => String(r.role_name ?? '').toUpperCase());
 }
 
-const hasAccess = (roles: string[]) => roles.some(r => SALARY_ID_ROLES.includes(r));
+export const hasAccess = (roles: string[]) => roles.some(r => SALARY_ID_ROLES.includes(r));
+
+// ── ตรวจสอบความถูกต้องของการผูก: เทียบชื่อ-สกุลผู้ใช้ในระบบกับชื่อในทะเบียนเงินเดือน (dgpn_payroll) ──
+export type PayrollName = { fname: string; lname: string };
+export type NameMatch = 'match' | 'mismatch' | 'unknown';
+const squash = (v: any) => String(v ?? '').replace(/\s+/g, '');
+export function nameMatch(user: { fname?: string | null; lname?: string | null }, pay?: PayrollName | null): NameMatch {
+    if (!pay || !squash(pay.fname)) return 'unknown';
+    return squash(user.fname) === squash(pay.fname) && squash(user.lname) === squash(pay.lname) ? 'match' : 'mismatch';
+}
+// ⚠️ dgpn_payroll.id เป็น VARCHAR — ส่ง parameter เป็น string
+export async function payrollNamesOf(ids: (string | number)[]): Promise<Map<string, PayrollName>> {
+    const out = new Map<string, PayrollName>();
+    const uniq = [...new Set(ids.map(String))];
+    if (uniq.length === 0) return out;
+    const [rows]: any = await salaryPool.query(
+        `SELECT id, fname, lname FROM dgpn_payroll WHERE id IN (${uniq.map(() => '?').join(',')})`, uniq);
+    for (const r of rows) out.set(String(r.id), { fname: String(r.fname ?? '').trim(), lname: String(r.lname ?? '').trim() });
+    return out;
+}
 
 // ช่วงงวดเงินเดือนของแต่ละเลข — ให้ผู้ดูแลเห็นว่าเลขไหนครอบคลุมช่วงไหน
 // ⚠️ dgpn_payrollmt.id เป็น VARCHAR(13) — ต้องส่ง parameter เป็น string
@@ -62,7 +81,7 @@ export const getSalaryIdList = async ({ query, user, set }: any) => {
 
         const [rows, countRows, statRows] = await Promise.all([
             core_kon`
-                SELECT u.id, u.username,
+                SELECT u.id, u.username, u.fname, u.lname,
                        CONCAT(u.pname, u.fname, ' ', u.lname) AS name,
                        up.position_name, mj.name AS major_name, sm.name AS submajor_name,
                        COALESCE(
@@ -89,7 +108,17 @@ export const getSalaryIdList = async ({ query, user, set }: any) => {
                 FROM users u WHERE u.is_active = 'Y'`,
         ]);
 
-        return { success: true, data: { rows, total: countRows[0].total, limit, offset, stats: statRows[0] } };
+        // ชื่อในทะเบียนเงินเดือนของแต่ละเลขที่ผูก + ผลเทียบกับชื่อผู้ใช้ — ให้ผู้ผูกตรวจว่าผูกถูกคน
+        const names = await payrollNamesOf(rows.flatMap((r: any) => (r.salary_ids as any[]).map(x => x.salary_id)));
+        const enriched = rows.map((r: any) => ({
+            ...r,
+            salary_ids: (r.salary_ids as any[]).map(x => {
+                const pay = names.get(String(x.salary_id));
+                return { ...x, payroll_name: pay ? `${pay.fname} ${pay.lname}`.trim() : null, name_match: nameMatch(r, pay) };
+            }),
+        }));
+
+        return { success: true, data: { rows: enriched, total: countRows[0].total, limit, offset, stats: statRows[0] } };
     } catch (e: any) {
         console.error('[salaryId] getSalaryIdList:', e);
         return err(set, 500, 'เกิดข้อผิดพลาดภายในระบบ');
@@ -115,7 +144,14 @@ export const getUserSalaryIds = async ({ params, user, set }: any) => {
 
         const linkedIds = linked.map((r: any) => Number(r.salary_id));
         const periods = await periodsOf(linkedIds);
-        const linkedWithPeriods = linked.map((r: any) => ({ ...r, period: periods.get(Number(r.salary_id)) ?? null }));
+        const payNames = await payrollNamesOf(linkedIds);
+        const linkedWithPeriods = linked.map((r: any) => {
+            const pay = payNames.get(String(r.salary_id));
+            return {
+                ...r, period: periods.get(Number(r.salary_id)) ?? null,
+                payroll_name: pay ? `${pay.fname} ${pay.lname}`.trim() : null, name_match: nameMatch(target, pay),
+            };
+        });
 
         // ── ค้นเลขที่ยังไม่ได้ผูก ──
         // ทางที่ 1: จับคู่เลขบัตรประชาชน (dgpn_payroll.pid) — แม่นยำ แต่ 40% ของระเบียนไม่มี pid
