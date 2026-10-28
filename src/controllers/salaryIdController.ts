@@ -57,6 +57,10 @@ async function periodsOf(salaryIds: number[]): Promise<Map<number, { from: strin
 }
 
 // รายชื่อบุคลากร + เลขที่เงินเดือนทั้งหมดของแต่ละคน
+// มีเลขที่เงินเดือน = ผูกในตาราง user_salary_ids หรือผู้ใช้กรอกเองที่ users.salary_id (หน้าตั้งค่าบัญชี)
+// ต้องนับเหมือนสลิปเงินเดือน (accountingController.getSalaryIdsOf ใช้ UNION ทั้งสองแหล่ง)
+const hasSalaryIdFrag = () => core_kon`(EXISTS (SELECT 1 FROM user_salary_ids x WHERE x.user_id = u.id) OR COALESCE(u.salary_id, 0) > 0)`;
+
 export const getSalaryIdList = async ({ query, user, set }: any) => {
     try {
         if (!hasAccess(await userRoles(Number(user?.id)))) return err(set, 403, 'ไม่มีสิทธิ์เข้าถึงข้อมูลนี้');
@@ -70,12 +74,13 @@ export const getSalaryIdList = async ({ query, user, set }: any) => {
         const searchFrag = search
             ? core_kon`AND (CONCAT(u.pname, u.fname, ' ', u.lname) ILIKE ${'%' + search + '%'}
                         OR u.username ILIKE ${'%' + search + '%'}
+                        OR CAST(u.salary_id AS TEXT) ILIKE ${'%' + search + '%'}
                         OR EXISTS (SELECT 1 FROM user_salary_ids x WHERE x.user_id = u.id AND CAST(x.salary_id AS TEXT) ILIKE ${'%' + search + '%'}))`
             : core_kon``;
         const statusFrag = status === 'missing'
-            ? core_kon`AND NOT EXISTS (SELECT 1 FROM user_salary_ids x WHERE x.user_id = u.id)`
+            ? core_kon`AND NOT ${hasSalaryIdFrag()}`
             : status === 'filled'
-                ? core_kon`AND EXISTS (SELECT 1 FROM user_salary_ids x WHERE x.user_id = u.id)`
+                ? core_kon`AND ${hasSalaryIdFrag()}`
                 : core_kon``;
         const majorFrag = majorId ? core_kon`AND u.major_id = ${majorId}` : core_kon``;
 
@@ -85,23 +90,34 @@ export const getSalaryIdList = async ({ query, user, set }: any) => {
                        CONCAT(u.pname, u.fname, ' ', u.lname) AS name,
                        up.position_name, mj.name AS major_name, sm.name AS submajor_name,
                        COALESCE(
-                           (SELECT json_agg(json_build_object('salary_id', x.salary_id, 'is_current', x.is_current,
-                                                              'source', x.source, 'note', x.note) ORDER BY x.is_current DESC, x.salary_id)
-                            FROM user_salary_ids x WHERE x.user_id = u.id), '[]'::json) AS salary_ids
+                           (SELECT json_agg(e ORDER BY (e->>'is_current')::boolean DESC, (e->>'salary_id')::int) FROM (
+                                SELECT json_build_object('salary_id', x.salary_id, 'is_current', x.is_current,
+                                                         'source', x.source, 'note', x.note) AS e
+                                FROM user_salary_ids x WHERE x.user_id = u.id
+                                UNION ALL
+                                -- เลขที่ผู้ใช้กรอกเอง ที่ยังไม่อยู่ในตารางผูก
+                                SELECT json_build_object('salary_id', u.salary_id,
+                                       'is_current', NOT EXISTS (SELECT 1 FROM user_salary_ids y WHERE y.user_id = u.id AND y.is_current),
+                                       'source', 'self', 'note', NULL)
+                                WHERE COALESCE(u.salary_id, 0) > 0
+                                  AND NOT EXISTS (SELECT 1 FROM user_salary_ids y WHERE y.user_id = u.id AND y.salary_id = u.salary_id)
+                            ) t), '[]'::json) AS salary_ids
                 FROM users u
                 LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
                 LEFT JOIN majors mj    ON mj.major_id = u.major_id
                 LEFT JOIN submajors sm ON sm.submajor_id = u.submajor_id
                 WHERE u.is_active = 'Y' ${searchFrag} ${statusFrag} ${majorFrag}
-                ORDER BY EXISTS (SELECT 1 FROM user_salary_ids x WHERE x.user_id = u.id), u.fname, u.lname
+                ORDER BY ${hasSalaryIdFrag()}, u.fname, u.lname
                 LIMIT ${limit} OFFSET ${offset}`,
             core_kon`
                 SELECT COUNT(*)::int AS total FROM users u
                 WHERE u.is_active = 'Y' ${searchFrag} ${statusFrag} ${majorFrag}`,
             core_kon`
                 SELECT COUNT(*)::int AS total,
-                       COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM user_salary_ids x WHERE x.user_id = u.id))::int AS filled,
-                       COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM user_salary_ids x WHERE x.user_id = u.id))::int AS missing,
+                       COUNT(*) FILTER (WHERE ${hasSalaryIdFrag()})::int AS filled,
+                       COUNT(*) FILTER (WHERE NOT ${hasSalaryIdFrag()})::int AS missing,
+                       COUNT(*) FILTER (WHERE COALESCE(u.salary_id, 0) > 0
+                           AND NOT EXISTS (SELECT 1 FROM user_salary_ids x WHERE x.user_id = u.id))::int AS self_only,
                        (SELECT COUNT(*)::int FROM user_salary_ids)                       AS total_links,
                        (SELECT COUNT(*)::int FROM (SELECT user_id FROM user_salary_ids
                             GROUP BY user_id HAVING COUNT(*) > 1) t)                     AS multi_id_users
@@ -133,14 +149,19 @@ export const getUserSalaryIds = async ({ params, user, set }: any) => {
 
         const [target] = await core_kon`
             SELECT u.id, u.username, u.id_card, CONCAT(u.pname, u.fname, ' ', u.lname) AS name,
-                   u.pname, u.fname, u.lname
+                   u.pname, u.fname, u.lname, u.salary_id
             FROM users u WHERE u.id = ${uid}`;
         if (!target) return err(set, 404, 'ไม่พบบุคลากรรายนี้');
 
-        const linked = await core_kon`
+        const linked: any[] = [...await core_kon`
             SELECT id, salary_id, is_current, source, note, created_at
             FROM user_salary_ids WHERE user_id = ${uid}
-            ORDER BY is_current DESC, salary_id`;
+            ORDER BY is_current DESC, salary_id`];
+        // เลขที่ผู้ใช้กรอกเอง (users.salary_id) ที่ยังไม่อยู่ในตารางผูก — id = null, ผู้ดูแลกด "ยืนยันผูก" เพื่อย้ายเข้าตาราง
+        const selfId = Number(target.salary_id);
+        if (selfId > 0 && !linked.some((r: any) => Number(r.salary_id) === selfId)) {
+            linked.push({ id: null, salary_id: selfId, is_current: !linked.some((r: any) => r.is_current), source: 'self', note: null, created_at: null });
+        }
 
         const linkedIds = linked.map((r: any) => Number(r.salary_id));
         const periods = await periodsOf(linkedIds);
@@ -229,6 +250,11 @@ export const addUserSalaryId = async ({ params, body, user, set }: any) => {
                 ? err(set, 409, 'ผูกเลขนี้ให้บุคลากรรายนี้อยู่แล้ว')
                 : err(set, 409, `เลขที่เงินเดือน ${salaryId} ถูกผูกกับ ${dup.owner} แล้ว`);
         }
+        // ผู้ใช้อื่นกรอกเลขนี้เองไว้ในหน้าตั้งค่าบัญชี
+        const [selfDup] = await core_kon`
+            SELECT CONCAT(pname, fname, ' ', lname) AS owner FROM users
+            WHERE salary_id = ${salaryId} AND id <> ${uid} LIMIT 1`;
+        if (selfDup) return err(set, 409, `เลขที่เงินเดือน ${salaryId} ถูกระบุไว้โดย ${selfDup.owner} (กรอกเองในหน้าตั้งค่า) — ตรวจสอบก่อนผูก`);
 
         const makeCurrent = body?.is_current === true;
         if (makeCurrent) await core_kon`UPDATE user_salary_ids SET is_current = FALSE WHERE user_id = ${uid}`;
