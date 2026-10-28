@@ -209,7 +209,7 @@ export const verifyOtp = async ({ body, set, jwt, request, server }: Context & {
                 return { success: false, message: 'กรอกรหัสผิดเกินจำนวนครั้งที่กำหนด กรุณาเข้าสู่ระบบใหม่' };
             }
             set.status = 401;
-            return { success: false, message: `รหัสยืนยันไม่ถูกต้อง (เหลืออีก ${left} ครั้ง)`, attempts_left: left };
+            return { success: false, message: `รหัสยืนยันไม่ถูกต้อง (เหลืออีก ${left} ครั้ง) — ตรวจสอบว่าใช้รหัสจากข้อความล่าสุด`, attempts_left: left };
         }
 
         // ถูกต้อง — ปิด challenge แบบ atomic กันใช้ token เดิมซ้ำจากหลาย request พร้อมกัน
