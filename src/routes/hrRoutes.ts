@@ -6,8 +6,8 @@ import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitR
 import {
     createLeaveRequest, previewApprovalChain, getMyLeaveRequests, getPendingApprovals,
     approveLeaveRequest, rejectLeaveRequest, requestCancellation,
-    approveCancellation, rejectCancellation, getLeaveRequestById, getLeaveSummary, getLeaveQuota,
-    deleteLeaveRequest,
+    approveCancellation, rejectCancellation, getLeaveRequestById, getLeaveSummary, getLeaveQuota, getLeaveCalendar,
+    deleteLeaveRequest, updateLeaveRequest,
 } from '../controllers/hrLeaveRequestController';
 import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances } from '../controllers/hrLeaveBalanceController';
 
@@ -41,9 +41,9 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     .get('/dashboard/mission-groups', getMissionGroups, {
         detail: { tags: ['HR'], summary: 'HR Dashboard: จำนวนบุคลากรตามกลุ่มภารกิจ' }
     })
-    // ดึงรายการประเภทการลาทั้งหมด
+    // ประเภทการลาที่ผู้ล็อกอินลาได้ (กรองตามเพศในทะเบียนบุคลากร)
     .get('/leave-types', getLeaveTypes, {
-        detail: { tags: ['HR'], summary: 'ดึงรายการประเภทการลาทั้งหมด', description: 'ดึงข้อมูล id, code, name_th, gender_restriction, requires_document_after_days จากตาราง hr_leave_types' }
+        detail: { tags: ['HR'], summary: 'ประเภทการลาที่ผู้ล็อกอินลาได้', description: 'เฉพาะที่เปิดใช้งาน และตรงกับเพศในทะเบียน (ลาคลอด = หญิง, ลาช่วยภริยาคลอด = ชาย) ไม่ระบุเพศ = เห็นทุกประเภท' }
     })
     // ดึงสิทธิ์การลาตามประเภทพนักงาน
     .get('/leave-entitlements', getLeaveEntitlements, {
@@ -100,6 +100,14 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
             description: 'ADMIN/HR เห็นทุกคน · หัวหน้าเห็นเฉพาะหน่วยที่ตัวเองคุม · พนักงานทั่วไปเห็นเฉพาะของตัวเอง',
         }
     })
+    .get('/leave-calendar', getLeaveCalendar, {
+        query: t.Object({ from: t.String(), to: t.String(), scope: t.Optional(t.String()) }),
+        detail: {
+            tags: ['HR'],
+            summary: 'ปฏิทินการลาตามขอบเขตที่ผู้เรียกมีสิทธิ์',
+            description: 'scope: all (ADMIN/HR) · chain (ใบที่สายอนุมัติระบุรหัสของฉัน — หัวหน้า/รักษาการทุกระดับ และ ผอ. ซึ่งเห็นเฉพาะใบของหัวหน้ากลุ่มภารกิจ) · team (เพื่อนร่วมกลุ่มงาน — ซ่อนประเภทการลา) · me — ตอบ options ให้หน้าเว็บทำ select ช่วงไม่เกิน 62 วัน',
+        }
+    })
     .get('/leave-requests/quota', getLeaveQuota, {
         query: t.Object({ leave_type_id: t.String(), start_date: t.Optional(t.String()) }),
         detail: { tags: ['HR'], summary: 'สิทธิ์วันลาคงเหลือของตัวเอง (ตามประเภทการลาและปีงบ)' }
@@ -119,6 +127,23 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     .get('/leave-requests/:id', getLeaveRequestById, {
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['HR'], summary: 'รายละเอียดใบลา (เจ้าของใบ / ผู้อยู่ในสายอนุมัติ / ADMIN)' }
+    })
+    .put('/leave-requests/:id', updateLeaveRequest, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            leave_type_id: t.Numeric(),
+            start_date: t.String({ minLength: 10, maxLength: 10 }),
+            end_date: t.String({ minLength: 10, maxLength: 10 }),
+            total_days: t.Numeric(),
+            is_half_day: t.Optional(t.Boolean()),
+            half_day_period: t.Optional(t.Nullable(t.String())),
+            reason: t.Optional(t.Nullable(t.String())),
+        }),
+        detail: {
+            tags: ['HR'],
+            summary: 'แก้ไขใบลาของตัวเอง',
+            description: 'แก้ได้เฉพาะใบ PENDING ที่ยังไม่มีผู้อนุมัติคนใดกด — ตรวจซ้อนทับ/สิทธิ์วันลา/เพศเหมือนตอนยื่น และคำนวณสายอนุมัติใหม่',
+        }
     })
     .delete('/leave-requests/:id', deleteLeaveRequest, {
         params: t.Object({ id: t.Numeric() }),

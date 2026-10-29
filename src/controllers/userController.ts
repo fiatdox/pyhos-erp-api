@@ -1,4 +1,5 @@
 import { core_kon } from '../db/db';
+import { positionWithLevel } from '../utils/position';
 import { sendChangePasswordAlert } from '../utils/mophAlert';
 import { getPasswordPolicy, evaluatePassword } from '../utils/passwordPolicy';
 import { checkPassword } from '../utils/passwordStrength';
@@ -394,6 +395,44 @@ export const getMySalaryId = async ({ user, set }: any) => {
     }
 };
 
+// ข้อมูลการทำงานของตัวเอง (หน้า /hr/leave) — อ่านจาก DB ปัจจุบัน ไม่ใช่ cookie ตอน login
+export const getMyWorkProfile = async ({ user, set }: any) => {
+    try {
+        const [u] = await core_kon`
+            SELECT u.pname, u.fname, u.lname, up.position_name, ul.level_name, u.user_type_id, ut.type_name,
+                   ms."name" AS mission_name, mj."name" AS major_name, sm."name" AS submajor_name,
+                   to_char(u.hire_date, 'YYYY-MM-DD') AS hire_date
+            FROM users u
+            LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
+            LEFT JOIN user_levels    ul ON ul.user_level_id    = u.user_level_id
+            LEFT JOIN user_types     ut ON ut.user_type_id     = u.user_type_id
+            LEFT JOIN missions       ms ON ms.mission_id       = u.mission_id
+            LEFT JOIN majors         mj ON mj.major_id         = u.major_id
+            LEFT JOIN submajors      sm ON sm.submajor_id      = u.submajor_id
+            WHERE u.id = ${user.id}`;
+        if (!u) {
+            set.status = 404;
+            return { success: false, message: 'User not found' };
+        }
+        return {
+            success: true,
+            data: {
+                name: `${u.pname ?? ''}${u.fname ?? ''} ${u.lname ?? ''}`.trim(),
+                position: positionWithLevel(u.position_name, u.level_name, u.user_type_id),
+                staff_type: u.type_name ?? null,
+                mission: u.mission_name ?? null,
+                major: u.major_name ?? null,
+                submajor: u.submajor_name ?? null,
+                hire_date: u.hire_date ?? null,
+            },
+        };
+    } catch (error: any) {
+        console.error('[userController] getMyWorkProfile:', error?.message);
+        set.status = 500;
+        return { success: false, message: 'เกิดข้อผิดพลาดภายในระบบ' };
+    }
+};
+
 // บันทึก salary_id ของตัวเอง — ตั้งได้เฉพาะตอนที่ยังไม่มีค่า (แก้ทีหลังต้องให้ HR ทำผ่านทะเบียนบุคลากร)
 // กันเลขซ้ำกับผู้ใช้อื่นใน statement เดียว (atomic)
 export const setMySalaryId = async ({ user, body, set }: any) => {
@@ -476,24 +515,68 @@ export const updateMyCodes = async ({ user, body, set }: any) => {
     }
 };
 
-// ดึงรายชื่อเพื่อนร่วมกลุ่มภารกิจของผู้ login — ใช้เลือก "ผู้ปฏิบัติงานแทน" ตอนลา (ให้ผู้ใช้เลือกเองในวงกว้างขึ้น)
+// ผู้ปฏิบัติงานแทนตอนลา — บุคลากรในกลุ่มงานของ "หัวหน้าลำดับต่ำสุด" ของผู้ login
+//   1) หัวหน้า/รักษาการหน่วยงาน (submajor) ของเรา  ไม่มี →  2) หัวหน้า/รักษาการกลุ่มงาน (major) ของเรา
+//   กลุ่มงานที่ใช้ = กลุ่มงานที่หัวหน้าคนนั้นสังกัด + กลุ่มงานที่เป็นหัวหน้า/รักษาการอยู่
+//   ไม่พบหัวหน้าทั้งสองระดับ → ใช้กลุ่มงานของตัวเอง (ไม่มีกลุ่มงานจึงใช้กลุ่มภารกิจ)
 export const getMyColleagues = async ({ user, set }: any) => {
     try {
-        const me = await core_kon`SELECT mission_id FROM users WHERE id = ${user.id}`;
-        if (me.length === 0) { set.status = 404; return { success: false, message: 'User not found' }; }
-        const { mission_id } = me[0];
+        const [me] = await core_kon`SELECT mission_id, major_id, submajor_id FROM users WHERE id = ${user.id}`;
+        if (!me) { set.status = 404; return { success: false, message: 'User not found' }; }
 
-        if (mission_id == null) return { success: true, data: { scope: 'none', colleagues: [] } };
+        const headsOf = async (): Promise<number[]> => {
+            if (me.submajor_id != null) {
+                const [sm] = await core_kon`SELECT supervisor_id, acting_supervisor_id FROM submajors WHERE submajor_id = ${me.submajor_id} AND is_active = 'Y'`;
+                const ids = [sm?.supervisor_id, sm?.acting_supervisor_id].filter((x: any) => x != null).map(Number);
+                if (ids.length) return ids;
+            }
+            if (me.major_id != null) {
+                const [mj] = await core_kon`SELECT supervisor_id, acting_supervisor_id FROM majors WHERE major_id = ${me.major_id} AND is_active = 'Y'`;
+                const ids = [mj?.supervisor_id, mj?.acting_supervisor_id].filter((x: any) => x != null).map(Number);
+                if (ids.length) return ids;
+            }
+            return [];
+        };
+        const heads = await headsOf();
 
-        const rows = await core_kon`
-            SELECT id, pname, fname, lname, up.position_name
-            FROM users u
-            LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
-            WHERE u.mission_id = ${mission_id} AND u.id <> ${user.id} AND u.is_active = 'Y'
-            ORDER BY u.fname`;
-        return { success: true, data: { scope: 'mission', colleagues: rows } };
+        let majorIds: number[] = [];
+        if (heads.length) {
+            const rows = await core_kon`
+                SELECT major_id FROM users WHERE id IN ${core_kon(heads)} AND major_id IS NOT NULL
+                UNION
+                SELECT major_id FROM majors
+                WHERE is_active = 'Y' AND (supervisor_id IN ${core_kon(heads)} OR acting_supervisor_id IN ${core_kon(heads)})`;
+            majorIds = rows.map((r: any) => Number(r.major_id));
+        }
+        if (!majorIds.length && me.major_id != null) majorIds = [Number(me.major_id)];
+
+        const cols = core_kon`u.id, u.pname, u.fname, u.lname, up.position_name`;
+        if (majorIds.length) {
+            const [colleagues, majors] = await Promise.all([
+                core_kon`
+                    SELECT ${cols}
+                    FROM users u
+                    LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
+                    WHERE u.major_id IN ${core_kon(majorIds)} AND u.id <> ${user.id} AND u.is_active = 'Y'
+                    ORDER BY u.fname`,
+                core_kon`SELECT "name" FROM majors WHERE major_id IN ${core_kon(majorIds)} ORDER BY "name"`,
+            ]);
+            return { success: true, data: { scope: 'major', scope_names: majors.map((m: any) => m.name), colleagues } };
+        }
+        if (me.mission_id == null) return { success: true, data: { scope: 'none', scope_names: [], colleagues: [] } };
+
+        const [colleagues, missions] = await Promise.all([
+            core_kon`
+                SELECT ${cols}
+                FROM users u
+                LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
+                WHERE u.mission_id = ${me.mission_id} AND u.id <> ${user.id} AND u.is_active = 'Y'
+                ORDER BY u.fname`,
+            core_kon`SELECT "name" FROM missions WHERE mission_id = ${me.mission_id}`,
+        ]);
+        return { success: true, data: { scope: 'mission', scope_names: missions.map((m: any) => m.name), colleagues } };
     } catch (error: any) {
-        console.error('[userController] getMyColleagues:', error);
+        console.error('[userController] getMyColleagues:', error?.message);
         set.status = 500;
         return { success: false, message: 'เกิดข้อผิดพลาดภายในระบบ' };
     }

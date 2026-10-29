@@ -43,12 +43,19 @@ const setSupervisorColumn = async (
 };
 
 // ดึงรายการประเภทการลาทั้งหมด (ชื่อ, เงื่อนไขเพศ, จำนวนวันที่ต้องมีเอกสาร)
-export const getLeaveTypes = async ({ set }: any) => {
+// เฉพาะประเภทที่ผู้ล็อกอินลาได้ตามเพศ (ลาคลอด = หญิง, ลาช่วยภริยาคลอด = ชาย)
+// ไม่ได้ระบุเพศในทะเบียน = เห็นทุกประเภท (ไม่กันคนที่ข้อมูลยังไม่ครบ)
+export const getLeaveTypes = async ({ user, set }: any) => {
     try {
         const leaveTypes = await core_kon`
-            SELECT id, code, name_th, gender_restriction, requires_document_after_days
-            FROM hr_leave_types
-            ORDER BY id ASC
+            SELECT lt.id, lt.code, lt.name_th, lt.gender_restriction, lt.requires_document_after_days
+            FROM hr_leave_types lt
+            LEFT JOIN users u ON u.id = ${Number(user?.id)}
+            WHERE lt.is_active
+              AND (lt.gender_restriction = 'ALL' OR u.gender IS NULL
+                   OR (lt.gender_restriction = 'MALE' AND u.gender = 'M')
+                   OR (lt.gender_restriction = 'FEMALE' AND u.gender = 'F'))
+            ORDER BY lt.id ASC
         `;
         return { success: true, data: leaveTypes };
     } catch (error: any) {

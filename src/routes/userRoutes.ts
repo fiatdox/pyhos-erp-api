@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { requireRoles } from '../middlewares/roleGuard';
-import { getAllUsers, getUserById, getUserInfo, createUser, updateUser, deactivateUser, activateUser, changePassword, getMyPasswordStatus, getMyUsernameStatus, checkMyUsername, changeMyUsername, getMySalaryId, setMySalaryId, updateMyCodes, getMyColleagues } from '../controllers/userController';
+import { getAllUsers, getUserById, getUserInfo, createUser, updateUser, deactivateUser, activateUser, changePassword, getMyPasswordStatus, getMyUsernameStatus, checkMyUsername, changeMyUsername, getMySalaryId, getMyWorkProfile, setMySalaryId, updateMyCodes, getMyColleagues } from '../controllers/userController';
 
 // สร้าง Schema สำหรับตรวจสอบข้อมูล (Validation) ให้ตรงกับโครงสร้างตาราง users
 const userSchema = t.Object({
@@ -35,7 +35,7 @@ export const userRoutes = new Elysia({ prefix: '/api/v1/users' })
     })
     // เลขที่เงินเดือนของผู้ login (identity จาก JWT) — ประกาศก่อน /:id กันชนกับ dynamic route
     .get('/me/colleagues', getMyColleagues, {
-        detail: { tags: ['Users'], summary: 'ดึงเพื่อนร่วมกลุ่มภารกิจของตัวเอง', description: 'ดึงบุคลากรทั้งหมดใน mission_id เดียวกัน — ใช้เลือกผู้ปฏิบัติงานแทนตอนลา (ผู้ใช้เลือกเองจากทั้งกลุ่มภารกิจ)' }
+        detail: { tags: ['Users'], summary: 'รายชื่อผู้ปฏิบัติงานแทนตอนลา', description: 'บุคลากรในกลุ่มงานของหัวหน้าลำดับต่ำสุด (หน่วยงาน → กลุ่มงาน) รวมกลุ่มงานที่หัวหน้าคนนั้นเป็นหัวหน้า/รักษาการ — ไม่พบหัวหน้าใช้กลุ่มงานตัวเอง ไม่มีกลุ่มงานใช้กลุ่มภารกิจ' }
     })
     .get('/me/password-status', getMyPasswordStatus, {
         detail: {
@@ -67,6 +67,9 @@ export const userRoutes = new Elysia({ prefix: '/api/v1/users' })
             summary: 'ตั้งชื่อผู้ใช้ใหม่ด้วยตัวเอง',
             description: 'ตรวจรูปแบบ 4-50 ตัว (a-z A-Z 0-9 . _ -), ห้ามเป็นเลขบัตร/ตัวเลข 13 หลัก, กันชื่อซ้ำ (409) — สำเร็จแล้วคืน token ใหม่ ต้องเก็บทับของเดิม'
         }
+    })
+    .get('/me/work-profile', getMyWorkProfile, {
+        detail: { tags: ['Users'], summary: 'ข้อมูลการทำงานของตัวเอง', description: 'ชื่อ ตำแหน่ง (ต่อระดับ) กลุ่มภารกิจ กลุ่มงาน หน่วยงาน วันที่เข้าทำงาน — หน้า /hr/leave' }
     })
     .get('/me/salary-id', getMySalaryId, {
         detail: { tags: ['Users'], summary: 'ดึงเลขที่เงินเดือนของตัวเอง', description: 'อ่าน users.salary_id ของผู้ login — ใช้เช็คก่อนแสดงข้อมูลเงินเดือน' }

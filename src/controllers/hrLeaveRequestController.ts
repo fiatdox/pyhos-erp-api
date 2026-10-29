@@ -131,47 +131,75 @@ export const getLeaveQuota = async ({ query, user, set }: any) => {
     }
 };
 
+/** ตรวจข้อมูลใบลา (ใช้ทั้งยื่นใหม่และแก้ไข) — exclude = ใบเดิมที่กำลังแก้ ไม่นับซ้อนทับ/ไม่นับซ้ำในสิทธิ์วันลา */
+type ExcludeReq = { id: number; leave_type_id: number; start_date: string; total_days: number };
+const checkLeaveInput = async (uid: number, body: any, set: any, exclude?: ExcludeReq)
+    : Promise<{ error: any } | { quota: LeaveQuota }> => {
+    const fail2 = (status: number, message: string, code?: string) => ({ error: fail(set, status, message, code) });
+    const { leave_type_id, start_date, end_date, total_days, is_half_day, half_day_period } = body;
+    if (end_date < start_date) return fail2(400, 'วันสิ้นสุดต้องไม่ก่อนวันเริ่มลา');
+    if (Number(total_days) <= 0) return fail2(400, 'จำนวนวันลาต้องมากกว่า 0');
+    if (is_half_day && !half_day_period) return fail2(400, 'ลาครึ่งวันต้องระบุช่วงเช้า/บ่าย');
+    if (!is_half_day && half_day_period) return fail2(400, 'ระบุช่วงเช้า/บ่ายได้เฉพาะเมื่อลาครึ่งวัน');
+
+    const [leaveType] = await core_kon`
+        SELECT lt.id, lt.name_th, lt.gender_restriction, u.gender
+        FROM hr_leave_types lt
+        LEFT JOIN users u ON u.id = ${uid}
+        WHERE lt.id = ${leave_type_id} AND lt.is_active = true
+    `;
+    if (!leaveType) return fail2(400, 'ไม่พบประเภทการลาที่เลือก');
+    // กันยิง API ตรงด้วยประเภทการลาที่เพศตัวเองลาไม่ได้ (หน้าเว็บซ่อนไว้แล้ว)
+    const genderOk = leaveType.gender_restriction === 'ALL' || leaveType.gender == null
+        || (leaveType.gender_restriction === 'MALE' && leaveType.gender === 'M')
+        || (leaveType.gender_restriction === 'FEMALE' && leaveType.gender === 'F');
+    if (!genderOk) return fail2(400, `${leaveType.name_th} ไม่ตรงกับเพศในทะเบียนบุคลากร`);
+
+    // ซ้อนทับกับใบที่ยังมีผลอยู่ไม่ได้ — กันลาซ้ำช่วงเดียวกันโดยไม่ตั้งใจ
+    const overlap = await core_kon`
+        SELECT id, start_date, end_date FROM hr_leave_requests
+        WHERE user_id = ${uid}
+          AND status IN ('PENDING', 'APPROVED', 'CANCEL_PENDING')
+          AND start_date <= ${end_date} AND end_date >= ${start_date}
+          ${exclude ? core_kon`AND id <> ${exclude.id}` : core_kon``}
+        LIMIT 1
+    `;
+    if (overlap.length > 0) {
+        return fail2(409, `มีใบลาที่ยังมีผลอยู่ทับช่วงวันที่นี้แล้ว (ใบเลขที่ ${overlap[0].id})`, 'OVERLAP');
+    }
+
+    // ตรวจสิทธิ์วันลา — นับรวมใบที่ยังค้างอยู่ด้วย กันยื่นหลายใบพร้อมกันจนทะลุสิทธิ์
+    const fy = fiscalYearOf(start_date);
+    const quota = await leaveQuota(uid, Number(leave_type_id), fy);
+    // แก้ไขใบเดิม: วันของใบนี้ถูกนับเป็น "ค้างอยู่" แล้ว — คืนกลับก่อนเทียบ ไม่งั้นแก้ใบที่ใช้สิทธิ์จนหมดไม่ได้
+    if (exclude && exclude.leave_type_id === Number(leave_type_id) && fiscalYearOf(exclude.start_date) === fy) {
+        quota.pending -= exclude.total_days;
+        quota.remaining += exclude.total_days;
+    }
+    if (quota.has_entitlement && Number(total_days) > quota.remaining) {
+        set.status = 409;
+        return { error: {
+            success: false,
+            code: 'QUOTA_EXCEEDED',
+            message: `${leaveType.name_th}ปีงบ ${quota.fiscal_year} คงเหลือ ${quota.remaining} วัน`
+                + (quota.pending > 0 ? ` (มีใบค้างอยู่ ${quota.pending} วัน)` : '')
+                + ` แต่ใบนี้ขอลา ${total_days} วัน`,
+            data: quota,
+        } };
+    }
+
+    return { quota };
+};
+
 // ── ยื่นใบลา ────────────────────────────────────────────────────────────────
 export const createLeaveRequest = async ({ body, user, set }: any) => {
     try {
         const uid = Number(user?.id);
         const { leave_type_id, start_date, end_date, total_days, is_half_day, half_day_period, reason, document_url } = body;
 
-        if (end_date < start_date) return fail(set, 400, 'วันสิ้นสุดต้องไม่ก่อนวันเริ่มลา');
-        if (Number(total_days) <= 0) return fail(set, 400, 'จำนวนวันลาต้องมากกว่า 0');
-        if (is_half_day && !half_day_period) return fail(set, 400, 'ลาครึ่งวันต้องระบุช่วงเช้า/บ่าย');
-        if (!is_half_day && half_day_period) return fail(set, 400, 'ระบุช่วงเช้า/บ่ายได้เฉพาะเมื่อลาครึ่งวัน');
-
-        const [leaveType] = await core_kon`
-            SELECT id, name_th FROM hr_leave_types WHERE id = ${leave_type_id} AND is_active = true
-        `;
-        if (!leaveType) return fail(set, 400, 'ไม่พบประเภทการลาที่เลือก');
-
-        // ซ้อนทับกับใบที่ยังมีผลอยู่ไม่ได้ — กันลาซ้ำช่วงเดียวกันโดยไม่ตั้งใจ
-        const overlap = await core_kon`
-            SELECT id, start_date, end_date FROM hr_leave_requests
-            WHERE user_id = ${uid}
-              AND status IN ('PENDING', 'APPROVED', 'CANCEL_PENDING')
-              AND start_date <= ${end_date} AND end_date >= ${start_date}
-            LIMIT 1
-        `;
-        if (overlap.length > 0) {
-            return fail(set, 409, `มีใบลาที่ยังมีผลอยู่ทับช่วงวันที่นี้แล้ว (ใบเลขที่ ${overlap[0].id})`, 'OVERLAP');
-        }
-
-        // ตรวจสิทธิ์วันลา — นับรวมใบที่ยังค้างอยู่ด้วย กันยื่นหลายใบพร้อมกันจนทะลุสิทธิ์
-        const quota = await leaveQuota(uid, Number(leave_type_id), fiscalYearOf(start_date));
-        if (quota.has_entitlement && Number(total_days) > quota.remaining) {
-            set.status = 409;
-            return {
-                success: false,
-                code: 'QUOTA_EXCEEDED',
-                message: `${leaveType.name_th}ปีงบ ${quota.fiscal_year} คงเหลือ ${quota.remaining} วัน`
-                    + (quota.pending > 0 ? ` (มีใบค้างอยู่ ${quota.pending} วัน)` : '')
-                    + ` แต่ใบนี้ขอลา ${total_days} วัน`,
-                data: quota,
-            };
-        }
+        const checked = await checkLeaveInput(uid, body, set);
+        if ('error' in checked) return checked.error;
+        const { quota } = checked;
 
         const chain = await resolveApprovalChain(uid);
         if (!chain || chain.steps.length === 0) {
@@ -321,6 +349,63 @@ export const deleteLeaveRequest = async ({ params, user, set }: any) => {
         });
     } catch (error: any) {
         return serverError(set, 'deleteLeaveRequest', error);
+    }
+};
+
+// ── แก้ไขใบลาของตัวเอง ────────────────────────────────────────────────────────
+// แก้ได้เฉพาะใบ PENDING ที่ยังไม่มีผู้อนุมัติคนใดกด (เงื่อนไขเดียวกับการลบ) — ตรวจข้อมูลชุดเดียวกับตอนยื่น
+// สายอนุมัติคำนวณใหม่ตามผังปัจจุบัน และเริ่มนับขั้นที่ 1 ใหม่
+export const updateLeaveRequest = async ({ params, body, user, set }: any) => {
+    const uid = Number(user?.id);
+    const requestId = Number(params?.id);
+    try {
+        return await core_kon.begin(async (tx: any) => {
+            const [req] = await tx`
+                SELECT id, user_id, status, leave_type_id, start_date, total_days
+                FROM hr_leave_requests WHERE id = ${requestId} FOR UPDATE
+            `;
+            if (!req) return fail(set, 404, 'ไม่พบใบลานี้');
+            if (Number(req.user_id) !== uid) return fail(set, 403, 'แก้ไขได้เฉพาะใบลาของตัวเอง');
+            if (req.status !== 'PENDING') return fail(set, 409, `ใบลาสถานะ ${req.status} แก้ไขไม่ได้`, 'NOT_EDITABLE');
+            const [acted] = await tx`SELECT count(*)::int AS n FROM hr_leave_approvals WHERE request_id = ${requestId}`;
+            if (Number(acted.n) > 0) {
+                return fail(set, 409, 'ใบลานี้มีผู้อนุมัติดำเนินการไปแล้ว แก้ไขไม่ได้ — ใช้การถอนใบลาแล้วยื่นใหม่', 'ALREADY_ACTIONED');
+            }
+
+            const checked = await checkLeaveInput(uid, body, set, {
+                id: requestId,
+                leave_type_id: Number(req.leave_type_id),
+                start_date: req.start_date,
+                total_days: Number(req.total_days),
+            });
+            if ('error' in checked) return checked.error;
+
+            const chain = await resolveApprovalChain(uid);
+            if (!chain || chain.steps.length === 0) {
+                return fail(set, 422,
+                    'ไม่พบผู้อนุมัติในสายบังคับบัญชาของคุณ กรุณาติดต่อฝ่ายบุคคลเพื่อตั้งค่าหัวหน้าหน่วยงาน',
+                    'NO_APPROVER');
+            }
+
+            const { leave_type_id, start_date, end_date, total_days, is_half_day, half_day_period, reason } = body;
+            await tx`
+                UPDATE hr_leave_requests
+                SET leave_type_id = ${leave_type_id}, start_date = ${start_date}, end_date = ${end_date},
+                    total_days = ${total_days}, actual_days = ${total_days},
+                    is_half_day = ${!!is_half_day}, half_day_period = ${half_day_period ?? null},
+                    reason = ${reason ?? null},
+                    approval_chain = ${JSON.stringify(chain.steps)}::text::jsonb, current_step = 1,
+                    updated_at = NOW()
+                WHERE id = ${requestId}
+            `;
+            return {
+                success: true,
+                data: { id: requestId, approval_chain: chain.steps, quota: checked.quota },
+                message: `บันทึกการแก้ไขใบลาแล้ว รออนุมัติจาก${chain.steps[0].level_name} (${chain.steps[0].approver_name})`,
+            };
+        });
+    } catch (error: any) {
+        return serverError(set, 'updateLeaveRequest', error);
     }
 };
 
@@ -746,5 +831,132 @@ export const getLeaveSummary = async ({ user, query, set }: any) => {
         };
     } catch (error: any) {
         return serverError(set, 'getLeaveSummary', error);
+    }
+};
+
+// ── ปฏิทินการลา (หน้า /hr/leave) ──────────────────────────────────────────────
+// ขอบเขตที่เลือกดูได้ขึ้นกับตำแหน่งในผังของผู้ login:
+//   me     = ของฉัน (ทุกคน)
+//   team   = เพื่อนร่วมกลุ่มงาน (ทุกคนที่มีกลุ่มงาน) — ซ่อนประเภท/เหตุผลการลาของคนอื่น เห็นแค่ว่า "ลา"
+//   chain  = ใบลาที่สายอนุมัติระบุรหัสของฉัน (หัวหน้า/รักษาการ หน่วยงาน กลุ่มงาน กลุ่มภารกิจ และ ผอ.)
+//            ตรงกับหน้าอนุมัติการลา — ผอ. จึงเห็นเฉพาะใบของหัวหน้ากลุ่มภารกิจ/รักษาการ ที่เสนอ ผอ. โดยตรง
+//   all    = ทั้งโรงพยาบาล (ADMIN / HR)
+// ไม่รวมใบที่ไม่อนุมัติ/ยกเลิกแล้ว
+const CALENDAR_STATUSES = ['PENDING', 'APPROVED', 'CANCEL_PENDING'];
+const CALENDAR_MAX_DAYS = 62;
+
+export const getLeaveCalendar = async ({ user, query, set }: any) => {
+    try {
+        const uid = Number(user?.id);
+        const ymd = /^\d{4}-\d{2}-\d{2}$/;
+        const from = String(query?.from ?? '');
+        const to = String(query?.to ?? '');
+        if (!ymd.test(from) || !ymd.test(to)) return fail(set, 400, 'ระบุช่วงวันที่ from / to เป็น YYYY-MM-DD');
+        const days = (Date.parse(to) - Date.parse(from)) / 86_400_000;
+        if (!(days >= 0 && days <= CALENDAR_MAX_DAYS)) return fail(set, 400, `ช่วงวันที่ต้องไม่เกิน ${CALENDAR_MAX_DAYS} วัน`);
+
+        const [[me], roleRows, directorRows, missions, majors, submajors] = await Promise.all([
+            core_kon`
+                SELECT u.major_id, mj.name AS major_name
+                FROM users u LEFT JOIN majors mj ON mj.major_id = u.major_id
+                WHERE u.id = ${uid}`,
+            core_kon`
+                SELECT UPPER(r.role_name) AS role_name
+                FROM core_kon.user_m_users_roles mu JOIN core_kon.user_roles r ON r.id = mu.role_id
+                WHERE mu.user_id = ${uid}`,
+            core_kon`SELECT name, value FROM hr_settings WHERE name IN ('director_id', 'acting_director_id')`,
+            core_kon`
+                SELECT mission_id AS id, name, (supervisor_id = ${uid}) AS is_primary FROM missions
+                WHERE is_active = 'Y' AND (supervisor_id = ${uid} OR acting_supervisor_id = ${uid}) ORDER BY name`,
+            core_kon`
+                SELECT major_id AS id, name, (supervisor_id = ${uid}) AS is_primary FROM majors
+                WHERE is_active = 'Y' AND (supervisor_id = ${uid} OR acting_supervisor_id = ${uid}) ORDER BY name`,
+            core_kon`
+                SELECT submajor_id AS id, name, (supervisor_id = ${uid}) AS is_primary FROM submajors
+                WHERE is_active = 'Y' AND (supervisor_id = ${uid} OR acting_supervisor_id = ${uid}) ORDER BY name`,
+        ]);
+        const roles = roleRows.map((r: any) => r.role_name);
+        const directorRole = directorRows.find((r: any) => r.value != null && Number(r.value) === uid)?.name;
+        const canSeeAll = roles.includes('ADMIN') || roles.includes('HR');
+        const units = [...missions, ...majors, ...submajors];
+
+        // ตัวเลือกเรียงจากกว้างไปแคบ — ค่าตั้งต้นคือขอบเขตที่กว้างที่สุดที่มีสิทธิ์
+        const options: { key: string; label: string; group: string }[] = [];
+        if (canSeeAll) options.push({ key: 'all', label: 'ทั้งโรงพยาบาล', group: 'ผู้ดูแลระบบ' });
+        if (directorRole) {
+            options.push({
+                key: 'chain',
+                label: 'หัวหน้ากลุ่มภารกิจ / รักษาการ',
+                group: directorRole === 'director_id' ? 'ผู้อำนวยการ' : 'รักษาการผู้อำนวยการ',
+            });
+        } else if (units.length) {
+            options.push({
+                key: 'chain',
+                label: 'บุคลากรในสายบังคับบัญชาของฉัน',
+                group: units.some((u: any) => u.is_primary) ? 'หัวหน้า' : 'รักษาการ',
+            });
+        }
+        if (me?.major_id != null) options.push({ key: 'team', label: `เพื่อนร่วม${me.major_name ?? 'กลุ่มงาน'}`, group: 'เจ้าหน้าที่' });
+        options.push({ key: 'me', label: 'การลาของฉัน', group: 'เจ้าหน้าที่' });
+
+        const scope = String(query?.scope ?? options[0].key);
+        if (!options.some(o => o.key === scope)) return fail(set, 403, 'ไม่มีสิทธิ์ดูขอบเขตนี้');
+
+        const scopeFrag =
+            scope === 'all' ? core_kon`TRUE`
+            : scope === 'me' ? core_kon`r.user_id = ${uid}`
+            : scope === 'team' ? core_kon`u.major_id = ${me.major_id}`
+            // สายอนุมัติที่ "แช่แข็ง" ไว้ในใบตอนยื่น มีรหัสของฉันเป็นผู้อนุมัติขั้นใดขั้นหนึ่ง
+            : core_kon`jsonb_typeof(r.approval_chain) = 'array' AND EXISTS (
+                  SELECT 1 FROM jsonb_array_elements(r.approval_chain) AS step(value)
+                  WHERE (step.value ->> 'approver_id')::int = ${uid})`;
+        const masked = scope === 'team';
+
+        const rows = await core_kon`
+            SELECT r.id, r.user_id, CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
+                   po.position_name, COALESCE(sm.name, ma.name) AS unit_name,
+                   t.code AS leave_type_code, t.name_th AS leave_type_name,
+                   to_char(r.start_date, 'YYYY-MM-DD') AS start_date, to_char(r.end_date, 'YYYY-MM-DD') AS end_date,
+                   r.total_days, r.is_half_day, r.half_day_period, r.status, r.reason,
+                   r.approval_chain, r.current_step
+            FROM hr_leave_requests r
+            JOIN hr_leave_types t ON t.id = r.leave_type_id
+            JOIN users u ON u.id = r.user_id
+            LEFT JOIN submajors sm ON sm.submajor_id = u.submajor_id
+            LEFT JOIN majors ma ON ma.major_id = u.major_id
+            LEFT JOIN user_positions po ON po.user_position_id = u.user_position_id
+            WHERE r.status IN ${core_kon(CALENDAR_STATUSES)}
+              AND r.end_date >= ${from}::date AND r.start_date <= ${to}::date
+              AND ${scopeFrag}
+            ORDER BY r.start_date, employee_name`;
+
+        return {
+            success: true,
+            data: {
+                scope,
+                options,
+                masked,
+                // เหตุผลการลาเป็นข้อมูลส่วนตัว — ส่งเฉพาะใบของตัวเอง (is_mine) ไม่ว่าจะดูขอบเขตไหน
+                // เพื่อนร่วมกลุ่มงาน: ประเภทการลา (เช่น ลาป่วย) ก็ส่งเฉพาะของตัวเองเช่นกัน
+                events: rows.map((r: any) => {
+                    const mine = Number(r.user_id) === uid;
+                    // รออนุมัติ → ผู้อนุมัติลำดับที่ใบกำลังรออยู่ (ลำดับ 1 กดแล้วจะเลื่อนเป็นลำดับ 2 ...)
+                    const { approval_chain, current_step, ...rest } = r;
+                    const steps = parseChain(approval_chain);
+                    const cur = r.status === 'PENDING' ? stepFor(steps, Number(current_step)) : null;
+                    return {
+                        ...rest,
+                        waiting_for: cur
+                            ? { step: cur.step, total: steps.length, level_name: cur.level_name, approver_name: cur.approver_name, is_acting: cur.is_acting }
+                            : null,
+                        is_mine: mine,
+                        reason: mine ? r.reason : null,
+                        ...(masked && !mine ? { leave_type_code: null, leave_type_name: null } : {}),
+                    };
+                }),
+            },
+        };
+    } catch (error: any) {
+        return serverError(set, 'getLeaveCalendar', error);
     }
 };
