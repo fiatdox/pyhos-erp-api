@@ -12,8 +12,9 @@ import { core_kon } from '../db/db';
 //      ไม่บล็อกการยื่น เพราะในฐานข้อมูลจริงมีคนไม่มีหน่วยงานอยู่หลายร้อยคน
 //   ค) ไม่อนุมัติขั้นใดขั้นหนึ่ง = ใบลานั้นจบ (REJECTED) ยื่นใบใหม่ได้
 //
-// สายอนุมัติถูก "แช่แข็ง" เก็บลง hr_leave_requests.approval_chain ตั้งแต่วันยื่น
-// เปลี่ยนตัวหัวหน้าทีหลังจะไม่กระทบใบที่ค้างอยู่ และตรวจย้อนหลังได้ว่าใครมีอำนาจ ณ ตอนนั้น
+// สายอนุมัติเก็บลง hr_leave_requests.approval_chain ตั้งแต่วันยื่น
+// ขั้นที่กดไปแล้วคงไว้ตามเดิม (ตรวจย้อนหลังได้ว่าใครมีอำนาจ ณ ตอนนั้น) แต่ขั้นที่ยังไม่ถึง
+// จะถูกคำนวณใหม่ตามผังปัจจุบันเมื่อแต่งตั้ง/ถอดหัวหน้า หรือย้ายหน่วย — ดู resyncPendingChains
 
 export type ApprovalLevel = 'SUBMAJOR' | 'MAJOR' | 'MISSION' | 'DIRECTOR';
 
@@ -204,9 +205,8 @@ const namesOf = async (ids: number[]): Promise<Map<number, string>> => {
 };
 
 /**
- * ผู้ใช้คนนี้มีสิทธิ์กดในขั้นที่ใบลากำลังรออยู่หรือไม่
- * ดูจากสายอนุมัติที่แช่แข็งไว้ในใบ ไม่ได้ดูจากตำแหน่งปัจจุบัน — คนที่พ้นตำแหน่งไปแล้ว
- * แต่ใบยังค้างอยู่ที่เขา ยังต้องเป็นคนกด (หรือให้ ADMIN เข้าไปจัดการ)
+ * ผู้ใช้คนนี้มีสิทธิ์กดในขั้นที่ใบลากำลังรออยู่หรือไม่ — ดูจากสายอนุมัติที่เก็บไว้ในใบ
+ * (ซึ่ง resyncPendingChains คอยปรับให้ตรงผังปัจจุบันอยู่แล้ว)
  */
 export const stepFor = (chain: unknown, currentStep: number): ChainStep | null =>
     parseChain(chain).find(s => Number(s.step) === Number(currentStep)) ?? null;
@@ -224,4 +224,68 @@ export const parseChain = (raw: unknown): ChainStep[] => {
         } catch { return []; }
     }
     return [];
+};
+
+const LEVEL_RANK: Record<ApprovalLevel, number> = { SUBMAJOR: 0, MAJOR: 1, MISSION: 2, DIRECTOR: 3 };
+
+/**
+ * ปรับสายอนุมัติของใบลาที่ยังรออนุมัติ (PENDING) ให้ตรงกับผังเจ้าหน้าที่ปัจจุบัน
+ * เรียกหลังแต่งตั้ง/ถอดหัวหน้า-รักษาการ-ผอ. หรือหลังย้ายหน่วยของบุคลากร
+ *
+ * - ขั้นที่อนุมัติไปแล้ว (step < current_step) คงไว้ทั้งหมด
+ * - ขั้นที่เหลือ = สายใหม่ที่ระดับสูงกว่าขั้นล่าสุดที่อนุมัติแล้ว และไม่ใช่คนที่อนุมัติไปแล้ว
+ * - สายใหม่ไม่เหลือขั้นถัดไป → เสนอ ผอ. แทน · หา ผอ. ไม่ได้ → ไม่แตะใบนั้น (ไม่ปล่อยให้ผ่านเองโดยไม่มีคนกด)
+ * - ใบที่ขอยกเลิก (CANCEL_PENDING) ไม่ปรับ เพราะเป็นการเดินสายเดิมซ้ำเพื่อยกเลิก
+ *
+ * คืนจำนวนใบที่ถูกปรับ · ใส่ userId เพื่อปรับเฉพาะใบของคนนั้น
+ */
+export const resyncPendingChains = async (userId?: number): Promise<number> => {
+    const rows = await core_kon`
+        SELECT id, user_id, approval_chain, current_step FROM hr_leave_requests
+        WHERE status = 'PENDING' ${userId == null ? core_kon`` : core_kon`AND user_id = ${userId}`}
+    `;
+    let changed = 0;
+    for (const r of rows as any[]) {
+        const chain = parseChain(r.approval_chain);
+        const cs = Number(r.current_step);
+        const done = chain.filter(s => Number(s.step) < cs);
+        if (done.length !== cs - 1) continue;  // ข้อมูลไม่ต่อเนื่อง ไม่เดาแทน
+
+        const fresh = await resolveApprovalChain(Number(r.user_id));
+        if (!fresh) continue;
+        const lastRank = done.length ? LEVEL_RANK[done[done.length - 1].level] ?? -1 : -1;
+        const doneIds = new Set(done.map(s => Number(s.approver_id)));
+        let rest = fresh.steps
+            .filter(s => LEVEL_RANK[s.level] > lastRank && !doneIds.has(Number(s.approver_id)));
+        // ผังใหม่ไม่เหลือขั้นถัดไป (เช่น ถอดหัวหน้าภารกิจที่ไม่มีรักษาการ) แต่ใบยังมีขั้นค้าง
+        // → เสนอ ผอ. แทน ไม่ปล่อยใบค้างกับคนที่พ้นตำแหน่งไปแล้ว และไม่ปล่อยให้ผ่านเองโดยไม่มีคนกด
+        if (rest.length === 0) {
+            const director = await resolveDirectorStep(cs);
+            if (director && director.approver_id !== Number(r.user_id) && !doneIds.has(director.approver_id)) rest = [director];
+        }
+        if (rest.length === 0) continue;
+        rest = rest.map((s, i) => ({ ...s, step: cs + i }));
+
+        const key = (xs: ChainStep[]) => JSON.stringify(xs.map(s => [s.level, s.approver_id, s.unit_type, s.unit_id, s.is_acting]));
+        if (key(rest) === key(chain.filter(s => Number(s.step) >= cs))) continue;
+
+        const next = [...done, ...rest];
+        const res = await core_kon`
+            UPDATE hr_leave_requests
+            SET approval_chain = ${JSON.stringify(next)}::text::jsonb, updated_at = NOW()
+            WHERE id = ${r.id} AND status = 'PENDING' AND current_step = ${cs}
+        `;
+        changed += res.count ?? 0;
+    }
+    return changed;
+};
+
+/** ปรับสายอนุมัติแบบไม่ให้ความผิดพลาดย้อนไปทำให้การแก้ผัง/ข้อมูลบุคลากรล้ม — log ไว้ฝั่ง server */
+export const resyncPendingChainsSafe = async (userId?: number) => {
+    try {
+        const n = await resyncPendingChains(userId);
+        if (n > 0) console.log(`[leaveChain] ปรับสายอนุมัติใบลาที่รออยู่ ${n} ใบตามผังปัจจุบัน`);
+    } catch (error) {
+        console.error('[leaveChain] resyncPendingChains:', error);
+    }
 };

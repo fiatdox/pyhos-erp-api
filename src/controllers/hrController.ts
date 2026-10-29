@@ -1,4 +1,6 @@
 import { core_kon } from '../db/db';
+import { resyncPendingChainsSafe } from '../services/leaveChain';
+import { resolveLeaveSubject } from '../services/leaveSubject';
 
 // ── ตอบ 500 แบบไม่เผยรายละเอียดภายใน (SQL error ฯลฯ log ไว้ฝั่ง server เท่านั้น) ──
 const serverError = (set: any, where: string, error: any) => {
@@ -45,12 +47,15 @@ const setSupervisorColumn = async (
 // ดึงรายการประเภทการลาทั้งหมด (ชื่อ, เงื่อนไขเพศ, จำนวนวันที่ต้องมีเอกสาร)
 // เฉพาะประเภทที่ผู้ล็อกอินลาได้ตามเพศ (ลาคลอด = หญิง, ลาช่วยภริยาคลอด = ชาย)
 // ไม่ได้ระบุเพศในทะเบียน = เห็นทุกประเภท (ไม่กันคนที่ข้อมูลยังไม่ครบ)
-export const getLeaveTypes = async ({ user, set }: any) => {
+export const getLeaveTypes = async ({ user, query, set }: any) => {
     try {
+        // HR / ADMIN ทำรายการแทน (?user_id=) → กรองตามเพศของผู้ลา ไม่ใช่ของผู้ทำรายการ
+        const subject = await resolveLeaveSubject(Number(user?.id), query?.user_id);
+        if (!subject.ok) { set.status = subject.status; return { success: false, message: subject.message }; }
         const leaveTypes = await core_kon`
             SELECT lt.id, lt.code, lt.name_th, lt.gender_restriction, lt.requires_document_after_days
             FROM hr_leave_types lt
-            LEFT JOIN users u ON u.id = ${Number(user?.id)}
+            LEFT JOIN users u ON u.id = ${subject.uid}
             WHERE lt.is_active
               AND (lt.gender_restriction = 'ALL' OR u.gender IS NULL
                    OR (lt.gender_restriction = 'MALE' AND u.gender = 'M')
@@ -144,6 +149,7 @@ export const updateMissionSupervisor = async ({ params, body, set }: any) => {
         const r = await setSupervisorColumn('missions', 'mission_id', params.id, body.supervisor_id ?? null, 'supervisor_id');
         if (r.status === 'not_found') { set.status = 404; return { success: false, message: 'Mission not found' }; }
         if (r.status === 'conflict') { set.status = 409; return { success: false, message: 'ไม่สามารถแต่งตั้งเป็นหัวหน้าภารกิจได้ เพราะบุคลากรนี้เป็นรักษาการของภารกิจนี้อยู่แล้ว' }; }
+        await resyncPendingChainsSafe();
         return { success: true, data: r.row };
     } catch (error: any) { return serverError(set, 'updateMissionSupervisor', error); }
 };
@@ -154,6 +160,7 @@ export const updateMissionActingSupervisor = async ({ params, body, set }: any) 
         const r = await setSupervisorColumn('missions', 'mission_id', params.id, body.acting_supervisor_id ?? null, 'acting_supervisor_id');
         if (r.status === 'not_found') { set.status = 404; return { success: false, message: 'Mission not found' }; }
         if (r.status === 'conflict') { set.status = 409; return { success: false, message: 'ไม่สามารถแต่งตั้งเป็นรักษาการได้ เพราะบุคลากรนี้เป็นหัวหน้าภารกิจของภารกิจนี้อยู่แล้ว' }; }
+        await resyncPendingChainsSafe();
         return { success: true, data: r.row };
     } catch (error: any) { return serverError(set, 'updateMissionActingSupervisor', error); }
 };
@@ -164,6 +171,7 @@ export const updateMajorSupervisor = async ({ params, body, set }: any) => {
         const r = await setSupervisorColumn('majors', 'major_id', params.id, body.supervisor_id ?? null, 'supervisor_id');
         if (r.status === 'not_found') { set.status = 404; return { success: false, message: 'Major not found' }; }
         if (r.status === 'conflict') { set.status = 409; return { success: false, message: 'ไม่สามารถแต่งตั้งเป็นหัวหน้ากลุ่มงานได้ เพราะบุคลากรนี้เป็นรักษาการของกลุ่มงานนี้อยู่แล้ว' }; }
+        await resyncPendingChainsSafe();
         return { success: true, data: r.row };
     } catch (error: any) { return serverError(set, 'updateMajorSupervisor', error); }
 };
@@ -174,6 +182,7 @@ export const updateMajorActingSupervisor = async ({ params, body, set }: any) =>
         const r = await setSupervisorColumn('majors', 'major_id', params.id, body.acting_supervisor_id ?? null, 'acting_supervisor_id');
         if (r.status === 'not_found') { set.status = 404; return { success: false, message: 'Major not found' }; }
         if (r.status === 'conflict') { set.status = 409; return { success: false, message: 'ไม่สามารถแต่งตั้งเป็นรักษาการได้ เพราะบุคลากรนี้เป็นหัวหน้ากลุ่มงานของกลุ่มงานนี้อยู่แล้ว' }; }
+        await resyncPendingChainsSafe();
         return { success: true, data: r.row };
     } catch (error: any) { return serverError(set, 'updateMajorActingSupervisor', error); }
 };
@@ -184,6 +193,7 @@ export const updateSubMajorSupervisor = async ({ params, body, set }: any) => {
         const r = await setSupervisorColumn('submajors', 'submajor_id', params.id, body.supervisor_id ?? null, 'supervisor_id');
         if (r.status === 'not_found') { set.status = 404; return { success: false, message: 'SubMajor not found' }; }
         if (r.status === 'conflict') { set.status = 409; return { success: false, message: 'ไม่สามารถแต่งตั้งเป็นหัวหน้าหน่วยงานได้ เพราะบุคลากรนี้เป็นรักษาการของหน่วยงานนี้อยู่แล้ว' }; }
+        await resyncPendingChainsSafe();
         return { success: true, data: r.row };
     } catch (error: any) { return serverError(set, 'updateSubMajorSupervisor', error); }
 };
@@ -194,6 +204,7 @@ export const updateSubMajorActingSupervisor = async ({ params, body, set }: any)
         const r = await setSupervisorColumn('submajors', 'submajor_id', params.id, body.acting_supervisor_id ?? null, 'acting_supervisor_id');
         if (r.status === 'not_found') { set.status = 404; return { success: false, message: 'SubMajor not found' }; }
         if (r.status === 'conflict') { set.status = 409; return { success: false, message: 'ไม่สามารถแต่งตั้งเป็นรักษาการได้ เพราะบุคลากรนี้เป็นหัวหน้าหน่วยงานของหน่วยงานนี้อยู่แล้ว' }; }
+        await resyncPendingChainsSafe();
         return { success: true, data: r.row };
     } catch (error: any) { return serverError(set, 'updateSubMajorActingSupervisor', error); }
 };
@@ -311,6 +322,7 @@ export const updateDirector = async ({ body, set, user }: any) => {
     try {
         const r = await setDirectorKey('director_id', 'acting_director_id', body.supervisor_id ?? null, user?.id ?? null);
         if (r.status === 'conflict') { set.status = 409; return { success: false, message: 'ไม่สามารถแต่งตั้งเป็นผู้อำนวยการได้ เพราะบุคลากรนี้เป็นรักษาการผู้อำนวยการอยู่แล้ว' }; }
+        await resyncPendingChainsSafe();
         return { success: true, data: r.row };
     } catch (error: any) { return serverError(set, 'updateDirector', error); }
 };
@@ -320,6 +332,7 @@ export const updateActingDirector = async ({ body, set, user }: any) => {
     try {
         const r = await setDirectorKey('acting_director_id', 'director_id', body.acting_supervisor_id ?? null, user?.id ?? null);
         if (r.status === 'conflict') { set.status = 409; return { success: false, message: 'ไม่สามารถแต่งตั้งเป็นรักษาการได้ เพราะบุคลากรนี้เป็นผู้อำนวยการอยู่แล้ว' }; }
+        await resyncPendingChainsSafe();
         return { success: true, data: r.row };
     } catch (error: any) { return serverError(set, 'updateActingDirector', error); }
 };

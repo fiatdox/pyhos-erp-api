@@ -9,6 +9,8 @@ import {
     approveCancellation, rejectCancellation, getLeaveRequestById, getLeaveSummary, getLeaveQuota, getLeaveCalendar,
     deleteLeaveRequest, updateLeaveRequest,
 } from '../controllers/hrLeaveRequestController';
+import { getLeaveRules } from '../services/leaveRules';
+import { getLeaveDayCount, getHolidays, createHoliday, updateHoliday, deleteHoliday, getLeaveDayCheck, verifyLeaveDays, adjustLeaveDays } from '../controllers/hrLeaveDayController';
 import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances } from '../controllers/hrLeaveBalanceController';
 
 export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
@@ -109,7 +111,7 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         }
     })
     .get('/leave-requests/quota', getLeaveQuota, {
-        query: t.Object({ leave_type_id: t.String(), start_date: t.Optional(t.String()) }),
+        query: t.Object({ leave_type_id: t.String(), start_date: t.Optional(t.String()), user_id: t.Optional(t.String()) }),
         detail: { tags: ['HR'], summary: 'สิทธิ์วันลาคงเหลือของตัวเอง (ตามประเภทการลาและปีงบ)' }
     })
     .get('/leave-requests/mine', getMyLeaveRequests, {
@@ -155,6 +157,8 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     })
     .post('/leave-requests', createLeaveRequest, {
         body: t.Object({
+            // HR / ADMIN ยื่นแทนบุคลากร (เช่น ลาพักผ่อนย้อนหลัง) — ไม่ระบุ = ยื่นของตัวเอง
+            user_id: t.Optional(t.Nullable(t.Numeric())),
             leave_type_id: t.Numeric(),
             start_date: t.String({ minLength: 10, maxLength: 10 }),
             end_date: t.String({ minLength: 10, maxLength: 10 }),
@@ -214,9 +218,60 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         },
     })
 
+    // ── นับวันลา / วันหยุดราชการ (อ่านได้ทุกคน — ฟอร์มยื่นลาใช้เติมจำนวนวันให้อัตโนมัติ) ──
+    .get('/leave-days/count', getLeaveDayCount, {
+        query: t.Object({
+            start_date: t.String(), end_date: t.String(),
+            leave_type_id: t.Optional(t.String()), is_half_day: t.Optional(t.String()),
+        }),
+        detail: { tags: ['HR'], summary: 'นับจำนวนวันลาของช่วงวันที่', description: 'ประเภทที่นับวันทำการไม่นับเสาร์-อาทิตย์และวันหยุดราชการ (hr_holidays) · ลาครึ่งวันหัก 0.5' }
+    })
+    .get('/leave-rules', getLeaveRules, {
+        detail: { tags: ['HR'], summary: 'ค่าตั้งของระบบลา', description: 'max_advance_days = ลาล่วงหน้าได้สูงสุดกี่วัน (env LEAVE_MAX_ADVANCE_DAYS ค่าเริ่มต้น 300)' }
+    })
+    .get('/holidays', getHolidays, {
+        query: t.Object({ year: t.Optional(t.String()), from: t.Optional(t.String()), to: t.Optional(t.String()) }),
+        detail: { tags: ['HR'], summary: 'วันหยุดราชการ', description: 'ระบุปี ค.ศ. (year) หรือช่วง from / to' }
+    })
+
     // ── ตั้งค่ากำหนดสิทธิ์การลา / แต่งตั้งหัวหน้า — จำกัดเฉพาะ role ADMIN และ HR เท่านั้น ──
     // หมายเหตุ: requireRoles มีผลกับ route ที่ประกาศ "หลัง" บรรทัดนี้เท่านั้น (GET ด้านบนไม่โดน)
     .use(requireRoles('ADMIN', 'HR'))
+    // ── จัดการวันหยุดราชการ ────────────────────────────────────────────────
+    .post('/holidays', createHoliday, {
+        body: t.Object({
+            holiday_date: t.String(), name_th: t.String(),
+            holiday_type: t.Optional(t.String()), note: t.Optional(t.Nullable(t.String())),
+        }),
+        detail: { tags: ['HR'], summary: 'เพิ่มวันหยุดราชการ (ADMIN/HR)' }
+    })
+    .patch('/holidays/:id', updateHoliday, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            holiday_date: t.String(), name_th: t.String(),
+            holiday_type: t.Optional(t.String()), note: t.Optional(t.Nullable(t.String())),
+        }),
+        detail: { tags: ['HR'], summary: 'แก้ไขวันหยุดราชการ (ADMIN/HR)' }
+    })
+    .delete('/holidays/:id', deleteHoliday, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['HR'], summary: 'ลบวันหยุดราชการ (ADMIN/HR)', description: 'soft delete — is_active = false' }
+    })
+    // ── ตรวจจำนวนวันลาที่คร่อมวันหยุด ─────────────────────────────────────────
+    .get('/leave-day-check', getLeaveDayCheck, {
+        query: t.Object({ from: t.String(), to: t.String(), filter: t.Optional(t.String()) }),
+        detail: { tags: ['HR'], summary: 'ใบลาที่ควรตรวจจำนวนวัน (ADMIN/HR)', description: 'filter: review (ค่าเริ่มต้น) | spans | mismatch | checked | all' }
+    })
+    .post('/leave-day-check/:id/verify', verifyLeaveDays, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({ note: t.Optional(t.Nullable(t.String())) }),
+        detail: { tags: ['HR'], summary: 'ยืนยันจำนวนวันลา (ADMIN/HR)' }
+    })
+    .post('/leave-day-check/:id/adjust', adjustLeaveDays, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({ total_days: t.Numeric(), note: t.String() }),
+        detail: { tags: ['HR'], summary: 'แก้จำนวนวันลา (ADMIN/HR)', description: 'ปรับยอดวันลาที่หักไว้ตามส่วนต่างทันที' }
+    })
     // ── วันลาสะสม (ยกยอดปีงบประมาณ / ย้ายเข้าใส่ยอดยกมา) ──────────────────────
     .get('/leave-balances/meta', getLeaveBalanceMeta, {
         detail: { tags: ['HR'], summary: 'ปีงบประมาณปัจจุบัน + ปีที่มีข้อมูลวันลาสะสม' }

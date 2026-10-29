@@ -1,5 +1,7 @@
 import { core_kon } from '../db/db';
 import { positionWithLevel } from '../utils/position';
+import { resyncPendingChainsSafe } from '../services/leaveChain';
+import { resolveLeaveSubject } from '../services/leaveSubject';
 import { sendChangePasswordAlert } from '../utils/mophAlert';
 import { getPasswordPolicy, evaluatePassword } from '../utils/passwordPolicy';
 import { checkPassword } from '../utils/passwordStrength';
@@ -136,6 +138,11 @@ export const updateUser = async ({ params, body, set }: any) => {
         if (result.length === 0) {
             set.status = 404;
             return { success: false, message: 'User not found' };
+        }
+
+        // ย้ายหน่วย → ใบลาที่ยังรออนุมัติของคนนี้ต้องไปหาหัวหน้าหน่วยใหม่
+        if (['mission_id', 'major_id', 'submajor_id'].some(k => k in userData)) {
+            await resyncPendingChainsSafe(Number(params.id));
         }
 
         return { success: true, message: 'User updated successfully', data: result[0] };
@@ -396,8 +403,12 @@ export const getMySalaryId = async ({ user, set }: any) => {
 };
 
 // ข้อมูลการทำงานของตัวเอง (หน้า /hr/leave) — อ่านจาก DB ปัจจุบัน ไม่ใช่ cookie ตอน login
-export const getMyWorkProfile = async ({ user, set }: any) => {
+export const getMyWorkProfile = async ({ user: actor, query, set }: any) => {
     try {
+        // HR / ADMIN ทำรายการลาแทน (?user_id=) → ข้อมูลของผู้ลา
+        const subject = await resolveLeaveSubject(Number(actor?.id), query?.user_id);
+        if (!subject.ok) { set.status = subject.status; return { success: false, message: subject.message }; }
+        const user = { id: subject.uid };
         const [u] = await core_kon`
             SELECT u.pname, u.fname, u.lname, up.position_name, ul.level_name, u.user_type_id, ut.type_name,
                    ms."name" AS mission_name, mj."name" AS major_name, sm."name" AS submajor_name,
@@ -420,6 +431,7 @@ export const getMyWorkProfile = async ({ user, set }: any) => {
                 name: `${u.pname ?? ''}${u.fname ?? ''} ${u.lname ?? ''}`.trim(),
                 position: positionWithLevel(u.position_name, u.level_name, u.user_type_id),
                 staff_type: u.type_name ?? null,
+                user_type_id: u.user_type_id ?? null,
                 mission: u.mission_name ?? null,
                 major: u.major_name ?? null,
                 submajor: u.submajor_name ?? null,
@@ -519,8 +531,12 @@ export const updateMyCodes = async ({ user, body, set }: any) => {
 //   1) หัวหน้า/รักษาการหน่วยงาน (submajor) ของเรา  ไม่มี →  2) หัวหน้า/รักษาการกลุ่มงาน (major) ของเรา
 //   กลุ่มงานที่ใช้ = กลุ่มงานที่หัวหน้าคนนั้นสังกัด + กลุ่มงานที่เป็นหัวหน้า/รักษาการอยู่
 //   ไม่พบหัวหน้าทั้งสองระดับ → ใช้กลุ่มงานของตัวเอง (ไม่มีกลุ่มงานจึงใช้กลุ่มภารกิจ)
-export const getMyColleagues = async ({ user, set }: any) => {
+export const getMyColleagues = async ({ user: actor, query, set }: any) => {
     try {
+        // HR / ADMIN ทำรายการลาแทน (?user_id=) → รายชื่อผู้ปฏิบัติงานแทนของผู้ลา
+        const subject = await resolveLeaveSubject(Number(actor?.id), query?.user_id);
+        if (!subject.ok) { set.status = subject.status; return { success: false, message: subject.message }; }
+        const user = { id: subject.uid };
         const [me] = await core_kon`SELECT mission_id, major_id, submajor_id FROM users WHERE id = ${user.id}`;
         if (!me) { set.status = 404; return { success: false, message: 'User not found' }; }
 
