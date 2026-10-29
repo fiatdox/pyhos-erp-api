@@ -13,16 +13,19 @@ const fiscalYearOf = (d: Date): number => {
 };
 
 // หาเกณฑ์สิทธิ์ที่ตรงกับผู้ใช้ ณ ตอนนี้ (user_type + อายุงานจาก hire_date) — เลือก tier อายุงานสูงสุดที่ยังไม่เกินอายุงานจริง
+// ไม่มี hire_date (ทะเบียนส่วนใหญ่ยังไม่กรอก) ใช้ tier ต่ำสุด — กติกาเดียวกับการตรวจสิทธิ์ตอนยื่นใบลา
+// (เดิมนับอายุงานเป็น 0 เดือน ทำให้ไม่ผ่าน tier 6 เดือนของลาพักผ่อน และไม่ได้ยกยอดเลย)
 const findEntitlement = async (userId: number, leaveTypeId: number) => {
     const rows = await core_kon`
         SELECT e.max_days_per_year, e.carry_over, e.carry_over_max_days
         FROM users u
         JOIN hr_leave_entitlements e ON e.user_type_id = u.user_type_id AND e.leave_type_id = ${leaveTypeId}
         WHERE u.id = ${userId}
-          AND e.min_service_months <= COALESCE(
-                EXTRACT(YEAR FROM AGE(now(), u.hire_date))::int * 12 + EXTRACT(MONTH FROM AGE(now(), u.hire_date))::int,
-                0)
-        ORDER BY e.min_service_months DESC
+          AND (u.hire_date IS NULL
+               OR e.min_service_months <= EXTRACT(YEAR FROM AGE(now(), u.hire_date))::int * 12
+                                        + EXTRACT(MONTH FROM AGE(now(), u.hire_date))::int)
+        ORDER BY CASE WHEN u.hire_date IS NULL THEN e.min_service_months END ASC,
+                 e.min_service_months DESC
         LIMIT 1`;
     return rows[0] ?? null;
 };
@@ -119,6 +122,8 @@ export const updateLeaveBalance = async ({ params, body, user, set }: any) => {
 // ลาพักผ่อนได้เป็นหลัก จึงล็อกไว้ในโค้ด ไม่รับ leave_type_id จาก client เพื่อกันยกยอดประเภทอื่นผิดพลาด
 // คัดลอกคงเหลือ (cap ตาม carry_over_max_days ของแต่ละคน) จาก from_fiscal_year → to_fiscal_year
 // ไม่ทำซ้ำถ้าคนนั้นมีแถวของปีใหม่อยู่แล้ว (กันกดยกยอดซ้ำ)
+// ทำกับบุคลากรที่ยังปฏิบัติงานทุกคนที่ประเภทเจ้าหน้าที่สะสมได้ — คนที่ไม่มีแถวของปีเดิม = ไม่เคยลาเลย
+// ถือว่าเหลือเต็มสิทธิ์ (เดิมยกยอดเฉพาะคนที่มีแถวอยู่แล้ว คนที่ไม่ได้ลาทั้งปีจึงไม่ได้สะสม)
 export const rolloverLeaveBalances = async ({ body, user, set }: any) => {
     try {
         const { from_fiscal_year, to_fiscal_year } = body;
@@ -138,18 +143,21 @@ export const rolloverLeaveBalances = async ({ body, user, set }: any) => {
         await core_kon.begin(async (sql: any) => {
             for (const leaveTypeId of leaveTypeIds) {
                 const candidates = await sql`
-                    SELECT b.user_id, b.remaining
-                    FROM hr_leave_balances b
-                    WHERE b.leave_type_id = ${leaveTypeId} AND b.fiscal_year = ${from_fiscal_year}
+                    SELECT u.id AS user_id, b.remaining, (b.id IS NOT NULL) AS has_row
+                    FROM users u
+                    LEFT JOIN hr_leave_balances b
+                           ON b.user_id = u.id AND b.leave_type_id = ${leaveTypeId} AND b.fiscal_year = ${from_fiscal_year}
+                    WHERE u.is_active = 'Y'
                       AND NOT EXISTS (
                           SELECT 1 FROM hr_leave_balances b2
-                          WHERE b2.user_id = b.user_id AND b2.leave_type_id = ${leaveTypeId} AND b2.fiscal_year = ${to_fiscal_year}
+                          WHERE b2.user_id = u.id AND b2.leave_type_id = ${leaveTypeId} AND b2.fiscal_year = ${to_fiscal_year}
                       )`;
                 for (const c of candidates) {
                     const entitlement = await findEntitlement(c.user_id, leaveTypeId);
                     if (!entitlement || !entitlement.carry_over) { skippedNoEntitlement++; continue; }
                     const cap = entitlement.carry_over_max_days;
-                    const carriedIn = cap != null ? Math.min(Number(c.remaining), cap) : Number(c.remaining);
+                    const left = c.has_row ? Number(c.remaining) : Number(entitlement.max_days_per_year ?? 0);
+                    const carriedIn = cap != null ? Math.min(left, Number(cap)) : left;
                     await sql`
                         INSERT INTO hr_leave_balances (user_id, leave_type_id, fiscal_year, carried_in, entitled, used, note, created_by, updated_by)
                         VALUES (${c.user_id}, ${leaveTypeId}, ${to_fiscal_year}, ${Math.max(carriedIn, 0)}, ${entitlement.max_days_per_year ?? 0}, 0,
@@ -157,9 +165,9 @@ export const rolloverLeaveBalances = async ({ body, user, set }: any) => {
                     created++;
                 }
                 const existingCount = await sql`
-                    SELECT COUNT(*)::int AS n FROM hr_leave_balances
-                    WHERE leave_type_id = ${leaveTypeId} AND fiscal_year = ${from_fiscal_year}`;
-                skippedExisting += existingCount[0].n - (candidates.length);
+                    SELECT COUNT(*)::int AS n FROM hr_leave_balances b JOIN users u ON u.id = b.user_id
+                    WHERE b.leave_type_id = ${leaveTypeId} AND b.fiscal_year = ${to_fiscal_year} AND u.is_active = 'Y'`;
+                skippedExisting += existingCount[0].n - created;
             }
         });
 
