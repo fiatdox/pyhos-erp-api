@@ -20,6 +20,7 @@ import { assetDonationRoutes } from "./routes/assetDonationRoutes";
 import { mfaAdminRoutes } from "./routes/mfaAdminRoutes";
 import { userCredentialRoutes } from "./routes/userCredentialRoutes";
 import { appModuleRoutes } from "./routes/appModuleRoutes";
+import { pageViewRoutes } from "./routes/pageViewRoutes";
 import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 
 const app = new Elysia()
@@ -91,6 +92,7 @@ const app = new Elysia()
   .use(mfaAdminRoutes)
   .use(userCredentialRoutes)
   .use(appModuleRoutes)
+  .use(pageViewRoutes)
   //.get("/", () => "Hello Elysia")
   .listen(process.env.PORT || 5000);
 
