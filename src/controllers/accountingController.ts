@@ -1,4 +1,5 @@
 import { core_kon, salaryPool } from '../db/db';
+import { positionWithLevel } from '../utils/position';
 
 // log รายละเอียด error ฝั่ง server เท่านั้น — client ได้ข้อความกลางไม่เปิดเผย internal
 const serverError = (set: any, fn: string, error: any) => {
@@ -62,7 +63,8 @@ export const getSalarySummary = async ({ user, query, set }: any) => {
             `SELECT p.mt,
                     SUM(CASE WHEN c.payrolltype = '1' THEN p.amt ELSE 0 END) AS income,
                     SUM(CASE WHEN c.payrolltype = '2' THEN p.amt ELSE 0 END) AS deduction,
-                    COUNT(DISTINCT p.id) AS id_count
+                    COUNT(DISTINCT p.id) AS id_count,
+                    GROUP_CONCAT(DISTINCT p.id ORDER BY p.id) AS ids
              FROM dgpn_payrollmt p
              JOIN cpayroll c ON c.code = p.code
              WHERE p.id IN (${ph}) AND mt LIKE CONCAT(?, '%')
@@ -75,6 +77,8 @@ export const getSalarySummary = async ({ user, query, set }: any) => {
                 mt: r.mt, income, deduction, net: +(income - deduction).toFixed(2),
                 // งวดที่มีข้อมูลจากหลายเลข — ให้หน้าจอเตือนได้ว่าเป็นช่วงคาบเกี่ยว
                 multi_source: Number(r.id_count) > 1,
+                // เลขที่เงินเดือนที่จ่ายจริงในงวดนี้ (คนที่เปลี่ยนเลข งวดเก่าจะเป็นเลขเดิม)
+                salary_ids: String(r.ids ?? '').split(',').filter(Boolean),
             };
         });
 
@@ -87,6 +91,60 @@ export const getSalarySummary = async ({ user, query, set }: any) => {
     } catch (error: any) { return serverError(set, 'getSalarySummary', error); }
 };
 
+/**
+ * รายการรายรับ/รายการหักของงวดเดียว รวมข้ามทุกเลขที่ส่งมา — รหัสรายการเดียวกันจากคนละเลขรวมยอดกัน
+ * ใช้ทั้งสลิปของตัวเอง และหน้าทะเบียนเงินเดือนของเจ้าหน้าที่ · ไม่มีรายการ = null
+ */
+export const slipItems = async (sids: string[], mt: string) => {
+    const ph = sids.map(() => '?').join(',');
+    const [[items], [idRows]] = await Promise.all([
+        salaryPool.query(
+            `SELECT p.code, c.name, c.payrolltype, SUM(p.amt) AS amt
+             FROM dgpn_payrollmt p
+             JOIN cpayroll c ON c.code = p.code
+             WHERE p.id IN (${ph}) AND p.mt = ?
+             GROUP BY p.code, c.name, c.payrolltype
+             ORDER BY c.payrolltype ASC, p.code ASC`, [...sids, mt]),
+        salaryPool.query(`SELECT DISTINCT id FROM dgpn_payrollmt WHERE id IN (${ph}) AND mt = ? ORDER BY id`, [...sids, mt]),
+    ]) as any;
+    if (items.length === 0) return null;
+
+    const earnings = items.filter((i: any) => i.payrolltype === '1')
+        .map((i: any) => ({ code: i.code, label: i.name, amount: Number(i.amt) }));
+    const deductions = items.filter((i: any) => i.payrolltype === '2')
+        .map((i: any) => ({ code: i.code, label: i.name, amount: Number(i.amt) }));
+    const totalEarnings = +earnings.reduce((s: number, e: any) => s + e.amount, 0).toFixed(2);
+    const totalDeductions = +deductions.reduce((s: number, d: any) => s + d.amount, 0).toFixed(2);
+    return {
+        mt,
+        // เลขที่เงินเดือนที่มีรายการในงวดนี้จริง
+        salary_ids: idRows.map((r: any) => String(r.id)),
+        earnings,
+        deductions,
+        total_earnings: totalEarnings,
+        total_deductions: totalDeductions,
+        net: +(totalEarnings - totalDeductions).toFixed(2),
+    };
+};
+
+/** ตำแหน่ง/ประเภท/กลุ่มงานของผู้ใช้สำหรับหัวสลิป — อ่านจาก DB ปัจจุบัน ไม่ใช่ cookie ตอน login */
+export const slipEmployeeOf = async (userId: number) => {
+    const [u] = await core_kon`
+        SELECT up.position_name, ul.level_name, u.user_type_id, ut.type_name, m1."name" AS major_name
+        FROM users u
+        LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
+        LEFT JOIN user_levels    ul ON ul.user_level_id    = u.user_level_id
+        LEFT JOIN user_types     ut ON ut.user_type_id     = u.user_type_id
+        LEFT JOIN majors         m1 ON m1.major_id         = u.major_id
+        WHERE u.id = ${userId}`;
+    if (!u) return null;
+    return {
+        position: positionWithLevel(u.position_name, u.level_name, u.user_type_id),
+        staff_type: u.type_name ?? '',
+        department: u.major_name ?? '',
+    };
+};
+
 // รายละเอียดสลิปงวดเดียว (สำหรับดู/พิมพ์ PDF) — คืนรายการรายรับ/รายการหัก + ยอดรวม + ข้อมูลบัญชี
 export const getSalarySlip = async ({ user, params, set }: any) => {
     try {
@@ -95,41 +153,19 @@ export const getSalarySlip = async ({ user, params, set }: any) => {
         const ph = inList(salaryIds);
         const sids = asParams(salaryIds);
 
-        // รวมรายการข้ามทุกเลขของงวดนั้น — รหัสรายการเดียวกันจากคนละเลขให้รวมยอดกัน
-        const [items] = await salaryPool.query(
-            `SELECT p.code, c.name, c.payrolltype, SUM(p.amt) AS amt
-             FROM dgpn_payrollmt p
-             JOIN cpayroll c ON c.code = p.code
-             WHERE p.id IN (${ph}) AND p.mt = ?
-             GROUP BY p.code, c.name, c.payrolltype
-             ORDER BY c.payrolltype ASC, p.code ASC`, [...sids, params.mt]) as any;
-        if (items.length === 0) {
+        const slip = await slipItems(sids, params.mt);
+        if (!slip) {
             set.status = 404;
             return { success: false, message: 'ไม่พบข้อมูลเงินเดือนงวดนี้' };
         }
 
-        const earnings = items.filter((i: any) => i.payrolltype === '1')
-            .map((i: any) => ({ code: i.code, label: i.name, amount: Number(i.amt) }));
-        const deductions = items.filter((i: any) => i.payrolltype === '2')
-            .map((i: any) => ({ code: i.code, label: i.name, amount: Number(i.amt) }));
-        const totalEarnings = +earnings.reduce((s: number, e: any) => s + e.amount, 0).toFixed(2);
-        const totalDeductions = +deductions.reduce((s: number, d: any) => s + d.amount, 0).toFixed(2);
+        const [[profileRows], employee] = await Promise.all([
+            salaryPool.query(
+                `SELECT fname, lname, bank, bankbranch, accno FROM dgpn_payroll
+                 WHERE id IN (${ph}) ORDER BY upddate DESC LIMIT 1`, sids) as any,
+            slipEmployeeOf(user.id),
+        ]);
 
-        const [profileRows] = await salaryPool.query(
-            `SELECT fname, lname, bank, bankbranch, accno FROM dgpn_payroll
-             WHERE id IN (${ph}) ORDER BY upddate DESC LIMIT 1`, sids) as any;
-
-        return {
-            success: true,
-            data: {
-                mt: params.mt,
-                earnings,
-                deductions,
-                total_earnings: totalEarnings,
-                total_deductions: totalDeductions,
-                net: +(totalEarnings - totalDeductions).toFixed(2),
-                profile: profileRows[0] ?? null,
-            },
-        };
+        return { success: true, data: { ...slip, profile: profileRows[0] ?? null, employee } };
     } catch (error: any) { return serverError(set, 'getSalarySlip', error); }
 };

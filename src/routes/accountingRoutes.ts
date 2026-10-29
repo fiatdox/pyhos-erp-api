@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { getSalarySummary, getSalarySlip } from '../controllers/accountingController';
-import { getSalaryRegister, getSalaryRegisterDetail, getSalaryIdLookup } from '../controllers/salaryRegisterController';
+import { getSalaryRegister, getSalaryRegisterDetail, getSalaryRegisterSlip, getSalaryIdLookup } from '../controllers/salaryRegisterController';
 import { getSalaryIdList, getUserSalaryIds, addUserSalaryId, updateUserSalaryId, removeUserSalaryId, getSalaryIdMeta } from '../controllers/salaryIdController';
 
 export const accountingRoutes = new Elysia({ prefix: '/api/v1/accounting' })
@@ -34,6 +34,10 @@ export const accountingRoutes = new Elysia({ prefix: '/api/v1/accounting' })
         params: t.Object({ id: t.String({ pattern: '^\\d{1,13}$' }) }),
         query: t.Object({ year: t.Optional(t.String({ pattern: '^\\d{4}$' })) }),
         detail: { tags: ['Accounting'], summary: 'ประวัติเงินเดือนรายงวดของ 1 เลขที่เงินเดือน', description: 'เฉพาะ IT_STAFF, ADMIN, ACCOUNT, FINANCE' }
+    })
+    .get('/salary-register/:id/slip/:mt', getSalaryRegisterSlip, {
+        params: t.Object({ id: t.String({ pattern: '^\\d{1,13}$' }), mt: t.String({ pattern: '^\\d{8}$' }) }),
+        detail: { tags: ['Accounting'], summary: 'รายการรายรับ/รายการหักของ 1 เลขที่เงินเดือน งวดเดียว', description: 'เฉพาะ IT_STAFF, ADMIN, ACCOUNT, FINANCE' }
     })
     // ── จัดการเลขที่เงินเดือนของบุคลากร (IT_STAFF / ADMIN / ACCOUNT / FINANCE) ───────────────────
     // เช็คสิทธิ์ใน controller เพื่อไม่ให้ requireRoles กระทบ 2 route ด้านบนที่ทุกคนใช้ได้

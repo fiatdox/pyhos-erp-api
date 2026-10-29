@@ -7,6 +7,7 @@
 //    และดึงยอดงวดเฉพาะ id ของหน้าที่แสดงเท่านั้น (ส่ง id เป็น string เพื่อใช้ index)
 import { core_kon, salaryPool } from '../db/db';
 import { hasAccess, userRoles, nameMatch, type NameMatch } from './salaryIdController';
+import { slipItems, slipEmployeeOf } from './accountingController';
 
 const err = (set: any, status: number, message: string) => {
     set.status = status;
@@ -202,6 +203,22 @@ export const getSalaryRegisterDetail = async ({ params, query, user, set }: any)
         return { success: true, data: { person: { ...person, linked_user: linked.get(id) ?? null, name_match: (linked.has(id) ? nameMatch(linked.get(id)!, person) : 'unknown') as NameMatch }, years, year, months } };
     } catch (e: any) {
         console.error('[salaryRegister] getSalaryRegisterDetail:', e);
+        return err(set, 500, 'เกิดข้อผิดพลาดภายในระบบ');
+    }
+};
+
+// รายละเอียดเงินเดือนงวดเดียวของ 1 เลข — รายการรายรับ/รายการหักและยอดรวม (ไม่ส่งเลขบัญชี)
+export const getSalaryRegisterSlip = async ({ params, user, set }: any) => {
+    try {
+        if (!hasAccess(await userRoles(Number(user?.id)))) return err(set, 403, 'ไม่มีสิทธิ์เข้าถึงข้อมูลนี้');
+        const [slip, linked] = await Promise.all([slipItems([String(params.id)], String(params.mt)), linkedUsers()]);
+        if (!slip) return err(set, 404, 'ไม่พบข้อมูลเงินเดือนงวดนี้');
+        // ผูกกับผู้ใช้แล้ว → ส่งหัวสลิป (ชื่อ ตำแหน่ง กลุ่มงาน) ให้พิมพ์ PDF ได้ · ไม่ส่งเลขบัญชีธนาคาร
+        const lu = linked.get(String(params.id));
+        const employee = lu ? await slipEmployeeOf(lu.id) : null;
+        return { success: true, data: { ...slip, linked_user: lu ? { id: lu.id, name: lu.name } : null, employee } };
+    } catch (e: any) {
+        console.error('[salaryRegister] getSalaryRegisterSlip:', e);
         return err(set, 500, 'เกิดข้อผิดพลาดภายในระบบ');
     }
 };
