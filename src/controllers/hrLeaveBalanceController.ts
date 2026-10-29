@@ -1,4 +1,5 @@
 import { core_kon } from '../db/db';
+import { rolloverAnnualLeave, autoRolloverEnabled } from '../services/leaveRollover';
 
 const serverError = (set: any, where: string, error: any) => {
     console.error(`[hrLeaveBalanceController] ${where}:`, error);
@@ -36,7 +37,19 @@ export const getLeaveBalanceMeta = async ({ set }: any) => {
         const current = fiscalYearOf(new Date());
         const rows = await core_kon`SELECT DISTINCT fiscal_year FROM hr_leave_balances ORDER BY fiscal_year DESC`;
         const years = Array.from(new Set([current, ...rows.map((r: any) => r.fiscal_year)])).sort((a, b) => b - a);
-        return { success: true, data: { current_fiscal_year: current, fiscal_years: years } };
+        const [auto] = await core_kon`SELECT value, updated_at FROM hr_settings WHERE name = 'leave_rollover_fy'`;
+        return {
+            success: true,
+            data: {
+                current_fiscal_year: current, fiscal_years: years,
+                // งานยกยอดอัตโนมัติเมื่อข้ามปีงบ — last_fiscal_year = ปีล่าสุดที่ยกยอดแล้ว
+                auto_rollover: {
+                    enabled: autoRolloverEnabled(),
+                    last_fiscal_year: auto?.value ? Number(auto.value) : null,
+                    updated_at: auto?.updated_at ?? null,
+                },
+            },
+        };
     } catch (error: any) { return serverError(set, 'getLeaveBalanceMeta', error); }
 };
 
@@ -117,13 +130,8 @@ export const updateLeaveBalance = async ({ params, body, user, set }: any) => {
     } catch (error: any) { return serverError(set, 'updateLeaveBalance', error); }
 };
 
-// ── ยกยอดปีงบประมาณใหม่แบบอัตโนมัติ ──────────────────────────────────────────
-// ทำเฉพาะ "ลาพักผ่อน" (hr_leave_types.code = 'ANNUAL') เท่านั้น — ตามระเบียบราชการที่ให้สะสม
-// ลาพักผ่อนได้เป็นหลัก จึงล็อกไว้ในโค้ด ไม่รับ leave_type_id จาก client เพื่อกันยกยอดประเภทอื่นผิดพลาด
-// คัดลอกคงเหลือ (cap ตาม carry_over_max_days ของแต่ละคน) จาก from_fiscal_year → to_fiscal_year
-// ไม่ทำซ้ำถ้าคนนั้นมีแถวของปีใหม่อยู่แล้ว (กันกดยกยอดซ้ำ)
-// ทำกับบุคลากรที่ยังปฏิบัติงานทุกคนที่ประเภทเจ้าหน้าที่สะสมได้ — คนที่ไม่มีแถวของปีเดิม = ไม่เคยลาเลย
-// ถือว่าเหลือเต็มสิทธิ์ (เดิมยกยอดเฉพาะคนที่มีแถวอยู่แล้ว คนที่ไม่ได้ลาทั้งปีจึงไม่ได้สะสม)
+// ── ยกยอดปีงบประมาณใหม่ (ปุ่มของงาน HR) ─────────────────────────────────────
+// ตรรกะอยู่ที่ services/leaveRollover.ts — ใช้ร่วมกับงานยกยอดอัตโนมัติเมื่อข้ามปีงบ
 export const rolloverLeaveBalances = async ({ body, user, set }: any) => {
     try {
         const { from_fiscal_year, to_fiscal_year } = body;
@@ -131,46 +139,7 @@ export const rolloverLeaveBalances = async ({ body, user, set }: any) => {
             set.status = 400;
             return { success: false, message: 'ปีงบประมาณใหม่ต้องมากกว่าปีเดิม' };
         }
-        const [annual] = await core_kon`SELECT id FROM hr_leave_types WHERE code = 'ANNUAL'`;
-        if (!annual) {
-            set.status = 500;
-            return { success: false, message: 'ไม่พบประเภทการลาพักผ่อน (ANNUAL) ในระบบ' };
-        }
-        const leaveTypeIds: number[] = [annual.id];
-
-        let created = 0, skippedExisting = 0, skippedNoEntitlement = 0;
-
-        await core_kon.begin(async (sql: any) => {
-            for (const leaveTypeId of leaveTypeIds) {
-                const candidates = await sql`
-                    SELECT u.id AS user_id, b.remaining, (b.id IS NOT NULL) AS has_row
-                    FROM users u
-                    LEFT JOIN hr_leave_balances b
-                           ON b.user_id = u.id AND b.leave_type_id = ${leaveTypeId} AND b.fiscal_year = ${from_fiscal_year}
-                    WHERE u.is_active = 'Y'
-                      AND NOT EXISTS (
-                          SELECT 1 FROM hr_leave_balances b2
-                          WHERE b2.user_id = u.id AND b2.leave_type_id = ${leaveTypeId} AND b2.fiscal_year = ${to_fiscal_year}
-                      )`;
-                for (const c of candidates) {
-                    const entitlement = await findEntitlement(c.user_id, leaveTypeId);
-                    if (!entitlement || !entitlement.carry_over) { skippedNoEntitlement++; continue; }
-                    const cap = entitlement.carry_over_max_days;
-                    const left = c.has_row ? Number(c.remaining) : Number(entitlement.max_days_per_year ?? 0);
-                    const carriedIn = cap != null ? Math.min(left, Number(cap)) : left;
-                    await sql`
-                        INSERT INTO hr_leave_balances (user_id, leave_type_id, fiscal_year, carried_in, entitled, used, note, created_by, updated_by)
-                        VALUES (${c.user_id}, ${leaveTypeId}, ${to_fiscal_year}, ${Math.max(carriedIn, 0)}, ${entitlement.max_days_per_year ?? 0}, 0,
-                                ${'ยกยอดอัตโนมัติจากปีงบประมาณ ' + from_fiscal_year}, ${user.id}, ${user.id})`;
-                    created++;
-                }
-                const existingCount = await sql`
-                    SELECT COUNT(*)::int AS n FROM hr_leave_balances b JOIN users u ON u.id = b.user_id
-                    WHERE b.leave_type_id = ${leaveTypeId} AND b.fiscal_year = ${to_fiscal_year} AND u.is_active = 'Y'`;
-                skippedExisting += existingCount[0].n - created;
-            }
-        });
-
-        return { success: true, data: { created, skipped_existing: skippedExisting, skipped_no_entitlement: skippedNoEntitlement } };
+        const data = await core_kon.begin((sql: any) => rolloverAnnualLeave(sql, Number(from_fiscal_year), Number(to_fiscal_year), Number(user.id)));
+        return { success: true, data };
     } catch (error: any) { return serverError(set, 'rolloverLeaveBalances', error); }
 };

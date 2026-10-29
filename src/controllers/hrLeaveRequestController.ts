@@ -661,8 +661,8 @@ const adjustBalance = async (tx: any, userId: number, leaveTypeId: number, start
     // ใส่สิทธิ์ตามประเภทเจ้าหน้าที่ไว้ด้วย ไม่งั้นแถวที่ entitled = 0 ทำให้เพดานวันลาไม่ถูกบังคับ
     const entitled = (await entitlementFor(userId, leaveTypeId)) ?? 0;
     await tx`
-        INSERT INTO hr_leave_balances (user_id, leave_type_id, fiscal_year, carried_in, entitled, used, note)
-        VALUES (${userId}, ${leaveTypeId}, ${fy}, 0, ${entitled}, ${days}, 'สร้างอัตโนมัติจากการบันทึกใบลา')
+        INSERT INTO hr_leave_balances (user_id, leave_type_id, fiscal_year, carried_in, entitled, used, note, auto_created)
+        VALUES (${userId}, ${leaveTypeId}, ${fy}, 0, ${entitled}, ${days}, 'สร้างอัตโนมัติจากการบันทึกใบลา', TRUE)
     `;
 };
 
