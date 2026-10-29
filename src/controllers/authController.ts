@@ -7,6 +7,7 @@ import {
 import { sendOtpAlert } from '../utils/mophOtp';
 import { getPasswordPolicy, evaluatePassword } from '../utils/passwordPolicy';
 import { getUsernamePolicy, evaluateUsername } from '../utils/usernamePolicy';
+import { clientIp } from '../utils/clientIp';
 
 // ── ข้อมูลผู้ใช้ + roles ที่ส่งกลับตอน login สำเร็จ (รูปแบบเดิม ห้ามเปลี่ยน) ──
 const buildLoginPayload = async (user: any, jwt: any) => {
@@ -54,10 +55,7 @@ const buildLoginPayload = async (user: any, jwt: any) => {
     };
 };
 
-const clientIpOf = (request: any, server: any): string =>
-    server?.requestIP?.(request)?.address
-    ?? request?.headers?.get?.('x-forwarded-for')
-    ?? 'unknown';
+const clientIpOf = (request: any, server: any): string => clientIp(request, server);
 
 export const loginCOREKON = async ({ body, set, jwt, request, server }: Context & { jwt: any; server?: any }) => {
     const { username, password } = body as { username: string; password: string };

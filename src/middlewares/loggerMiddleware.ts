@@ -1,6 +1,7 @@
 import { Elysia } from 'elysia';
 import { appendFile, mkdir, unlink, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { clientIp } from '../utils/clientIp';
 
 const LOG_DIR = 'logs';
 const LOG_RETENTION_DAYS = 45; // ลบ logs ที่เก่ากว่า 45 วัน
@@ -86,7 +87,7 @@ export const loggerMiddleware = (app: Elysia) =>
         .onAfterHandle(async (ctx) => {
             const { request, set, server, requestStart } = ctx;
             const duration = Date.now() - requestStart;
-            const clientIP = server?.requestIP(request)?.address || 'unknown';
+            const clientIP = clientIp(request, server);
             const method = request.method;
             const coloredMethod = colorMethod(method);
             const methodPadding = 6;

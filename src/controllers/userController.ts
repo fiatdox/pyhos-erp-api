@@ -3,6 +3,7 @@ import { sendChangePasswordAlert } from '../utils/mophAlert';
 import { getPasswordPolicy, evaluatePassword } from '../utils/passwordPolicy';
 import { checkPassword } from '../utils/passwordStrength';
 import { getUsernamePolicy, evaluateUsername, checkUsername } from '../utils/usernamePolicy';
+import { clientIp } from '../utils/clientIp';
 
 // ดึงรายชื่อผู้ใช้ทั้งหมด (ไม่ดึง password ออกมาเพื่อความปลอดภัย)
 export const getAllUsers = async ({ set }: any) => {
@@ -270,8 +271,7 @@ export const changeMyUsername = async ({ body, set, user, jwt, request, server }
 
         await core_kon`UPDATE users SET username = ${next}, updated_at = NOW() WHERE id = ${uid}`;
 
-        const ip = server?.requestIP?.(request)?.address
-            ?? request?.headers?.get?.('x-forwarded-for') ?? 'unknown';
+        const ip = clientIp(request, server);
         try {
             await core_kon`
                 INSERT INTO user_credential_audit

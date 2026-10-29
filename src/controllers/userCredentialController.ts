@@ -6,6 +6,7 @@
 import { core_kon } from '../db/db';
 import { sendCredentialIssuedAlert } from '../utils/mophAlert';
 import { checkPassword } from '../utils/passwordStrength';
+import { clientIp } from '../utils/clientIp';
 
 export const CREDENTIAL_ROLES = ['ADMIN', 'IT_STAFF'];
 
@@ -27,10 +28,7 @@ const hasAccess = (roles: string[]) => roles.some(r => CREDENTIAL_ROLES.includes
 
 const maskTail = (v: string) => (v && v.length >= 4 ? `****${v.slice(-4)}` : '****');
 
-const clientIpOf = (request: any, server: any): string =>
-    server?.requestIP?.(request)?.address
-    ?? request?.headers?.get?.('x-forwarded-for')
-    ?? 'unknown';
+const clientIpOf = (request: any, server: any): string => clientIp(request, server);
 
 async function audit(entry: {
     targetId: number; targetUsername?: string | null;
