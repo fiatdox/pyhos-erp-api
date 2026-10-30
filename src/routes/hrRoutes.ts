@@ -6,10 +6,11 @@ import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitR
 import {
     createLeaveRequest, previewApprovalChain, getMyLeaveRequests, getPendingApprovals,
     approveLeaveRequest, rejectLeaveRequest, requestCancellation,
-    approveCancellation, rejectCancellation, getLeaveRequestById, getLeaveSummary, getLeaveQuota, getLeaveCalendar,
-    deleteLeaveRequest, updateLeaveRequest,
+    approveCancellation, rejectCancellation, getLeaveRequestById, getLeavePrintData, getLeaveSummary, getLeaveQuota, getLeaveCalendar,
+    deleteLeaveRequest, updateLeaveRequest, getMyLeaveOverview, bulkApproveLeaveRequests, bulkApproveCancellations,
 } from '../controllers/hrLeaveRequestController';
 import { getLeaveRules } from '../services/leaveRules';
+import { getLegacyImportOptions, listLegacyImportRuns, getLegacyImportRun, startLegacyImportRun } from '../controllers/hrLegacyImportController';
 import { getLeaveDayCount, getHolidays, createHoliday, updateHoliday, deleteHoliday, getLeaveDayCheck, verifyLeaveDays, adjustLeaveDays } from '../controllers/hrLeaveDayController';
 import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances } from '../controllers/hrLeaveBalanceController';
 
@@ -114,6 +115,9 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         query: t.Object({ leave_type_id: t.String(), start_date: t.Optional(t.String()), user_id: t.Optional(t.String()) }),
         detail: { tags: ['HR'], summary: 'สิทธิ์วันลาคงเหลือของตัวเอง (ตามประเภทการลาและปีงบ)' }
     })
+    .get('/leave-requests/overview', getMyLeaveOverview, {
+        detail: { tags: ['HR'], summary: 'สรุปวันลาปีงบปัจจุบันของฉัน (ลาพักผ่อน ลากิจ ลาป่วย ลาคลอด)' }
+    })
     .get('/leave-requests/mine', getMyLeaveRequests, {
         query: t.Object({ status: t.Optional(t.String()) }),
         detail: { tags: ['HR'], summary: 'ใบลาของฉัน' }
@@ -125,6 +129,10 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
             summary: 'ใบลาที่รอฉันอนุมัติ',
             description: 'scope=pending (ค่าตั้งต้น) = เฉพาะที่รอขั้นของฉันตอนนี้ · scope=all = ใบที่ผ่านมือฉันทั้งหมด',
         }
+    })
+    .get('/leave-requests/:id/print', getLeavePrintData, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['HR'], summary: 'ข้อมูลพิมพ์แบบใบลา (เจ้าของใบ / สายอนุมัติ / หัวหน้าหน่วยที่สังกัด / ADMIN / HR)' }
     })
     .get('/leave-requests/:id', getLeaveRequestById, {
         params: t.Object({ id: t.Numeric() }),
@@ -140,6 +148,8 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
             is_half_day: t.Optional(t.Boolean()),
             half_day_period: t.Optional(t.Nullable(t.String())),
             reason: t.Optional(t.Nullable(t.String())),
+            substitute_user_id: t.Optional(t.Nullable(t.Numeric())),
+            contact_info: t.Optional(t.Nullable(t.String())),
         }),
         detail: {
             tags: ['HR'],
@@ -166,6 +176,8 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
             is_half_day: t.Optional(t.Boolean()),
             half_day_period: t.Optional(t.Nullable(t.String())),
             reason: t.Optional(t.Nullable(t.String())),
+            substitute_user_id: t.Optional(t.Nullable(t.Numeric())),
+            contact_info: t.Optional(t.Nullable(t.String())),
             document_url: t.Optional(t.Nullable(t.String())),
         }),
         detail: { tags: ['HR'], summary: 'ยื่นใบลา' },
@@ -175,6 +187,14 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
                 return { success: false, message: 'ข้อมูลใบลาไม่ครบถ้วนหรือรูปแบบไม่ถูกต้อง' };
             }
         },
+    })
+    .post('/leave-requests/bulk/approve', bulkApproveLeaveRequests, {
+        body: t.Object({ ids: t.Array(t.Numeric(), { minItems: 1, maxItems: 100 }), comment: t.Optional(t.Nullable(t.String())) }),
+        detail: { tags: ['HR'], summary: 'อนุมัติใบลาแบบกลุ่ม (เฉพาะใบที่ถึงคิวผู้กด)' }
+    })
+    .post('/leave-requests/bulk/cancel-approve', bulkApproveCancellations, {
+        body: t.Object({ ids: t.Array(t.Numeric(), { minItems: 1, maxItems: 100 }), comment: t.Optional(t.Nullable(t.String())) }),
+        detail: { tags: ['HR'], summary: 'อนุมัติการยกเลิกใบลาแบบกลุ่ม (ขั้นสุดท้ายคืนวันลาทันที)' }
     })
     .post('/leave-requests/:id/approve', approveLeaveRequest, {
         params: t.Object({ id: t.Numeric() }),
@@ -258,6 +278,32 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         detail: { tags: ['HR'], summary: 'ลบวันหยุดราชการ (ADMIN/HR)', description: 'soft delete — is_active = false' }
     })
     // ── ตรวจจำนวนวันลาที่คร่อมวันหยุด ─────────────────────────────────────────
+    // โอนข้อมูลจากโปรแกรมการลาเดิม — รันเบื้องหลัง ดูความคืบหน้า/รายงานจาก runs
+    .get('/legacy-import/options', getLegacyImportOptions, {
+        detail: { tags: ['HR'], summary: 'ตัวเลือกการโอนข้อมูลจากโปรแกรมการลาเดิม' }
+    })
+    .get('/legacy-import/runs', listLegacyImportRuns, {
+        detail: { tags: ['HR'], summary: 'ประวัติการโอนข้อมูลจากโปรแกรมการลาเดิม (50 ครั้งล่าสุด)' }
+    })
+    .get('/legacy-import/runs/:id', getLegacyImportRun, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['HR'], summary: 'รายละเอียด/รายงานของงานโอนข้อมูล' }
+    })
+    .post('/legacy-import/runs', startLegacyImportRun, {
+        body: t.Object({
+            kind: t.Union([t.Literal('LEAVE'), t.Literal('SERVICE_DATES')]),
+            mode: t.Union([t.Literal('DRY_RUN'), t.Literal('COMMIT'), t.Literal('UNDO')]),
+            fiscal_year: t.Optional(t.Numeric()),
+            scope: t.Optional(t.Union([t.Literal('all'), t.Literal('mission'), t.Literal('user')])),
+            mission_id: t.Optional(t.Nullable(t.Numeric())),
+            user_id: t.Optional(t.Nullable(t.Numeric())),
+            fill_hire_date: t.Optional(t.Boolean()),
+        }),
+        detail: {
+            tags: ['HR'], summary: 'เริ่มงานโอนข้อมูลจากโปรแกรมการลาเดิม',
+            description: 'LEAVE = ประวัติการลาปีงบที่เลือก · SERVICE_DATES = วันเริ่มงาน · DRY_RUN ทดลอง / COMMIT โอนจริง / UNDO ถอน (เฉพาะ LEAVE) · รันทีละงาน',
+        }
+    })
     .get('/leave-day-check', getLeaveDayCheck, {
         query: t.Object({ from: t.String(), to: t.String(), filter: t.Optional(t.String()) }),
         detail: { tags: ['HR'], summary: 'ใบลาที่ควรตรวจจำนวนวัน (ADMIN/HR)', description: 'filter: review (ค่าเริ่มต้น) | spans | mismatch | checked | all' }

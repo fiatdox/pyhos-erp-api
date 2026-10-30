@@ -11,6 +11,8 @@ import { core_kon } from '../db/db';
 //   ข) หน่วยที่ไม่มีหัวหน้า หรือผู้ยื่นไม่ได้สังกัดหน่วยนั้น ให้ข้ามขั้นนั้นไป
 //      ไม่บล็อกการยื่น เพราะในฐานข้อมูลจริงมีคนไม่มีหน่วยงานอยู่หลายร้อยคน
 //   ค) ไม่อนุมัติขั้นใดขั้นหนึ่ง = ใบลานั้นจบ (REJECTED) ยื่นใบใหม่ได้
+//   ง) หัวหน้าที่พ้นจากการปฏิบัติงานแล้ว (เกษียณ ลาออก โอนย้าย ลาศึกษาต่อ ฯลฯ หรือเลยวันสิ้นสุดการทำงาน)
+//      ไม่นับเป็นผู้อนุมัติ — ใช้รักษาการแทน ไม่มีรักษาการให้ข้ามขึ้นขั้นบน (ผังยังไม่ได้แต่งตั้งคนใหม่)
 //
 // สายอนุมัติเก็บลง hr_leave_requests.approval_chain ตั้งแต่วันยื่น
 // ขั้นที่กดไปแล้วคงไว้ตามเดิม (ตรวจย้อนหลังได้ว่าใครมีอำนาจ ณ ตอนนั้น) แต่ขั้นที่ยังไม่ถึง
@@ -52,12 +54,25 @@ const LEVEL_NAME: Record<ApprovalLevel, string> = {
 const fullName = (r: any) =>
     [r?.pname, r?.fname, r?.lname].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
 
-/** หัวหน้าของหน่วยหนึ่ง — เลือกตัวจริงก่อน ไม่มีจึงใช้รักษาการ */
-const pickHead = (unit: any): { id: number; is_acting: boolean } | null => {
-    if (unit?.supervisor_id != null) return { id: Number(unit.supervisor_id), is_acting: false };
-    if (unit?.acting_supervisor_id != null) return { id: Number(unit.acting_supervisor_id), is_acting: true };
+/** ผู้ที่ยังปฏิบัติงานอยู่ (อนุมัติได้) จากรายชื่อที่ให้มา — กติกา (ง) */
+const activeApprovers = async (ids: (number | null | undefined)[]): Promise<Set<number>> => {
+    const unique = [...new Set(ids.filter((x): x is number => x != null).map(Number))];
+    if (unique.length === 0) return new Set();
+    const rows = await core_kon`
+        SELECT id FROM users
+        WHERE id IN ${core_kon(unique)} AND is_active = 'Y' AND COALESCE(user_status_id, 1) = 1
+          AND (work_end_date IS NULL OR work_end_date >= CURRENT_DATE)`;
+    return new Set(rows.map((r: any) => Number(r.id)));
+};
+
+/** หัวหน้าของหน่วยหนึ่ง — เลือกตัวจริงก่อน ไม่มี (หรือพ้นจากการปฏิบัติงานแล้ว) จึงใช้รักษาการ */
+const pickHead = (unit: any, active: Set<number>): { id: number; is_acting: boolean } | null => {
+    if (unit?.supervisor_id != null && active.has(Number(unit.supervisor_id))) return { id: Number(unit.supervisor_id), is_acting: false };
+    if (unit?.acting_supervisor_id != null && active.has(Number(unit.acting_supervisor_id))) return { id: Number(unit.acting_supervisor_id), is_acting: true };
     return null;
 };
+/** หน่วยมีหัวหน้า/รักษาการตั้งไว้ แต่ทุกคนพ้นจากการปฏิบัติงานแล้ว */
+const headsGone = (unit: any) => unit?.supervisor_id != null || unit?.acting_supervisor_id != null;
 
 /**
  * สร้างสายอนุมัติของผู้ยื่นคนหนึ่ง
@@ -109,11 +124,15 @@ export const resolveApprovalChain = async (userId: number): Promise<ResolvedChai
     const steps: ChainStep[] = [];
     const skipped: SkippedStep[] = [];
     const heads: { level: ApprovalLevel; unitType: ChainStep['unit_type']; row: any; head: { id: number; is_acting: boolean } }[] = [];
+    const active = await activeApprovers(plan.flatMap(p => [p.row?.supervisor_id, p.row?.acting_supervisor_id]));
 
     for (const p of plan) {
-        const head = p.row ? pickHead(p.row) : null;
+        const head = p.row ? pickHead(p.row, active) : null;
         if (!head) {
-            skipped.push({ level: p.level, level_name: LEVEL_NAME[p.level], reason: p.missingReason });
+            const reason = p.row && headsGone(p.row)
+                ? `หัวหน้า${p.row.name ? ` ${p.row.name}` : ''} พ้นจากการปฏิบัติงานแล้ว และยังไม่ได้แต่งตั้งคนใหม่/รักษาการ จึงข้ามไปขั้นที่สูงกว่า`
+                : p.missingReason;
+            skipped.push({ level: p.level, level_name: LEVEL_NAME[p.level], reason });
             continue;
         }
         // กติกา (ก) — ไม่ให้อนุมัติลาให้ตัวเอง
@@ -167,7 +186,7 @@ export const resolveApprovalChain = async (userId: number): Promise<ResolvedChai
     return { steps, skipped };
 };
 
-/** ขั้นของ ผอ. — ใช้ตัวจริงก่อน ไม่มีจึงใช้รักษาการ */
+/** ขั้นของ ผอ. — ใช้ตัวจริงก่อน ไม่มี (หรือพ้นจากการปฏิบัติงานแล้ว) จึงใช้รักษาการ */
 const resolveDirectorStep = async (step: number): Promise<ChainStep | null> => {
     const rows = await core_kon`
         SELECT name, value FROM hr_settings WHERE name IN ('director_id', 'acting_director_id')
@@ -176,8 +195,10 @@ const resolveDirectorStep = async (step: number): Promise<ChainStep | null> => {
         const v = rows.find((r: any) => r.name === k)?.value;
         return v == null || v === '' ? null : Number(v);
     };
-    const directorId = get('director_id');
-    const actingId = get('acting_director_id');
+    const active = await activeApprovers([get('director_id'), get('acting_director_id')]);
+    const ok = (k: string) => { const v = get(k); return v != null && active.has(v) ? v : null; };
+    const directorId = ok('director_id');
+    const actingId = ok('acting_director_id');
     const id = directorId ?? actingId;
     if (id == null) return null;
 
@@ -235,21 +256,27 @@ const LEVEL_RANK: Record<ApprovalLevel, number> = { SUBMAJOR: 0, MAJOR: 1, MISSI
  * - ขั้นที่อนุมัติไปแล้ว (step < current_step) คงไว้ทั้งหมด
  * - ขั้นที่เหลือ = สายใหม่ที่ระดับสูงกว่าขั้นล่าสุดที่อนุมัติแล้ว และไม่ใช่คนที่อนุมัติไปแล้ว
  * - สายใหม่ไม่เหลือขั้นถัดไป → เสนอ ผอ. แทน · หา ผอ. ไม่ได้ → ไม่แตะใบนั้น (ไม่ปล่อยให้ผ่านเองโดยไม่มีคนกด)
- * - ใบที่ขอยกเลิก (CANCEL_PENDING) ไม่ปรับ เพราะเป็นการเดินสายเดิมซ้ำเพื่อยกเลิก
+ * - ใบที่ขอยกเลิก (CANCEL_PENDING) เดินสายเดิมซ้ำเพื่อยกเลิก — ปรับเฉพาะเมื่อขั้นที่เหลือมีผู้อนุมัติ
+ *   ที่พ้นจากการปฏิบัติงานแล้ว (ไม่งั้นค้างตลอดไป)
  *
  * คืนจำนวนใบที่ถูกปรับ · ใส่ userId เพื่อปรับเฉพาะใบของคนนั้น
  */
 export const resyncPendingChains = async (userId?: number): Promise<number> => {
     const rows = await core_kon`
-        SELECT id, user_id, approval_chain, current_step FROM hr_leave_requests
-        WHERE status = 'PENDING' ${userId == null ? core_kon`` : core_kon`AND user_id = ${userId}`}
+        SELECT id, user_id, status, approval_chain, current_step FROM hr_leave_requests
+        WHERE status IN ('PENDING', 'CANCEL_PENDING') ${userId == null ? core_kon`` : core_kon`AND user_id = ${userId}`}
     `;
+    const remainingIds = (rows as any[]).flatMap(r => parseChain(r.approval_chain)
+        .filter(s => Number(s.step) >= Number(r.current_step)).map(s => Number(s.approver_id)));
+    const active = await activeApprovers(remainingIds);
     let changed = 0;
     for (const r of rows as any[]) {
         const chain = parseChain(r.approval_chain);
         const cs = Number(r.current_step);
         const done = chain.filter(s => Number(s.step) < cs);
         if (done.length !== cs - 1) continue;  // ข้อมูลไม่ต่อเนื่อง ไม่เดาแทน
+        if (r.status === 'CANCEL_PENDING'
+            && chain.filter(s => Number(s.step) >= cs).every(s => active.has(Number(s.approver_id)))) continue;
 
         const fresh = await resolveApprovalChain(Number(r.user_id));
         if (!fresh) continue;
@@ -273,7 +300,7 @@ export const resyncPendingChains = async (userId?: number): Promise<number> => {
         const res = await core_kon`
             UPDATE hr_leave_requests
             SET approval_chain = ${JSON.stringify(next)}::text::jsonb, updated_at = NOW()
-            WHERE id = ${r.id} AND status = 'PENDING' AND current_step = ${cs}
+            WHERE id = ${r.id} AND status = ${r.status} AND current_step = ${cs}
         `;
         changed += res.count ?? 0;
     }

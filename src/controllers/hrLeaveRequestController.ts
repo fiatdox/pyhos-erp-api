@@ -3,6 +3,7 @@ import { resolveApprovalChain, stepFor, parseChain, type ChainStep } from '../se
 import { resolveLeaveSubject, isHrOrAdmin, hasCreatedByColumn } from '../services/leaveSubject';
 import { countLeaveDays, countWithHolidays, holidaysBetween } from '../services/leaveDays';
 import { maxAdvanceDays, bangkokDate } from '../services/leaveRules';
+import { syncCarriedForward } from '../services/leaveRollover';
 
 // ── ใบลา: ยื่น → อนุมัติตามสายบังคับบัญชา → ตัดยอดวันลา → ยกเลิก ────────────────
 //
@@ -65,34 +66,56 @@ export interface LeaveQuota {
     used: number;               // อนุมัติแล้ว
     pending: number;            // ยื่นค้างอยู่ ยังไม่ถึงที่สุด
     remaining: number;
+    /** อายุงานยังไม่ถึงเกณฑ์ขั้นต่ำของประเภทเจ้าหน้าที่ (เช่น ข้าราชการบรรจุไม่ถึง 6 เดือน ไม่มีสิทธิ์ลาพักผ่อน) */
+    service_short?: { required_months: number; service_months: number };
 }
 
 /** สิทธิ์ต่อปีตามประเภทเจ้าหน้าที่ + อายุงาน (null = ไม่ได้กำหนดสิทธิ์ไว้) */
-// เลือก tier ตามอายุงาน — แต่ทะเบียนบุคลากรส่วนใหญ่ยังไม่ได้กรอก hire_date ถ้าไม่มีวันเริ่มงาน
+// เลือก tier ตามอายุงาน (v_leave_service_start: hire_date ในทะเบียน ถ้าว่างใช้วันบรรจุจากโปรแกรมการลาเดิม)
+// เช่น ข้าราชการบรรจุไม่ถึง 6 เดือน = ยังไม่มีสิทธิ์ลาพักผ่อน · ถ้าไม่มีวันเริ่มงานเลย
 // ให้ใช้ tier ต่ำสุดเป็นฐาน ดีกว่าถือว่า "ไม่มีสิทธิ์" ซึ่งจะทำให้เพดานวันลาไม่ถูกบังคับกับเกือบทั้งองค์กร
-const entitlementFor = async (userId: number, leaveTypeId: number): Promise<number | null> => {
+// asOf = วันที่ใช้คิดอายุงาน (ตอนยื่นใบลาใช้วันเริ่มลา) ไม่ระบุ = วันนี้
+const entitlementFor = async (userId: number, leaveTypeId: number, asOf?: string): Promise<number | null> => {
+    const at = core_kon`${asOf ?? bangkokDate(0)}::date`;
     const rows = await core_kon`
             SELECT e.max_days_per_year, e.min_service_months
             FROM hr_leave_entitlements e
             JOIN users u ON u.user_type_id = e.user_type_id
+            JOIN v_leave_service_start ss ON ss.user_id = u.id
             WHERE u.id = ${userId} AND e.leave_type_id = ${leaveTypeId}
-              AND (u.hire_date IS NULL
-                   OR e.min_service_months <= EXTRACT(YEAR FROM age(now(), u.hire_date)) * 12
-                                            + EXTRACT(MONTH FROM age(now(), u.hire_date)))
+              AND (ss.service_start IS NULL
+                   OR e.min_service_months <= EXTRACT(YEAR FROM age(${at}, ss.service_start)) * 12
+                                            + EXTRACT(MONTH FROM age(${at}, ss.service_start)))
             ORDER BY
-                CASE WHEN (SELECT hire_date FROM users WHERE id = ${userId}) IS NULL
-                     THEN e.min_service_months END ASC,
+                CASE WHEN ss.service_start IS NULL THEN e.min_service_months END ASC,
                 e.min_service_months DESC
             LIMIT 1`;
     return rows.length && rows[0].max_days_per_year != null ? Number(rows[0].max_days_per_year) : null;
 };
 
-const leaveQuota = async (userId: number, leaveTypeId: number, fy: number): Promise<LeaveQuota> => {
-    const [balance, entRows, pendingRows] = await Promise.all([
+/** อายุงาน ณ asOf ยังไม่ถึงเกณฑ์ขั้นต่ำของประเภทการลานี้ (มีเกณฑ์กำหนดไว้ แต่ไม่ผ่านสักขั้น) */
+const serviceShortFor = async (userId: number, leaveTypeId: number, asOf: string) => {
+    const [r] = await core_kon`
+        SELECT MIN(e.min_service_months)::int AS required_months,
+               (EXTRACT(YEAR FROM age(${asOf}::date, ss.service_start)) * 12
+                + EXTRACT(MONTH FROM age(${asOf}::date, ss.service_start)))::int AS service_months
+        FROM hr_leave_entitlements e
+        JOIN users u ON u.user_type_id = e.user_type_id
+        JOIN v_leave_service_start ss ON ss.user_id = u.id
+        WHERE u.id = ${userId} AND e.leave_type_id = ${leaveTypeId} AND ss.service_start IS NOT NULL
+        GROUP BY ss.service_start`;
+    return r && r.service_months < r.required_months
+        ? { required_months: Number(r.required_months), service_months: Math.max(Number(r.service_months), 0) }
+        : undefined;
+};
+
+const leaveQuota = async (userId: number, leaveTypeId: number, fy: number, asOf?: string): Promise<LeaveQuota> => {
+    const at = asOf ?? bangkokDate(0);
+    const [balance, entRows, pendingRows, short] = await Promise.all([
         core_kon`
             SELECT carried_in, entitled, used FROM hr_leave_balances
             WHERE user_id = ${userId} AND leave_type_id = ${leaveTypeId} AND fiscal_year = ${fy}`,
-        entitlementFor(userId, leaveTypeId),
+        entitlementFor(userId, leaveTypeId, at),
         // ใบที่รออนุมัติ: จำนวนวันทั้งหมด และส่วนที่หักจาก balance ไปแล้ว (ใบเก่าอาจยังไม่ได้หัก)
         core_kon`
             SELECT COALESCE(SUM(total_days), 0) AS pending_all, COALESCE(SUM(days_deducted), 0) AS pending_deducted
@@ -102,6 +125,7 @@ const leaveQuota = async (userId: number, leaveTypeId: number, fy: number): Prom
               AND (CASE WHEN EXTRACT(MONTH FROM start_date) >= 10
                         THEN EXTRACT(YEAR FROM start_date) + 1
                         ELSE EXTRACT(YEAR FROM start_date) END) + 543 = ${fy}`,
+        serviceShortFor(userId, leaveTypeId, at),
     ]);
 
     const pending = Number(pendingRows[0]?.pending_all ?? 0);
@@ -119,6 +143,8 @@ const leaveQuota = async (userId: number, leaveTypeId: number, fy: number): Prom
         has_entitlement: hasEntitlement,
         entitled, used, pending,
         remaining: hasEntitlement ? entitled - used - pending : 0,
+        // HR ตั้งยอดให้เองแล้ว (fromBalance > 0) ถือว่ามีสิทธิ์ ไม่เตือนเรื่องอายุงาน
+        ...(short && fromBalance <= 0 ? { service_short: short } : {}),
     };
 };
 
@@ -130,9 +156,41 @@ export const getLeaveQuota = async ({ query, user, set }: any) => {
         const fy = query?.start_date ? fiscalYearOf(query.start_date) : fiscalYearOf(new Date());
         const subject = await resolveLeaveSubject(Number(user?.id), query?.user_id);
         if (!subject.ok) return fail(set, subject.status, subject.message);
-        return { success: true, data: await leaveQuota(subject.uid, leaveTypeId, fy) };
+        const asOf = /^\d{4}-\d{2}-\d{2}$/.test(String(query?.start_date ?? '')) ? String(query.start_date) : undefined;
+        return { success: true, data: await leaveQuota(subject.uid, leaveTypeId, fy, asOf) };
     } catch (error: any) {
         return serverError(set, 'getLeaveQuota', error);
+    }
+};
+
+/**
+ * สรุปวันลาปีงบปัจจุบันของฉัน — การ์ดหน้า /hr/leave
+ * ลาพักผ่อน (แยกสิทธิ์ปีนี้ / ยกมา) · ลากิจ · ลาป่วย · ลาคลอด (เฉพาะเพศหญิง)
+ */
+const OVERVIEW_CODES = ['ANNUAL', 'PERS', 'SICK', 'MAT'];
+export const getMyLeaveOverview = async ({ user, set }: any) => {
+    try {
+        const uid = Number(user?.id);
+        const fy = fiscalYearOf(new Date());
+        const [me] = await core_kon`SELECT gender FROM users WHERE id = ${uid}`;
+        const codes = OVERVIEW_CODES.filter(c => c !== 'MAT' || me?.gender === 'F');
+        const types = await core_kon`
+            SELECT t.id, t.code, t.name_th, b.carried_in
+            FROM hr_leave_types t
+            LEFT JOIN hr_leave_balances b ON b.leave_type_id = t.id AND b.user_id = ${uid} AND b.fiscal_year = ${fy}
+            WHERE t.is_active AND t.code IN ${core_kon(codes)}`;
+        const data = await Promise.all(types.map(async (t: any) => {
+            const q = await leaveQuota(uid, Number(t.id), fy);
+            const carried = Math.min(Number(t.carried_in ?? 0), q.entitled);
+            return {
+                leave_type_id: Number(t.id), code: t.code, name_th: t.name_th,
+                ...q, carried_in: carried, entitled_this_year: q.entitled - carried,
+            };
+        }));
+        data.sort((a, b) => codes.indexOf(a.code) - codes.indexOf(b.code));
+        return { success: true, data: { fiscal_year: fy, types: data } };
+    } catch (error: any) {
+        return serverError(set, 'getMyLeaveOverview', error);
     }
 };
 
@@ -198,7 +256,13 @@ const checkLeaveInput = async (uid: number, body: any, set: any, exclude?: Exclu
 
     // ตรวจสิทธิ์วันลา — นับรวมใบที่ยังค้างอยู่ด้วย กันยื่นหลายใบพร้อมกันจนทะลุสิทธิ์
     const fy = fiscalYearOf(start_date);
-    const quota = await leaveQuota(uid, Number(leave_type_id), fy);
+    const quota = await leaveQuota(uid, Number(leave_type_id), fy, start_date);
+    // อายุงาน ณ วันเริ่มลายังไม่ถึงเกณฑ์ เช่น ข้าราชการบรรจุไม่ถึง 6 เดือน ไม่มีสิทธิ์ลาพักผ่อน
+    if (quota.service_short) {
+        const { required_months, service_months } = quota.service_short;
+        return fail2(409, `${leaveType.name_th}ต้องมีอายุงานอย่างน้อย ${required_months} เดือน`
+            + ` (ณ วันเริ่มลามีอายุงาน ${service_months} เดือน)`, 'SERVICE_TOO_SHORT');
+    }
     // แก้ไขใบเดิม: วันของใบนี้ถูกนับเป็น "ค้างอยู่" แล้ว — คืนกลับก่อนเทียบ ไม่งั้นแก้ใบที่ใช้สิทธิ์จนหมดไม่ได้
     if (exclude && exclude.leave_type_id === Number(leave_type_id) && fiscalYearOf(exclude.start_date) === fy) {
         quota.pending -= exclude.total_days;
@@ -235,6 +299,23 @@ const checkLeaveInput = async (uid: number, body: any, set: any, exclude?: Exclu
 };
 
 // ── ยื่นใบลา ────────────────────────────────────────────────────────────────
+/** ผู้ปฏิบัติหน้าที่แทน (ไม่บังคับ) — ต้องเป็นบุคลากรที่ยังปฏิบัติงาน และไม่ใช่ผู้ลาเอง · คืน undefined = ข้อมูลไม่ถูกต้อง */
+const substituteOf = async (uid: number, raw: unknown): Promise<number | null | undefined> => {
+    if (raw == null || raw === '') return null;
+    const id = Number(raw);
+    if (!Number.isInteger(id) || id < 1 || id === uid) return undefined;
+    const [u] = await core_kon`SELECT id FROM users WHERE id = ${id} AND is_active = 'Y'`;
+    return u ? id : undefined;
+};
+
+/** ที่ติดต่อระหว่างลา (ไม่บังคับ) — ว่างเก็บ null · คืน undefined = ยาวเกินคอลัมน์ */
+const CONTACT_MAX = 255;
+const contactOf = (raw: unknown): string | null | undefined => {
+    const v = String(raw ?? '').trim();
+    if (!v) return null;
+    return v.length > CONTACT_MAX ? undefined : v;
+};
+
 export const createLeaveRequest = async ({ body, user, set }: any) => {
     try {
         const subject = await resolveLeaveSubject(Number(user?.id), body?.user_id);
@@ -245,6 +326,10 @@ export const createLeaveRequest = async ({ body, user, set }: any) => {
         const checked = await checkLeaveInput(uid, body, set, undefined, subject.actorIsHr);
         if ('error' in checked) return checked.error;
         const { quota } = checked;
+        const substitute = await substituteOf(uid, body?.substitute_user_id);
+        if (substitute === undefined) return fail(set, 400, 'ผู้ปฏิบัติหน้าที่แทนไม่ถูกต้อง');
+        const contact = contactOf(body?.contact_info);
+        if (contact === undefined) return fail(set, 400, `ที่ติดต่อระหว่างลายาวได้ไม่เกิน ${CONTACT_MAX} ตัวอักษร`);
 
         const chain = await resolveApprovalChain(uid);
         if (!chain || chain.steps.length === 0) {
@@ -259,10 +344,10 @@ export const createLeaveRequest = async ({ body, user, set }: any) => {
                 INSERT INTO hr_leave_requests
                     (user_id, leave_type_id, start_date, end_date, total_days, actual_days,
                      is_half_day, half_day_period, status, reason, document_url,
-                     approval_chain, current_step, days_deducted)
+                     approval_chain, current_step, days_deducted, substitute_user_id, contact_info)
                 VALUES (${uid}, ${leave_type_id}, ${start_date}, ${end_date}, ${total_days}, ${total_days},
                         ${!!is_half_day}, ${half_day_period ?? null}, 'PENDING', ${reason ?? null}, ${document_url ?? null},
-                        ${JSON.stringify(chain.steps)}::text::jsonb, 1, ${total_days})
+                        ${JSON.stringify(chain.steps)}::text::jsonb, 1, ${total_days}, ${substitute}, ${contact})
                 RETURNING id, status, current_step, created_at
             `;
             await adjustBalance(tx, uid, Number(leave_type_id), start_date, Number(total_days));
@@ -295,20 +380,47 @@ export const previewApprovalChain = async ({ user, query, set }: any) => {
     }
 };
 
-// ── ใบลาของฉัน ──────────────────────────────────────────────────────────────
-export const getMyLeaveRequests = async ({ user, query, set }: any) => {
-    try {
-        const uid = Number(user?.id);
-        const status = query?.status ? String(query.status).toUpperCase() : null;
+/** คำขอยกเลิกรอบล่าสุดของใบ (ขอใหม่ได้ถ้ารอบก่อนไม่ได้รับอนุมัติ) พร้อมเหตุผลที่ไม่อนุมัติ */
+/**
+ * ตำแหน่ง + ระดับ (user_levels.level_name) เช่น พยาบาลวิชาชีพชำนาญการ · ระดับแบบรหัส (ส 2) เว้นวรรค · "-" / ว่าง = ไม่มีระดับ
+ * p = alias ของ user_positions · ผู้ใช้ต้องเป็น alias u
+ */
+const positionName = (p: string) => core_kon`
+    CASE WHEN ${core_kon(p)}.position_name IS NULL THEN NULL ELSE TRIM(CONCAT(${core_kon(p)}.position_name,
+        (SELECT CASE WHEN lv.level_name IS NULL OR TRIM(lv.level_name) IN ('', '-') THEN ''
+                     WHEN lv.level_name ~ '[0-9]' THEN ' ' || TRIM(lv.level_name)
+                     ELSE TRIM(lv.level_name) END
+         FROM user_levels lv WHERE lv.user_level_id = u.user_level_id))) END`;
+
+/** ชื่อผู้ปฏิบัติหน้าที่แทน (alias ใบลา = r) */
+const substituteName = () => core_kon`(SELECT CONCAT(su.pname, su.fname, ' ', su.lname) FROM users su WHERE su.id = r.substitute_user_id)`;
+
+const latestCancellation = () => core_kon`
+    LEFT JOIN LATERAL (
+        SELECT c.id, c.status, c.reason, c.refunded_days,
+               (SELECT a.comment FROM hr_leave_approvals a
+                WHERE a.cancellation_id = c.id AND a.action = 'REJECTED'
+                ORDER BY a.actioned_at DESC LIMIT 1) AS reject_comment
+        FROM hr_leave_cancellations c
+        WHERE c.request_id = r.id
+        ORDER BY c.id DESC
+        LIMIT 1
+    ) c ON TRUE`;
+
+// ── ใบลาของบุคลากรหนึ่งคน + ข้อมูลกรอกแบบใบลา ──────────────────────────────
+// ใช้ทั้ง "ใบลาของฉัน" และ "พิมพ์ใบลา" จากรายงานการลาในสังกัด (สถิติการลาในแบบฟอร์มนับจากใบทั้งหมดของเจ้าของใบ)
+const leavePackage = async (uid: number, status: string | null = null) => {
         const rows = await core_kon`
             SELECT r.id, r.leave_type_id, t.name_th AS leave_type_name, t.code AS leave_type_code,
                    r.start_date, r.end_date, r.total_days, r.actual_days,
                    r.is_half_day, r.half_day_period, r.status, r.reason, r.reject_reason,
                    r.document_url, r.approval_chain, r.current_step, r.created_at, r.updated_at,
-                   c.id AS cancellation_id, c.status AS cancellation_status, c.reason AS cancellation_reason
+                   r.substitute_user_id, ${substituteName()} AS substitute_name, r.contact_info,
+                   c.id AS cancellation_id, c.status AS cancellation_status, c.reason AS cancellation_reason,
+                   c.refunded_days AS cancellation_refunded_days, c.reject_comment AS cancellation_reject_comment
             FROM hr_leave_requests r
             JOIN hr_leave_types t ON t.id = r.leave_type_id
-            LEFT JOIN hr_leave_cancellations c ON c.request_id = r.id
+            ${latestCancellation()}
             WHERE r.user_id = ${uid}
               ${status ? core_kon`AND r.status = ${status}` : core_kon``}
             ORDER BY r.created_at DESC
@@ -318,7 +430,7 @@ export const getMyLeaveRequests = async ({ user, query, set }: any) => {
         // ข้อมูลผู้ยื่นและยอดวันลาสะสม — ใช้กรอกแบบฟอร์มใบลาที่พิมพ์ออกมา
         const [profile] = await core_kon`
             SELECT u.id, u.pname, u.fname, u.lname,
-                   po.position_name, ut.type_name AS user_type_name,
+                   ${positionName('po')} AS position_name, ut.type_name AS user_type_name,
                    sm.name AS submajor_name, ma.name AS major_name, mi.name AS mission_name
             FROM users u
             LEFT JOIN user_positions po ON po.user_position_id = u.user_position_id
@@ -341,13 +453,21 @@ export const getMyLeaveRequests = async ({ user, query, set }: any) => {
             WHERE e.user_type_id = u.user_type_id
             ORDER BY e.min_service_months ASC
         `;
+        // ชื่อผู้อนุมัติ (ตามสาย + ผู้ที่กดจริง) แยกคำนำหน้า/ชื่อ/สกุล — แบบใบลาพิมพ์ "(ลงชื่อ) ชื่อ สกุล" และ "(คำนำหน้าชื่อ สกุล)"
+        const approverIds = [...new Set([
+            ...rows.flatMap((r: any) => parseChain(r.approval_chain).map(s => Number(s.approver_id))),
+            ...[...actions.values()].flat().map((a: any) => Number(a.approver_id)),
+        ])];
+        const approverRows = approverIds.length
+            ? await core_kon`SELECT id, pname, fname, lname FROM users WHERE id IN ${core_kon(approverIds)}`
+            : [];
+
         const balanceOf = (typeId: number, fy: number) =>
             balances.find((b: any) => Number(b.leave_type_id) === typeId && Number(b.fiscal_year) === fy) ?? null;
         const entitlementOf = (typeId: number) =>
             perYear.find((e: any) => Number(e.leave_type_id) === typeId) ?? null;
 
         return {
-            success: true,
             data: rows.map((r: any) => {
                 const fy = fiscalYearOf(r.start_date);
                 const bal = balanceOf(Number(r.leave_type_id), fy);
@@ -357,13 +477,53 @@ export const getMyLeaveRequests = async ({ user, query, set }: any) => {
                     actions: actions.get(Number(r.id)) ?? [],
                     fiscal_year: fy,
                     carried_in: bal ? Number(bal.carried_in) : 0,
-                    entitled_per_year: ent?.max_days_per_year != null ? Number(ent.max_days_per_year) : null,
+                    // สิทธิ์ปีนี้ตามยอดจริงของปีงบนั้น (อายุงานเปลี่ยนเกณฑ์ได้) — ยังไม่มียอดใช้เกณฑ์ตามประเภทเจ้าหน้าที่
+                    entitled_per_year: bal && Number(bal.entitled) > 0 ? Number(bal.entitled)
+                        : ent?.max_days_per_year != null ? Number(ent.max_days_per_year) : null,
                 };
             }),
             profile: profile ?? null,
+            approvers: Object.fromEntries(approverRows.map((a: any) => [a.id, { pname: a.pname, fname: a.fname, lname: a.lname }])),
         };
+};
+
+// ── ใบลาของฉัน ──────────────────────────────────────────────────────────────
+export const getMyLeaveRequests = async ({ user, query, set }: any) => {
+    try {
+        const status = query?.status ? String(query.status).toUpperCase() : null;
+        return { success: true, ...(await leavePackage(Number(user?.id), status)) };
     } catch (error: any) {
         return serverError(set, 'getMyLeaveRequests', error);
+    }
+};
+
+// ── ข้อมูลพิมพ์แบบใบลาของใบหนึ่ง (หน้า /hr/leave/status) ─────────────────────
+// ดูได้: เจ้าของใบ · ผู้อยู่ในสายอนุมัติของใบ · ADMIN / HR · หัวหน้า/รักษาการของหน่วยที่เจ้าของใบสังกัด (ขอบเขตเดียวกับรายงาน)
+export const getLeavePrintData = async ({ params, user, set }: any) => {
+    try {
+        const uid = Number(user?.id);
+        const [row] = await core_kon`
+            SELECT r.id, r.user_id, r.approval_chain, u.mission_id, u.major_id, u.submajor_id
+            FROM hr_leave_requests r JOIN users u ON u.id = r.user_id
+            WHERE r.id = ${Number(params?.id)}`;
+        if (!row) return fail(set, 404, 'ไม่พบใบลานี้');
+        const owner = Number(row.user_id);
+        const allowed = owner === uid
+            || parseChain(row.approval_chain).some(s => Number(s.approver_id) === uid)
+            || await isHrOrAdmin(uid)
+            || (await core_kon`
+                SELECT 1 FROM (
+                    SELECT supervisor_id, acting_supervisor_id FROM missions WHERE is_active = 'Y' AND mission_id = ${row.mission_id}
+                    UNION ALL SELECT supervisor_id, acting_supervisor_id FROM majors WHERE is_active = 'Y' AND major_id = ${row.major_id}
+                    UNION ALL SELECT supervisor_id, acting_supervisor_id FROM submajors WHERE is_active = 'Y' AND submajor_id = ${row.submajor_id}
+                ) h WHERE h.supervisor_id = ${uid} OR h.acting_supervisor_id = ${uid} LIMIT 1`).length > 0;
+        if (!allowed) return fail(set, 403, 'ไม่มีสิทธิ์พิมพ์ใบลานี้');
+
+        const pkg = await leavePackage(owner);
+        const request = pkg.data.find((r: any) => Number(r.id) === Number(row.id));
+        return { success: true, data: { request, rows: pkg.data, profile: pkg.profile, approvers: pkg.approvers } };
+    } catch (error: any) {
+        return serverError(set, 'getLeavePrintData', error);
     }
 };
 
@@ -435,6 +595,10 @@ export const updateLeaveRequest = async ({ params, body, user, set }: any) => {
                 total_days: Number(req.total_days),
             }, await isHrOrAdmin(uid));
             if ('error' in checked) return checked.error;
+            const substitute = await substituteOf(uid, body?.substitute_user_id);
+            if (substitute === undefined) return fail(set, 400, 'ผู้ปฏิบัติหน้าที่แทนไม่ถูกต้อง');
+            const contact = contactOf(body?.contact_info);
+            if (contact === undefined) return fail(set, 400, `ที่ติดต่อระหว่างลายาวได้ไม่เกิน ${CONTACT_MAX} ตัวอักษร`);
 
             const chain = await resolveApprovalChain(uid);
             if (!chain || chain.steps.length === 0) {
@@ -449,7 +613,7 @@ export const updateLeaveRequest = async ({ params, body, user, set }: any) => {
                 SET leave_type_id = ${leave_type_id}, start_date = ${start_date}, end_date = ${end_date},
                     total_days = ${total_days}, actual_days = ${total_days},
                     is_half_day = ${!!is_half_day}, half_day_period = ${half_day_period ?? null},
-                    reason = ${reason ?? null},
+                    reason = ${reason ?? null}, substitute_user_id = ${substitute}, contact_info = ${contact},
                     approval_chain = ${JSON.stringify(chain.steps)}::text::jsonb, current_step = 1,
                     day_check_status = NULL, day_check_note = NULL, day_checked_by = NULL, day_checked_at = NULL,
                     updated_at = NOW()
@@ -479,15 +643,18 @@ export const getPendingApprovals = async ({ user, query, set }: any) => {
 
         const rows = await core_kon`
             SELECT r.id, r.user_id, CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
-                   up.position_name, sm.name AS submajor_name, ma.name AS major_name, mi.name AS mission_name,
+                   ${positionName('up')} AS position_name, sm.name AS submajor_name, ma.name AS major_name, mi.name AS mission_name,
                    r.leave_type_id, t.name_th AS leave_type_name, t.code AS leave_type_code,
                    r.start_date, r.end_date, r.total_days, r.actual_days,
                    r.is_half_day, r.half_day_period, r.status, r.reason, r.reject_reason,
-                   r.document_url, r.approval_chain, r.current_step, r.created_at,
-                   step.value AS my_step
+                   r.document_url, r.approval_chain, r.current_step, r.created_at, r.days_deducted,
+                   step.value AS my_step,
+                   c.id AS cancellation_id, c.status AS cancellation_status, c.reason AS cancellation_reason,
+                   c.refunded_days AS cancellation_refunded_days, c.reject_comment AS cancellation_reject_comment
             FROM hr_leave_requests r
             JOIN hr_leave_types t ON t.id = r.leave_type_id
             JOIN users u ON u.id = r.user_id
+            ${latestCancellation()}
             LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
             LEFT JOIN submajors sm ON sm.submajor_id = u.submajor_id
             LEFT JOIN majors ma ON ma.major_id = u.major_id
@@ -536,7 +703,7 @@ const loadActions = async (requestIds: number[]): Promise<Map<number, any[]>> =>
     const ids = [...new Set(requestIds)];
     if (ids.length === 0) return new Map();
     const rows = await core_kon`
-        SELECT a.request_id, a.step, a.action, a.comment, a.actioned_at,
+        SELECT a.request_id, a.step, a.action, a.comment, a.actioned_at, a.approver_id,
                a.level, a.unit_type, a.unit_id,
                CONCAT(u.pname, u.fname, ' ', u.lname) AS approver_name
         FROM hr_leave_approvals a
@@ -655,15 +822,18 @@ const adjustBalance = async (tx: any, userId: number, leaveTypeId: number, start
     if (existing) {
         const next = Math.max(Number(existing.used) + days, 0);
         await tx`UPDATE hr_leave_balances SET used = ${next}, updated_at = now() WHERE id = ${existing.id}`;
+        // ปีนี้ยกยอดไปปีถัดไปแล้ว (เช่น ยกเลิกใบลาข้ามปีงบ) — ปรับยอดยกมาตามคงเหลือใหม่ ไม่เกินเพดานสะสม
+        await syncCarriedForward(tx, userId, leaveTypeId, fy);
         return;
     }
     if (days <= 0) return;   // ไม่มีแถวอยู่แล้ว และเป็นการคืนยอด — ไม่ต้องสร้างแถวเปล่า
     // ใส่สิทธิ์ตามประเภทเจ้าหน้าที่ไว้ด้วย ไม่งั้นแถวที่ entitled = 0 ทำให้เพดานวันลาไม่ถูกบังคับ
-    const entitled = (await entitlementFor(userId, leaveTypeId)) ?? 0;
+    const entitled = (await entitlementFor(userId, leaveTypeId, typeof startDate === 'string' ? startDate.slice(0, 10) : undefined)) ?? 0;
     await tx`
         INSERT INTO hr_leave_balances (user_id, leave_type_id, fiscal_year, carried_in, entitled, used, note, auto_created)
         VALUES (${userId}, ${leaveTypeId}, ${fy}, 0, ${entitled}, ${days}, 'สร้างอัตโนมัติจากการบันทึกใบลา', TRUE)
     `;
+    await syncCarriedForward(tx, userId, leaveTypeId, fy);
 };
 
 /** ให้ยอดที่หักของใบนี้เท่ากับ target วัน (หัก/คืนเฉพาะส่วนต่าง) แล้วจำไว้ที่ days_deducted */
@@ -719,7 +889,7 @@ export const requestCancellation = async ({ params, body, user, set }: any) => {
             };
         });
     } catch (error: any) {
-        if (String(error?.message ?? '').includes('hr_leave_cancellations_request_id_key')) {
+        if (/hr_leave_cancellations_request_id_key|uq_leave_cancellations_pending/.test(String(error?.message ?? ''))) {
             return fail(set, 409, 'ใบลานี้มีคำขอยกเลิกอยู่แล้ว', 'DUPLICATE_CANCEL');
         }
         return serverError(set, 'requestCancellation', error);
@@ -793,18 +963,22 @@ const actOnCancellation = async (
                 };
             }
 
+            // คืนยอดที่หักไว้เข้าปีงบของวันเริ่มลา — ใบเก่าก่อนมี days_deducted ถูกหักตอนอนุมัติ ใช้ total_days แทน
+            const deducted = Number(req.days_deducted) > 0 ? Number(req.days_deducted)
+                : (req.status_before === 'APPROVED' ? Number(req.total_days) : 0);
+            await setDeduction(tx, { ...req, days_deducted: deducted }, 0);
             await tx`
-                UPDATE hr_leave_cancellations SET status = 'APPROVED', updated_at = now()
+                UPDATE hr_leave_cancellations SET status = 'APPROVED', refunded_days = ${deducted}, updated_at = now()
                 WHERE id = ${req.cancellation_id}
             `;
             await tx`
                 UPDATE hr_leave_requests SET status = 'CANCELLED', updated_at = now() WHERE id = ${requestId}
             `;
-            // คืนยอดที่หักไว้ — ใบเก่าก่อนมี days_deducted ถูกหักตอนอนุมัติ ใช้ total_days แทน
-            const deducted = Number(req.days_deducted) > 0 ? Number(req.days_deducted)
-                : (req.status_before === 'APPROVED' ? Number(req.total_days) : 0);
-            await setDeduction(tx, { ...req, days_deducted: deducted }, 0);
-            return { success: true, data: { id: requestId, status: 'CANCELLED' }, message: 'ยกเลิกใบลาเรียบร้อย คืนยอดวันลาแล้ว' };
+            return {
+                success: true,
+                data: { id: requestId, status: 'CANCELLED', refunded_days: deducted },
+                message: deducted > 0 ? `ยกเลิกใบลาเรียบร้อย คืนวันลา ${deducted} วัน` : 'ยกเลิกใบลาเรียบร้อย',
+            };
         });
     } catch (error: any) {
         return serverError(set, 'actOnCancellation', error);
@@ -814,19 +988,48 @@ const actOnCancellation = async (
 export const approveCancellation = (ctx: any) => actOnCancellation(ctx, 'APPROVED');
 export const rejectCancellation = (ctx: any) => actOnCancellation(ctx, 'REJECTED');
 
+// ── อนุมัติแบบกลุ่ม (เลือกหลายใบจากหน้าอนุมัติ) ───────────────────────────────
+// ทำทีละใบด้วยกติกาเดียวกับกดทีละใบ (แต่ละใบ transaction ของตัวเอง) — ใบที่ไม่ใช่คิวของผู้กด
+// หรือสถานะเปลี่ยนไปแล้วจะไม่ผ่านเฉพาะใบนั้น ใบอื่นยังอนุมัติได้ · ส่งผลรายใบกลับไปให้หน้าจอแสดง
+const BULK_MAX = 100;
+const bulkAct = async (ctx: any, handler: (c: any) => Promise<any>, defaultComment: string) => {
+    const ids = [...new Set<number>((Array.isArray(ctx.body?.ids) ? ctx.body.ids : []).map(Number).filter((n: number) => Number.isInteger(n) && n > 0))];
+    if (ids.length === 0) return fail(ctx.set, 400, 'กรุณาเลือกรายการที่จะอนุมัติ');
+    if (ids.length > BULK_MAX) return fail(ctx.set, 400, `อนุมัติได้ครั้งละไม่เกิน ${BULK_MAX} รายการ`);
+    const comment = String(ctx.body?.comment ?? '').trim() || defaultComment;
+    const results: { id: number; success: boolean; status?: string; message?: string; code?: string; refunded_days?: number }[] = [];
+    for (const id of ids) {
+        const set: any = {};
+        const r = await handler({ ...ctx, params: { id }, body: { comment }, set });
+        results.push({
+            id, success: !!r?.success, status: r?.data?.status, message: r?.message, code: r?.code,
+            ...(r?.data?.refunded_days != null ? { refunded_days: r.data.refunded_days } : {}),
+        });
+    }
+    const ok = results.filter(r => r.success).length;
+    return {
+        success: true,
+        data: { total: ids.length, ok, failed: ids.length - ok, results },
+        message: ok === ids.length ? `อนุมัติเรียบร้อย ${ok} รายการ` : `อนุมัติสำเร็จ ${ok} จาก ${ids.length} รายการ`,
+    };
+};
+export const bulkApproveLeaveRequests = (ctx: any) => bulkAct(ctx, approveLeaveRequest, 'อนุมัติ (แบบกลุ่ม)');
+export const bulkApproveCancellations = (ctx: any) => bulkAct(ctx, approveCancellation, 'อนุมัติการยกเลิก (แบบกลุ่ม)');
+
 // ── รายละเอียดใบลาใบเดียว ───────────────────────────────────────────────────
 // เห็นได้เฉพาะเจ้าของใบ ผู้ที่อยู่ในสายอนุมัติของใบนั้น และ ADMIN
 export const getLeaveRequestById = async ({ params, user, set }: any) => {
     try {
         const uid = Number(user?.id);
         const [row] = await core_kon`
-            SELECT r.*, t.name_th AS leave_type_name, t.code AS leave_type_code,
+            SELECT r.*, t.name_th AS leave_type_name, t.code AS leave_type_code, ${substituteName()} AS substitute_name,
                    CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
-                   c.id AS cancellation_id, c.status AS cancellation_status, c.reason AS cancellation_reason
+                   c.id AS cancellation_id, c.status AS cancellation_status, c.reason AS cancellation_reason,
+                   c.refunded_days AS cancellation_refunded_days, c.reject_comment AS cancellation_reject_comment
             FROM hr_leave_requests r
             JOIN hr_leave_types t ON t.id = r.leave_type_id
             JOIN users u ON u.id = r.user_id
-            LEFT JOIN hr_leave_cancellations c ON c.request_id = r.id
+            ${latestCancellation()}
             WHERE r.id = ${Number(params?.id)}
         `;
         if (!row) return fail(set, 404, 'ไม่พบใบลานี้');
@@ -890,7 +1093,7 @@ export const getLeaveSummary = async ({ user, query, set }: any) => {
         const rows = await core_kon`
             SELECT r.id, r.user_id, CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
                    sm.name AS submajor_name, ma.name AS major_name, mi.name AS mission_name,
-                   po.position_name, ut.type_name AS user_type_name,
+                   ${positionName('po')} AS position_name, ut.type_name AS user_type_name,
                    t.name_th AS leave_type_name, t.code AS leave_type_code,
                    r.start_date, r.end_date, r.total_days, r.status, r.reason, r.reject_reason,
                    r.current_step, r.approval_chain, r.created_at
@@ -1010,7 +1213,7 @@ export const getLeaveCalendar = async ({ user, query, set }: any) => {
 
         const rows = await core_kon`
             SELECT r.id, r.user_id, CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
-                   po.position_name, COALESCE(sm.name, ma.name) AS unit_name,
+                   ${positionName('po')} AS position_name, COALESCE(sm.name, ma.name) AS unit_name,
                    t.code AS leave_type_code, t.name_th AS leave_type_name,
                    to_char(r.start_date, 'YYYY-MM-DD') AS start_date, to_char(r.end_date, 'YYYY-MM-DD') AS end_date,
                    r.total_days, r.is_half_day, r.half_day_period, r.status, r.reason,
@@ -1032,21 +1235,22 @@ export const getLeaveCalendar = async ({ user, query, set }: any) => {
                 scope,
                 options,
                 masked,
-                // เหตุผลการลาเป็นข้อมูลส่วนตัว — ส่งเฉพาะใบของตัวเอง (is_mine) ไม่ว่าจะดูขอบเขตไหน
+                // เหตุผลการลาเป็นข้อมูลส่วนตัว — ส่งให้เจ้าของใบ, ADMIN/HR (ทั้งโรงพยาบาล) และผู้อนุมัติในสาย
+                // (ขอบเขต chain = ใบที่ฉันเป็นผู้อนุมัติขั้นใดขั้นหนึ่ง เห็นเหตุผลในหน้าอนุมัติอยู่แล้ว) · เพื่อนร่วมกลุ่มงานไม่เห็น
                 // เพื่อนร่วมกลุ่มงาน: ประเภทการลา (เช่น ลาป่วย) ก็ส่งเฉพาะของตัวเองเช่นกัน
                 events: rows.map((r: any) => {
                     const mine = Number(r.user_id) === uid;
-                    // รออนุมัติ → ผู้อนุมัติลำดับที่ใบกำลังรออยู่ (ลำดับ 1 กดแล้วจะเลื่อนเป็นลำดับ 2 ...)
+                    // รออนุมัติ / รออนุมัติยกเลิก → ผู้อนุมัติลำดับที่ใบกำลังรออยู่ (ลำดับ 1 กดแล้วจะเลื่อนเป็นลำดับ 2 ...)
                     const { approval_chain, current_step, ...rest } = r;
                     const steps = parseChain(approval_chain);
-                    const cur = r.status === 'PENDING' ? stepFor(steps, Number(current_step)) : null;
+                    const cur = r.status === 'PENDING' || r.status === 'CANCEL_PENDING' ? stepFor(steps, Number(current_step)) : null;
                     return {
                         ...rest,
                         waiting_for: cur
                             ? { step: cur.step, total: steps.length, level_name: cur.level_name, approver_name: cur.approver_name, is_acting: cur.is_acting }
                             : null,
                         is_mine: mine,
-                        reason: mine ? r.reason : null,
+                        reason: mine || scope === 'all' || scope === 'chain' ? r.reason : null,
                         ...(masked && !mine ? { leave_type_code: null, leave_type_name: null } : {}),
                     };
                 }),

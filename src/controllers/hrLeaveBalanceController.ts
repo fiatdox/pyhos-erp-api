@@ -13,19 +13,21 @@ const fiscalYearOf = (d: Date): number => {
     return ceYear + 543;
 };
 
-// หาเกณฑ์สิทธิ์ที่ตรงกับผู้ใช้ ณ ตอนนี้ (user_type + อายุงานจาก hire_date) — เลือก tier อายุงานสูงสุดที่ยังไม่เกินอายุงานจริง
-// ไม่มี hire_date (ทะเบียนส่วนใหญ่ยังไม่กรอก) ใช้ tier ต่ำสุด — กติกาเดียวกับการตรวจสิทธิ์ตอนยื่นใบลา
+// หาเกณฑ์สิทธิ์ที่ตรงกับผู้ใช้ ณ ตอนนี้ (user_type + อายุงาน) — เลือก tier อายุงานสูงสุดที่ยังไม่เกินอายุงานจริง
+// อายุงานนับจาก v_leave_service_start (hire_date ในทะเบียน ถ้าว่างใช้วันบรรจุจากโปรแกรมการลาเดิม)
+// ไม่มีวันเริ่มงานเลย ใช้ tier ต่ำสุด — กติกาเดียวกับการตรวจสิทธิ์ตอนยื่นใบลา
 // (เดิมนับอายุงานเป็น 0 เดือน ทำให้ไม่ผ่าน tier 6 เดือนของลาพักผ่อน และไม่ได้ยกยอดเลย)
 const findEntitlement = async (userId: number, leaveTypeId: number) => {
     const rows = await core_kon`
         SELECT e.max_days_per_year, e.carry_over, e.carry_over_max_days
         FROM users u
+        JOIN v_leave_service_start ss ON ss.user_id = u.id
         JOIN hr_leave_entitlements e ON e.user_type_id = u.user_type_id AND e.leave_type_id = ${leaveTypeId}
         WHERE u.id = ${userId}
-          AND (u.hire_date IS NULL
-               OR e.min_service_months <= EXTRACT(YEAR FROM AGE(now(), u.hire_date))::int * 12
-                                        + EXTRACT(MONTH FROM AGE(now(), u.hire_date))::int)
-        ORDER BY CASE WHEN u.hire_date IS NULL THEN e.min_service_months END ASC,
+          AND (ss.service_start IS NULL
+               OR e.min_service_months <= EXTRACT(YEAR FROM AGE(now(), ss.service_start))::int * 12
+                                        + EXTRACT(MONTH FROM AGE(now(), ss.service_start))::int)
+        ORDER BY CASE WHEN ss.service_start IS NULL THEN e.min_service_months END ASC,
                  e.min_service_months DESC
         LIMIT 1`;
     return rows[0] ?? null;
@@ -119,6 +121,8 @@ export const updateLeaveBalance = async ({ params, body, user, set }: any) => {
             set.status = 400;
             return { success: false, message: 'ไม่มีข้อมูลให้บันทึก' };
         }
+        // HR ตั้งยอดยกมาเอง — ระบบจะไม่ปรับยอดยกมาแถวนี้ทับอีก (syncCarriedForward)
+        if ('carried_in' in patch) { patch.carried_from_fy = null; patch.auto_created = false; }
         patch.updated_by = user.id;
         patch.updated_at = new Date();
         const rows = await core_kon`
