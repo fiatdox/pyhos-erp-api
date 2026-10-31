@@ -1,6 +1,6 @@
 import { core_kon } from '../db/db';
 import { join } from 'path';
-import { resolveApprovalChain, stepFor, parseChain, type ChainStep } from '../services/leaveChain';
+import { resolveApprovalChain, stepFor, parseChain, canActOnStep, type ChainStep } from '../services/leaveChain';
 import { resolveLeaveSubject, isHrOrAdmin, hasCreatedByColumn } from '../services/leaveSubject';
 import { countLeaveDays, countWithHolidays, holidaysBetween } from '../services/leaveDays';
 import { maxAdvanceDays, bangkokDate } from '../services/leaveRules';
@@ -768,6 +768,7 @@ export const getPendingApprovals = async ({ user, query, set }: any) => {
     try {
         const uid = Number(user?.id);
         const scope = String(query?.scope ?? 'pending').toLowerCase();
+        const isHr = await isHrOrAdmin(uid);
 
         const rows = await core_kon`
             SELECT r.id, r.user_id, CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
@@ -789,7 +790,8 @@ export const getPendingApprovals = async ({ user, query, set }: any) => {
             LEFT JOIN missions mi ON mi.mission_id = u.mission_id
             CROSS JOIN LATERAL jsonb_array_elements(r.approval_chain) AS step(value)
             WHERE jsonb_typeof(r.approval_chain) = 'array'
-              AND (step.value ->> 'approver_id')::int = ${uid}
+              AND ((step.value ->> 'approver_id')::int = ${uid}
+                   OR (${isHr} AND (step.value ->> 'external')::boolean IS TRUE AND r.user_id <> ${uid}))
               ${scope === 'pending'
                 ? core_kon`AND r.status = 'PENDING' AND (step.value ->> 'step')::int = r.current_step`
                 : core_kon`AND (step.value ->> 'step')::int <= r.current_step`}
@@ -877,7 +879,7 @@ const actOnRequest = async (
             const step = stepFor(chain, Number(req.current_step));
             if (!step) return fail(set, 500, 'สายอนุมัติของใบลานี้ไม่สมบูรณ์ กรุณาติดต่อผู้ดูแลระบบ');
 
-            if (Number(step.approver_id) !== uid) {
+            if (!canActOnStep(step, uid, await isHrOrAdmin(uid))) {
                 return fail(set, 403, `ขั้นนี้รออนุมัติจาก${step.level_name} (${step.approver_name}) คุณไม่มีสิทธิ์กดในขั้นนี้`, 'NOT_YOUR_STEP');
             }
             if (Number(req.user_id) === uid) {
@@ -1053,9 +1055,10 @@ const actOnCancellation = async (
             const chain: ChainStep[] = parseChain(req.approval_chain);
             const step = stepFor(chain, Number(req.current_step));
             if (!step) return fail(set, 500, 'สายอนุมัติของใบลานี้ไม่สมบูรณ์');
-            if (Number(step.approver_id) !== uid) {
+            if (!canActOnStep(step, uid, await isHrOrAdmin(uid))) {
                 return fail(set, 403, `ขั้นนี้รออนุมัติจาก${step.level_name} (${step.approver_name})`, 'NOT_YOUR_STEP');
             }
+            if (Number(req.user_id) === uid) return fail(set, 403, 'อนุมัติการยกเลิกใบลาของตัวเองไม่ได้');
 
             await tx`
                 INSERT INTO hr_leave_approvals

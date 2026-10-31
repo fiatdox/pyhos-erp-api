@@ -15,7 +15,7 @@ ALTER TABLE core_kon.hr_leave_requests
     ADD COLUMN IF NOT EXISTS current_step smallint NOT NULL DEFAULT 1;
 
 ALTER TABLE core_kon.hr_leave_approvals
-    -- ระดับที่อนุมัติ: SUBMAJOR | MAJOR | MISSION | DIRECTOR
+    -- ระดับที่อนุมัติ: SUBMAJOR | MAJOR | MISSION | DIRECTOR | PROVINCIAL (นพ.สสจ. — ใบลาของ ผอ., HR บันทึกผลแทน)
     ADD COLUMN IF NOT EXISTS level varchar(10),
     -- หน่วยที่ใช้อำนาจอนุมัติ (DIRECTOR ไม่มีหน่วย)
     ADD COLUMN IF NOT EXISTS unit_type varchar(10),

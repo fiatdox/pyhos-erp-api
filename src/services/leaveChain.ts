@@ -4,6 +4,7 @@ import { core_kon } from '../db/db';
 //
 // สายปกติ 3 ขั้น: หัวหน้าหน่วยงาน → หัวหน้ากลุ่มงาน → หัวหน้าภารกิจ
 // หัวหน้าภารกิจยื่นลาเอง: เสนอ ผอ. โดยตรงขั้นเดียว
+// ผอ. ยื่นลาเอง: เสนอนายแพทย์สาธารณสุขจังหวัด (นพ.สสจ.) ขั้นเดียว — อยู่นอกระบบ งาน HR / ADMIN บันทึกผลตามหนังสือที่ลงนามแล้ว
 //
 // กติกาที่ตกลงไว้ (ตั้งต้น — ปรับได้ที่ค่าคงที่ด้านล่าง)
 //   ก) ถ้าผู้ยื่นเป็นหัวหน้าของหน่วยตัวเองในขั้นไหน ให้ "ข้ามขั้นนั้น" ขึ้นไปขั้นบนแทน
@@ -18,18 +19,19 @@ import { core_kon } from '../db/db';
 // ขั้นที่กดไปแล้วคงไว้ตามเดิม (ตรวจย้อนหลังได้ว่าใครมีอำนาจ ณ ตอนนั้น) แต่ขั้นที่ยังไม่ถึง
 // จะถูกคำนวณใหม่ตามผังปัจจุบันเมื่อแต่งตั้ง/ถอดหัวหน้า หรือย้ายหน่วย — ดู resyncPendingChains
 
-export type ApprovalLevel = 'SUBMAJOR' | 'MAJOR' | 'MISSION' | 'DIRECTOR';
+export type ApprovalLevel = 'SUBMAJOR' | 'MAJOR' | 'MISSION' | 'DIRECTOR' | 'PROVINCIAL';
 
 export interface ChainStep {
     step: number;                 // ลำดับขั้น เริ่มที่ 1 (นับเฉพาะขั้นที่ต้องอนุมัติจริง)
     level: ApprovalLevel;
     level_name: string;           // ชื่อไทยไว้แสดงผล
-    approver_id: number;
+    approver_id: number;          // ขั้นนอกระบบ (external) = 0
     approver_name: string;
     unit_type: 'submajor' | 'major' | 'mission' | null;
     unit_id: number | null;
     unit_name: string | null;
     is_acting: boolean;           // อนุมัติในฐานะรักษาการ
+    external?: boolean;           // ผู้อนุมัติไม่มีบัญชีในระบบ (นพ.สสจ.) — HR / ADMIN เป็นผู้บันทึกผล
 }
 
 /** ขั้นที่ถูกข้าม เก็บไว้เพื่ออธิบายให้ผู้ใช้เห็นว่าทำไมสายอนุมัติสั้นลง */
@@ -49,6 +51,22 @@ const LEVEL_NAME: Record<ApprovalLevel, string> = {
     MAJOR: 'หัวหน้ากลุ่มงาน',
     MISSION: 'หัวหน้ากลุ่มภารกิจ',
     DIRECTOR: 'ผู้อำนวยการ',
+    PROVINCIAL: 'นายแพทย์สาธารณสุขจังหวัด',
+};
+
+/** ชื่อที่แสดงของ นพ.สสจ. — ตั้งชื่อบุคคลได้ที่ hr_settings.provincial_officer_name (ไม่ตั้ง = ชื่อตำแหน่ง) */
+const PROVINCIAL_DEFAULT = 'นายแพทย์สาธารณสุขจังหวัดพะเยา';
+const PROVINCIAL_UNIT = 'สำนักงานสาธารณสุขจังหวัดพะเยา';
+
+const resolveProvincialStep = async (step: number): Promise<ChainStep> => {
+    const [row] = await core_kon`SELECT value FROM hr_settings WHERE name = 'provincial_officer_name'`;
+    const name = String(row?.value ?? '').trim();
+    return {
+        step, level: 'PROVINCIAL', level_name: LEVEL_NAME.PROVINCIAL,
+        approver_id: 0, approver_name: name || PROVINCIAL_DEFAULT,
+        unit_type: null, unit_id: null, unit_name: PROVINCIAL_UNIT,
+        is_acting: false, external: true,
+    };
 };
 
 const fullName = (r: any) =>
@@ -83,6 +101,18 @@ export const resolveApprovalChain = async (userId: number): Promise<ResolvedChai
         SELECT id, submajor_id, major_id, mission_id FROM users WHERE id = ${userId}
     `;
     if (!me) return null;
+
+    // ผู้ยื่นคือผู้ที่ทำหน้าที่ ผอ. อยู่ (ตัวจริง หรือรักษาการเมื่อไม่มีตัวจริง) — ลากับ นพ.สสจ. ไม่ผ่านสายใน รพ.
+    const top = await resolveDirectorStep(1);
+    if (top && top.approver_id === userId) {
+        return {
+            steps: [await resolveProvincialStep(1)],
+            skipped: [{
+                level: 'DIRECTOR', level_name: LEVEL_NAME.DIRECTOR,
+                reason: 'ผู้ยื่นเป็นผู้อำนวยการ จึงเสนอนายแพทย์สาธารณสุขจังหวัด (งานทรัพยากรบุคคลบันทึกผลตามหนังสือที่ลงนามแล้ว)',
+            }],
+        };
+    }
 
     // ผู้ยื่นเป็นหัวหน้า/รักษาการกลุ่มภารกิจไหนอยู่หรือเปล่า — ถ้าใช่ เสนอ ผอ. โดยตรง
     const missionHead = await core_kon`
@@ -225,6 +255,10 @@ const namesOf = async (ids: number[]): Promise<Map<number, string>> => {
     return new Map(rows.map((r: any) => [Number(r.id), fullName(r)]));
 };
 
+/** ผู้ใช้คนนี้กดในขั้นนี้ได้ไหม — ขั้นปกติต้องเป็นผู้อนุมัติที่ระบุ · ขั้นนอกระบบ (นพ.สสจ.) งาน HR / ADMIN บันทึกผลแทน */
+export const canActOnStep = (step: ChainStep, uid: number, isHr: boolean) =>
+    step.external ? isHr : Number(step.approver_id) === uid;
+
 /**
  * ผู้ใช้คนนี้มีสิทธิ์กดในขั้นที่ใบลากำลังรออยู่หรือไม่ — ดูจากสายอนุมัติที่เก็บไว้ในใบ
  * (ซึ่ง resyncPendingChains คอยปรับให้ตรงผังปัจจุบันอยู่แล้ว)
@@ -247,7 +281,7 @@ export const parseChain = (raw: unknown): ChainStep[] => {
     return [];
 };
 
-const LEVEL_RANK: Record<ApprovalLevel, number> = { SUBMAJOR: 0, MAJOR: 1, MISSION: 2, DIRECTOR: 3 };
+const LEVEL_RANK: Record<ApprovalLevel, number> = { SUBMAJOR: 0, MAJOR: 1, MISSION: 2, DIRECTOR: 3, PROVINCIAL: 4 };
 
 /**
  * ปรับสายอนุมัติของใบลาที่ยังรออนุมัติ (PENDING) ให้ตรงกับผังเจ้าหน้าที่ปัจจุบัน
@@ -267,7 +301,7 @@ export const resyncPendingChains = async (userId?: number): Promise<number> => {
         WHERE status IN ('PENDING', 'CANCEL_PENDING') ${userId == null ? core_kon`` : core_kon`AND user_id = ${userId}`}
     `;
     const remainingIds = (rows as any[]).flatMap(r => parseChain(r.approval_chain)
-        .filter(s => Number(s.step) >= Number(r.current_step)).map(s => Number(s.approver_id)));
+        .filter(s => Number(s.step) >= Number(r.current_step) && !s.external).map(s => Number(s.approver_id)));
     const active = await activeApprovers(remainingIds);
     let changed = 0;
     for (const r of rows as any[]) {
@@ -276,7 +310,7 @@ export const resyncPendingChains = async (userId?: number): Promise<number> => {
         const done = chain.filter(s => Number(s.step) < cs);
         if (done.length !== cs - 1) continue;  // ข้อมูลไม่ต่อเนื่อง ไม่เดาแทน
         if (r.status === 'CANCEL_PENDING'
-            && chain.filter(s => Number(s.step) >= cs).every(s => active.has(Number(s.approver_id)))) continue;
+            && chain.filter(s => Number(s.step) >= cs).every(s => s.external || active.has(Number(s.approver_id)))) continue;
 
         const fresh = await resolveApprovalChain(Number(r.user_id));
         if (!fresh) continue;
