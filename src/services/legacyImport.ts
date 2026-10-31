@@ -42,6 +42,22 @@ const TYPE_MAP: Record<number, string | null> = {
     7: 'PERS' /* ลากิจเลี้ยงดูบุตร */, 8: null /* ขาดราชการ */, 9: null /* ลาไปต่างประเทศ — ต้องกำหนดประเภทก่อนโอน */,
 };
 
+/**
+ * คำที่ต้องมีในชื่อประเภทเดิม (tb_type_leave.type_leave_name) — ตรวจก่อนโอนทุกครั้ง
+ * ถ้ารหัสในฐานเดิมถูกเปลี่ยนความหมาย การจับคู่ด้วยตัวเลขจะโอนผิดประเภททั้งชุด จึงหยุดโอนทันที
+ */
+const LEGACY_TYPE_NAME: Record<number, string> = {
+    1: 'ป่วย', 2: 'พักผ่อน', 3: 'กิจ', 4: 'สาย', 5: 'คลอด', 6: 'อุปสมบท', 7: 'เลี้ยงดูบุตร', 8: 'ขาดราชการ', 9: 'ต่างประเทศ',
+};
+/** ระบบเดิมใช้ "คลอด" (#5) ทั้งหญิงและชาย — ผู้ชายคือการลาไปช่วยเหลือภริยาคลอดบุตร (นับวันทำการ ไม่เกิน 15 วัน) */
+const typeCodeFor = (legacyType: number, gender: string | null): string | null | undefined => {
+    const code = TYPE_MAP[legacyType];
+    return code === 'MAT' && gender === 'M' ? 'PAT' : code;
+};
+const GENDER_OK: Record<string, (g: string | null) => boolean> = {
+    MALE: g => g == null || g === 'M', FEMALE: g => g == null || g === 'F',
+};
+
 /** วันที่ในฐานเดิมบางใบบันทึกเป็นปี พ.ศ. */
 const ceDate = (d: string | null): string | null => {
     if (!d || d.startsWith('0000')) return null;
@@ -138,7 +154,8 @@ interface LegacyApproval { step: number; level: string; unit_type: string | null
 /**
  * ที่ติดต่อ / ผู้ปฏิบัติแทน / การอนุมัติของใบเดิม
  * การอนุมัติ: เฉพาะใบที่อนุมัติในระบบเดิม (leave_status = 1) — ขั้นในสายใหม่ที่ระดับเดิมกดอนุมัติไว้
- * วันที่ขั้นนั้นว่าง ใช้วันของขั้นถัดไปที่มี ไม่มีเลยใช้วันยื่น · ผู้อนุมัติจับคู่ไม่ได้ใช้ผู้อนุมัติตามสาย
+ * วันที่ขั้นนั้นว่าง ใช้วันของขั้นถัดไปที่มี ไม่มีเลยใช้วันยื่น
+ * ผู้อนุมัติ = ผู้อนุมัติของขั้นนั้นตามผังการลาปัจจุบันเสมอ (ไม่ใช้ชื่อผู้กดในระบบเดิม) — เก็บแค่วันที่และความเห็นจากใบเดิม
  * ขั้นสุดท้ายต้องมีเสมอ (ใบอนุมัติแล้ว) — ระดับเดิมไม่ตรงกับสายใหม่ ใช้การอนุมัติระดับสูงสุดของใบเดิม
  * ระบบเดิมบางใบผู้ลากดอนุมัติขั้นของตัวเอง — ไม่นับเป็นการอนุมัติ (ขั้นสุดท้ายใช้ผู้อนุมัติตามสายแทน)
  */
@@ -155,24 +172,32 @@ const legacyDetails = async (l: any, steps: ChainStep[], uid: number, empUser: E
     const substitute = sub != null && sub !== uid ? sub : null;
 
     const approvals: LegacyApproval[] = [];
+    const ok = (lv: LegacyLevel) => String(l[`${lv}_approve`]) === '1';
+    const dateOf = (lv: LegacyLevel) => ceStamp(l[`${lv}_approve_date`]);
+    const lastStep = steps.length ? Number(steps[steps.length - 1].step) : 0;
+    const make = async (s: ChainStep, lv: LegacyLevel, later: LegacyLevel[]) => {
+        const date = dateOf(lv) ?? later.map(dateOf).find(Boolean) ?? ceStamp(l.leave_create);
+        if (!date) return;
+        // ผู้ลากดอนุมัติขั้นของตัวเองในระบบเดิม — ไม่นับ (ยกเว้นขั้นสุดท้าย ใบอนุมัติแล้วต้องมีเสมอ)
+        if (await empUser(l[`${lv}_user_approve`]) === uid && Number(s.step) !== lastStep) return;
+        approvals.push({
+            step: Number(s.step), level: s.level, unit_type: s.unit_type, unit_id: s.unit_id,
+            approver: Number(s.approver_id),
+            date, comment: String(l[`${lv}_comment`] ?? '').trim() || 'อนุมัติ',
+        });
+    };
+    if (String(l.leave_status) === '2' && steps.length) {
+        // ใบที่ระบบเดิมยังรออนุมัติ — เก็บขั้นที่ระดับเดิมกดไว้แล้ว "ต่อเนื่องตั้งแต่ขั้นแรก" ใบจะไปรอที่ขั้นที่ยังไม่มีใครกด
+        // (ขั้นที่ข้ามไปไม่ได้: ถ้าขั้นแรกยังไม่กด ขั้นหลังที่กดไว้ก็ไม่นับ เพราะในสายใหม่ต้องผ่านตามลำดับ)
+        for (const [i, s] of steps.entries()) {
+            const lv = LEGACY_LEVEL[s.level];
+            if (!lv || !ok(lv)) break;
+            const before = approvals.length;
+            await make(s, lv, steps.slice(i + 1).map(x => LEGACY_LEVEL[x.level]).filter(Boolean));
+            if (approvals.length === before) break;
+        }
+    }
     if (String(l.leave_status) === '1' && steps.length) {
-        const ok = (lv: LegacyLevel) => String(l[`${lv}_approve`]) === '1';
-        const dateOf = (lv: LegacyLevel) => ceStamp(l[`${lv}_approve_date`]);
-        const lastStep = Number(steps[steps.length - 1].step);
-        const make = async (s: ChainStep, lv: LegacyLevel, later: LegacyLevel[]) => {
-            const date = dateOf(lv) ?? later.map(dateOf).find(Boolean) ?? ceStamp(l.leave_create);
-            if (!date) return;
-            let approver = await empUser(l[`${lv}_user_approve`]);
-            if (approver === uid) {
-                if (Number(s.step) !== lastStep) return;
-                approver = null;
-            }
-            approvals.push({
-                step: Number(s.step), level: s.level, unit_type: s.unit_type, unit_id: s.unit_id,
-                approver: approver ?? Number(s.approver_id),
-                date, comment: String(l[`${lv}_comment`] ?? '').trim() || 'อนุมัติ',
-            });
-        };
         for (const [i, s] of steps.entries()) {
             const lv = LEGACY_LEVEL[s.level];
             if (!lv || !ok(lv)) continue;
@@ -196,14 +221,22 @@ const insertLegacyApprovals = async (sql: any, requestId: number, approvals: Leg
 };
 const APPROVED_LIKE = ['APPROVED', 'CANCEL_PENDING', 'CANCELLED'];
 
-export interface LeaveImportTotals { targets: number; employees: number; imported: number; skipped: number; already: number; undone: number }
+export interface LeaveImportTotals {
+    targets: number; employees: number; imported: number; skipped: number; already: number; undone: number;
+    /** ใบที่จะโอน แยกตามรหัสประเภทในระบบใหม่ · ใบที่ข้ามเพราะประเภทเดิมไม่มีในระบบใหม่ แยกตามชื่อเดิม */
+    by_type?: Record<string, number>; skipped_type?: Record<string, number>;
+    /** จุดที่ HR ควรตรวจ: เพศไม่ตรงประเภท · จำนวนวันเดิมไม่ตรงกฎการนับของประเภท · ไม่มีสายอนุมัติตามผัง */
+    gender_mismatch?: number; day_mismatch?: number; no_chain?: number;
+    /** ใบรออนุมัติในระบบเดิม: ต่อจากขั้นที่กดแล้ว / ผ่านครบสายใหม่จึงอนุมัติ / ยังไม่มีใครกด */
+    pending_resumed?: number; pending_completed?: number; pending_fresh?: number;
+}
 
 export const runLegacyLeaveImport = async (opts: LeaveImportOptions, log: Log, progress?: Progress): Promise<LeaveImportTotals> => {
     const { fy: FY, commit: COMMIT, undo: UNDO = false } = opts;
     if (!Number.isInteger(FY) || FY < 2500 || FY > 2700) throw new Error('ปีงบประมาณไม่ถูกต้อง');
     const fyStart = `${FY - 544}-10-01`, fyEnd = `${FY - 543}-09-30`;
 
-    const sel = core_kon`SELECT id, CONCAT(fname, ' ', lname) AS name, TRIM(id_card) AS id_card FROM users`;
+    const sel = core_kon`SELECT id, CONCAT(fname, ' ', lname) AS name, TRIM(id_card) AS id_card, gender FROM users`;
     let rows: any[];
     if (opts.scope === 'all') {
         rows = await core_kon`${sel} WHERE id_card IS NOT NULL AND TRIM(id_card) <> '' ORDER BY id`;
@@ -215,16 +248,37 @@ export const runLegacyLeaveImport = async (opts: LeaveImportOptions, log: Log, p
         const [f, l] = String(opts.name ?? '').trim().split(/\s+/);
         rows = await core_kon`${sel} WHERE fname = ${f ?? ''} AND lname = ${l ?? ''}`;
     }
-    const targets = rows.map((u: any) => ({ uid: Number(u.id), name: u.name as string, idCard: u.id_card as string }));
-    const totals: LeaveImportTotals = { targets: targets.length, employees: 0, imported: 0, skipped: 0, already: 0, undone: 0 };
+    const targets = rows.map((u: any) => ({ uid: Number(u.id), name: u.name as string, idCard: u.id_card as string, gender: (u.gender ?? null) as string | null }));
+    const totals: LeaveImportTotals = {
+        targets: targets.length, employees: 0, imported: 0, skipped: 0, already: 0, undone: 0,
+        by_type: {}, skipped_type: {}, gender_mismatch: 0, day_mismatch: 0, no_chain: 0,
+        pending_resumed: 0, pending_completed: 0, pending_fresh: 0,
+    };
+    const bump = (m: Record<string, number>, k: string) => { m[k] = (m[k] ?? 0) + 1; };
     if (!targets.length) { log('ไม่พบบุคลากรในระบบใหม่'); return totals; }
 
-    const types = new Map((await core_kon`SELECT id, code, count_working_days_only FROM hr_leave_types`).map((t: any) => [t.code, t]));
+    const types = new Map((await core_kon`SELECT id, code, name_th, count_working_days_only, gender_restriction FROM hr_leave_types`).map((t: any) => [t.code, t]));
     const annual: any = types.get('ANNUAL');
     const legacy = await connectLegacy();
     const lq = async (q: string, params: unknown[] = []) => (await legacy.query(q, params))[0] as any[];
     const empUser = makeEmpUser(lq);
     try {
+        // ── ตรวจการจับคู่ประเภทการลาก่อนโอน ──
+        const legacyTypes = new Map((await lq('SELECT type_leave_id, type_leave_name FROM tb_type_leave'))
+            .map((r: any) => [Number(r.type_leave_id), String(r.type_leave_name ?? '').trim()]));
+        const wrong = Object.entries(LEGACY_TYPE_NAME)
+            .filter(([id, word]) => legacyTypes.has(Number(id)) && !legacyTypes.get(Number(id))!.includes(word))
+            .map(([id, word]) => `#${id} "${legacyTypes.get(Number(id))}" (คาดว่าเป็น "${word}")`);
+        if (wrong.length) throw new Error(`ประเภทการลาในระบบเดิมไม่ตรงกับที่จับคู่ไว้: ${wrong.join(', ')} — หยุดโอนเพื่อกันโอนผิดประเภท`);
+        const missing = [...new Set([...Object.values(TYPE_MAP), 'PAT'].filter((c): c is string => !!c))].filter(c => !types.has(c));
+        if (missing.length) throw new Error(`ไม่พบประเภทการลาในระบบใหม่: ${missing.join(', ')}`);
+        log('การจับคู่ประเภทการลา (ระบบเดิม → ระบบใหม่):\n' + [...legacyTypes.entries()].sort(([a], [b]) => a - b).map(([id, name]) => {
+            const code = TYPE_MAP[id];
+            const t: any = code ? types.get(code) : null;
+            return `  #${id} ${name} → ${t ? `${t.name_th} (${code} · นับ${t.count_working_days_only ? 'วันทำการ' : 'วันปฏิทิน'})` : 'ไม่โอน'}`
+                + (code === 'MAT' ? ` · ผู้ชาย → ${(types.get('PAT') as any).name_th} (PAT · นับวันทำการ)` : '');
+        }).join('\n') + '\n');
+
         let n = 0;
         for (const t of targets) {
             if (++n % 10 === 0 || n === targets.length) await progress?.(n, targets.length);
@@ -267,12 +321,21 @@ export const runLegacyLeaveImport = async (opts: LeaveImportOptions, log: Log, p
             for (const l of leaves) {
                 const id = Number(l.leave_id);
                 const start = ceDate(l.date_start), end = ceDate(l.date_end) ?? start;
-                const code = TYPE_MAP[Number(l.type_leave_id)];
+                const code = typeCodeFor(Number(l.type_leave_id), t.gender);
                 const skip = (why: string) => { plan.push({ id, skip: why }); };
-                if (code === undefined || code === null) { skip(`ประเภทเดิม #${l.type_leave_id} ไม่ใช่การลาในระบบใหม่`); continue; }
+                if (code === undefined || code === null) {
+                    const name = legacyTypes.get(Number(l.type_leave_id)) ?? `รหัส ${l.type_leave_id}`;
+                    bump(totals.skipped_type!, name);
+                    skip(`ประเภทเดิม "${name}" ไม่มีในระบบใหม่`);
+                    continue;
+                }
                 const type: any = types.get(code);
                 if (!type) { skip(`ไม่พบประเภท ${code}`); continue; }
                 if (!start || !end || end < start) { skip(`วันที่ไม่ถูกต้อง (${l.date_start} – ${l.date_end})`); continue; }
+                const flags: string[] = [];
+                if (!(GENDER_OK[type.gender_restriction]?.(t.gender) ?? true)) {
+                    flags.push(`! ${type.name_th} ใช้ได้เฉพาะ${type.gender_restriction === 'FEMALE' ? 'เพศหญิง' : 'เพศชาย'} แต่เพศในทะเบียนไม่ตรง — ให้ HR ตรวจประเภท`);
+                }
 
                 let status: string;
                 if (Number(l.cancle_status) === 5) status = 'CANCELLED';
@@ -282,17 +345,37 @@ export const runLegacyLeaveImport = async (opts: LeaveImportOptions, log: Log, p
                 else if (l.leave_status === '3') status = 'REJECTED';
                 else { skip(`สถานะเดิมว่าง (${l.leave_status})`); continue; }
 
+                // ใบรออนุมัติ: ตรวจกับสายอนุมัติตามผังใหม่ว่าระบบเดิมกดไปแล้วกี่ขั้น
+                let done = 0, statusNote = '';
+                if (status === 'PENDING' && chain?.steps.length) {
+                    done = (await legacyDetails(l, chain.steps, t.uid, empUser)).approvals.length;
+                    if (done >= chain.steps.length) {
+                        status = 'APPROVED';
+                        statusNote = ` (ระบบเดิมยังรออนุมัติ แต่ผ่านครบทุกขั้นของสายตามผังใหม่แล้ว ${done} ขั้น → อนุมัติ)`;
+                    } else if (done > 0) {
+                        statusNote = ` (ระบบเดิมอนุมัติแล้ว ${done} ขั้น → รอขั้นที่ ${done + 1} ${chain.steps[done].level_name})`;
+                    }
+                }
+
                 const sp = span(start, end);
                 const half = Number(l.leave_day) % 1 !== 0 || l.time_start === '0.5' || l.time_end === '0.5';
                 let days = validDays(l.leave_day, half ? sp - 0.5 : sp) ?? validDays(l.countday, half ? sp - 0.5 : sp);
                 let dayNote = '';
+                // นับตามกฎของประเภทในระบบใหม่ (วันทำการ = ไม่นับเสาร์-อาทิตย์/วันหยุดราชการ · วันปฏิทิน = ทุกวัน)
+                const rule = (await countLeaveDays(start, end, !!type.count_working_days_only, half)).computed_days || (half ? 0.5 : 1);
                 if (days == null) {
-                    days = (await countLeaveDays(start, end, !!type.count_working_days_only, half)).computed_days || (half ? 0.5 : 1);
+                    days = rule;
                     dayNote = ` (จำนวนวันเดิม ${l.leave_day} ใช้ไม่ได้ — นับจากปฏิทิน ${days})`;
+                } else if (!type.count_working_days_only && days !== rule) {
+                    // ประเภทที่นับวันปฏิทิน (ลาคลอด อุปสมบท ฯลฯ) ระบบเดิมนับแบบวันทำการ — ใช้ตามกฎระบบใหม่
+                    dayNote = ` (ระบบเดิม ${days} วัน → นับวันปฏิทินตามประเภท ${rule} วัน)`;
+                    days = rule;
+                } else if (days !== rule) {
+                    flags.push(`! จำนวนวันเดิม ${days} วัน แต่นับวันทำการได้ ${rule} วัน — ใช้ตามเดิม ให้ HR ตรวจที่หน้าตรวจวันลา`);
                 }
                 const isHalf = days % 1 !== 0;
                 plan.push({
-                    id, code, typeId: Number(type.id), start, end, days, isHalf, status, dayNote,
+                    id, code, typeId: Number(type.id), start, end, days, isHalf, status, dayNote: dayNote + statusNote, flags, done,
                     reason: String(l.leave_detail ?? '').trim() || null,
                     reject: [l.header_comment, l.major_comment, l.branch_comment].map(x => String(x ?? '').trim()).filter(Boolean).join(' / ') || null,
                     created: l.leave_create && !String(l.leave_create).startsWith('0000') ? l.leave_create : null,
@@ -324,9 +407,28 @@ export const runLegacyLeaveImport = async (opts: LeaveImportOptions, log: Log, p
             }
             for (const p of plan) {
                 if (p.skip) lines.push(`  - #${p.id} ข้าม: ${p.skip}`);
-                else lines.push(`  ${p.already ? '= ' : '+ '}#${p.id} ${p.code} ${p.start}${p.end !== p.start ? `–${p.end}` : ''} ${p.days} วัน${p.isHalf ? ' (มีครึ่งวัน)' : ''} · ${STATUS_TH[p.status]}${p.already ? ' (โอนแล้ว)' : ''}${p.dayNote}`);
+                else {
+                    lines.push(`  ${p.already ? '= ' : '+ '}#${p.id} ${p.code} ${p.start}${p.end !== p.start ? `–${p.end}` : ''} ${p.days} วัน${p.isHalf ? ' (มีครึ่งวัน)' : ''} · ${STATUS_TH[p.status]}${p.already ? ' (โอนแล้ว)' : ''}${p.dayNote}`);
+                    for (const f of p.flags) lines.push(`      ${f}`);
+                }
             }
-            if (!chain?.steps.length && willImport.some(p => ['PENDING', 'CANCEL_PENDING'].includes(p.status))) lines.push('  ! ไม่พบผู้อนุมัติในผัง — ใบที่ยังรออนุมัติจะค้าง');
+            for (const p of willImport) {
+                bump(totals.by_type!, p.code);
+                if (p.flags.some((f: string) => f.includes('เพศ'))) totals.gender_mismatch!++;
+                if (p.flags.some((f: string) => f.includes('จำนวนวันเดิม'))) totals.day_mismatch!++;
+                if (p.raw.leave_status === '2' && !p.raw.cancle_status) {
+                    if (p.status === 'APPROVED') totals.pending_completed!++;
+                    else if (p.done > 0) totals.pending_resumed!++;
+                    else totals.pending_fresh!++;
+                }
+            }
+            // สายอนุมัติตามผังใหม่ — ไม่มีสาย: ใบที่อนุมัติแล้วไม่มีประวัติการอนุมัติ ใบที่รออยู่จะค้าง
+            if (!chain?.steps.length && willImport.length) {
+                totals.no_chain!++;
+                lines.push(willImport.some(p => ['PENDING', 'CANCEL_PENDING'].includes(p.status))
+                    ? '  ! ไม่พบผู้อนุมัติในผัง — ใบที่ยังรออนุมัติจะค้าง และใบที่อนุมัติแล้วไม่มีประวัติการอนุมัติ'
+                    : '  ! ไม่พบผู้อนุมัติในผัง — ใบที่อนุมัติแล้วจะไม่มีประวัติการอนุมัติ');
+            }
             log(lines.join('\n'));
             totals.imported += willImport.length;
             totals.skipped += plan.filter(p => p.skip).length;
@@ -352,7 +454,8 @@ export const runLegacyLeaveImport = async (opts: LeaveImportOptions, log: Log, p
                 for (const p of willImport) {
                     const active = ['APPROVED', 'PENDING', 'CANCEL_PENDING'].includes(p.status);
                     const steps = chain?.steps ?? [];
-                    const step = p.status === 'PENDING' || p.status === 'CANCEL_PENDING' ? 1 : steps.length + 1;
+                    // รออนุมัติ: ต่อจากขั้นที่ระบบเดิมกดไว้ · ขอยกเลิก: เดินสายใหม่ตั้งแต่ขั้นแรก · อื่น ๆ: ครบสายแล้ว
+                    const step = p.status === 'PENDING' ? p.done + 1 : p.status === 'CANCEL_PENDING' ? 1 : steps.length + 1;
                     const extra = await legacyDetails(p.raw, steps, t.uid, empUser);
                     const [row] = await sql`
                         INSERT INTO hr_leave_requests
@@ -364,7 +467,7 @@ export const runLegacyLeaveImport = async (opts: LeaveImportOptions, log: Log, p
                                 ${JSON.stringify(steps)}::text::jsonb, ${step}, ${active ? p.days : 0}, ${p.id},
                                 ${extra.contact}, ${extra.substitute}, ${extra.document}, ${p.created ?? sql`now()`}, now())
                         RETURNING id`;
-                    if (APPROVED_LIKE.includes(p.status)) await insertLegacyApprovals(sql, Number(row.id), extra.approvals);
+                    if (APPROVED_LIKE.includes(p.status) || p.status === 'PENDING') await insertLegacyApprovals(sql, Number(row.id), extra.approvals);
                     if (active) await adjust(sql, t.uid, p.typeId, fyOf(p.start), p.days);
                     if (p.status === 'CANCEL_PENDING' || p.status === 'CANCELLED') {
                         await sql`
@@ -379,6 +482,18 @@ export const runLegacyLeaveImport = async (opts: LeaveImportOptions, log: Log, p
     }
     log(`\n${COMMIT ? 'บันทึกแล้ว' : 'ทดลอง (ยังไม่บันทึก)'} · บุคลากรที่พบในระบบเดิม ${totals.employees} จาก ${totals.targets} คน`
         + (UNDO ? ` · ถอน ${totals.undone} ใบ` : ` · โอน ${totals.imported} ใบ · โอนแล้วก่อนหน้า ${totals.already} ใบ · ข้าม ${totals.skipped} ใบ`));
+    if (!UNDO) {
+        const nameOf = (c: string) => (types.get(c) as any)?.name_th ?? c;
+        log('ตรวจประเภทการลา:'
+            + `\n  โอนแยกตามประเภท: ${Object.entries(totals.by_type!).map(([c, n]) => `${nameOf(c)} ${n}`).join(' · ') || '-'}`
+            + `\n  ข้ามเพราะประเภทเดิมไม่มีในระบบใหม่: ${Object.entries(totals.skipped_type!).map(([c, n]) => `${c} ${n}`).join(' · ') || '-'}`
+            + `\n  เพศไม่ตรงกับประเภท: ${totals.gender_mismatch} ใบ · จำนวนวันเดิมไม่ตรงการนับวันทำการ: ${totals.day_mismatch} ใบ`
+            + `\n  ไม่มีสายอนุมัติตามผัง: ${totals.no_chain} คน`
+            + `\nตรวจสถานะใบที่ระบบเดิมยังรออนุมัติ (เทียบกับสายตามผังใหม่):`
+            + `\n  ยังไม่มีใครกด → รอขั้นที่ 1: ${totals.pending_fresh} ใบ`
+            + `\n  กดไปแล้วบางขั้น → รอขั้นที่ค้างจริง: ${totals.pending_resumed} ใบ`
+            + `\n  ผ่านครบทุกขั้นของสายใหม่ → อนุมัติ: ${totals.pending_completed} ใบ`);
+    }
     return totals;
 };
 
