@@ -8,7 +8,8 @@ import { core_kon } from '../db/db';
 //
 // กติกาที่ตกลงไว้ (ตั้งต้น — ปรับได้ที่ค่าคงที่ด้านล่าง)
 //   ก) ถ้าผู้ยื่นเป็นหัวหน้าของหน่วยตัวเองในขั้นไหน ให้ "ข้ามขั้นนั้น" ขึ้นไปขั้นบนแทน
-//      (ไม่มีใครอนุมัติลาให้ตัวเองได้)
+//      (ไม่มีใครอนุมัติลาให้ตัวเองได้) — และข้ามทุกขั้นที่ต่ำกว่าด้วย: หัวหน้าระดับล่างเป็นผู้ใต้บังคับบัญชา
+//      อนุมัติลาให้หัวหน้าระดับบนไม่ได้ (เช่น หัวหน้ากลุ่มงานที่สังกัดหน่วยงานหนึ่ง ไม่เสนอผ่านหัวหน้าหน่วยงานนั้น)
 //   ข) หน่วยที่ไม่มีหัวหน้า หรือผู้ยื่นไม่ได้สังกัดหน่วยนั้น ให้ข้ามขั้นนั้นไป
 //      ไม่บล็อกการยื่น เพราะในฐานข้อมูลจริงมีคนไม่มีหน่วยงานอยู่หลายร้อยคน
 //   ค) ไม่อนุมัติขั้นใดขั้นหนึ่ง = ใบลานั้นจบ (REJECTED) ยื่นใบใหม่ได้
@@ -133,16 +134,41 @@ export const resolveApprovalChain = async (userId: number): Promise<ResolvedChai
         };
     }
 
+    // ผู้ยื่นที่เป็นหัวหน้า/รักษาการ: สายเดินตามผังของหน่วยที่ตัวเองเป็นหัวหน้า (หน่วย → กลุ่มงานแม่ → ภารกิจแม่)
+    // ไม่ใช่ตามสังกัดในข้อมูลบุคลากร — หัวหน้าบางคนสังกัดอีกกลุ่มงานหนึ่ง ถ้าเดินตามสังกัดจะเสนอหัวหน้าระดับเดียวกันที่ไม่ใช่ผู้บังคับบัญชา
+    // หัวหน้าหลายหน่วยใช้หน่วยระดับสูงสุด (หน่วยที่ตรงกับสังกัดของตัวเองก่อน)
+    // หน่วยแม่ในผังที่ปิดใช้งานแล้ว/ไม่ได้ระบุ (ผังค้างข้อมูลเก่า) ใช้สังกัดของบุคลากรแทนตั้งแต่ระดับนั้นขึ้นไป
+    let { submajor_id: subId, major_id: majId, mission_id: misId } = me;
+    const [headOfMajor] = await core_kon`
+        SELECT m.major_id, mi.mission_id FROM majors m
+        LEFT JOIN missions mi ON mi.mission_id = m.mission_id AND mi.is_active = 'Y'
+        WHERE m.is_active = 'Y' AND (m.supervisor_id = ${userId} OR m.acting_supervisor_id = ${userId})
+        ORDER BY (m.major_id = ${me.major_id ?? 0}) DESC, m.major_id LIMIT 1`;
+    if (headOfMajor) {
+        subId = null; majId = headOfMajor.major_id; misId = headOfMajor.mission_id ?? me.mission_id;
+    } else {
+        const [headOfSub] = await core_kon`
+            SELECT s.submajor_id, m.major_id, mi.mission_id FROM submajors s
+            LEFT JOIN majors m ON m.major_id = s.major_id AND m.is_active = 'Y'
+            LEFT JOIN missions mi ON mi.mission_id = m.mission_id AND mi.is_active = 'Y'
+            WHERE s.is_active = 'Y' AND (s.supervisor_id = ${userId} OR s.acting_supervisor_id = ${userId})
+            ORDER BY (s.submajor_id = ${me.submajor_id ?? 0}) DESC, s.submajor_id LIMIT 1`;
+        if (headOfSub) {
+            subId = headOfSub.submajor_id;
+            if (headOfSub.major_id != null) { majId = headOfSub.major_id; misId = headOfSub.mission_id ?? me.mission_id; }
+        }
+    }
+
     const [submajor, major, mission] = await Promise.all([
-        me.submajor_id == null ? Promise.resolve([]) : core_kon`
+        subId == null ? Promise.resolve([]) : core_kon`
             SELECT submajor_id AS unit_id, name, supervisor_id, acting_supervisor_id
-            FROM submajors WHERE submajor_id = ${me.submajor_id} AND is_active = 'Y'`,
-        me.major_id == null ? Promise.resolve([]) : core_kon`
+            FROM submajors WHERE submajor_id = ${subId} AND is_active = 'Y'`,
+        majId == null ? Promise.resolve([]) : core_kon`
             SELECT major_id AS unit_id, name, supervisor_id, acting_supervisor_id
-            FROM majors WHERE major_id = ${me.major_id} AND is_active = 'Y'`,
-        me.mission_id == null ? Promise.resolve([]) : core_kon`
+            FROM majors WHERE major_id = ${majId} AND is_active = 'Y'`,
+        misId == null ? Promise.resolve([]) : core_kon`
             SELECT mission_id AS unit_id, name, supervisor_id, acting_supervisor_id
-            FROM missions WHERE mission_id = ${me.mission_id} AND is_active = 'Y'`,
+            FROM missions WHERE mission_id = ${misId} AND is_active = 'Y'`,
     ]);
 
     const plan: { level: ApprovalLevel; unitType: ChainStep['unit_type']; row: any; missingReason: string }[] = [
@@ -156,7 +182,18 @@ export const resolveApprovalChain = async (userId: number): Promise<ResolvedChai
     const heads: { level: ApprovalLevel; unitType: ChainStep['unit_type']; row: any; head: { id: number; is_acting: boolean } }[] = [];
     const active = await activeApprovers(plan.flatMap(p => [p.row?.supervisor_id, p.row?.acting_supervisor_id]));
 
-    for (const p of plan) {
+    // ระดับสูงสุดที่ผู้ยื่นเป็นหัวหน้า/รักษาการของหน่วยตัวเอง — ขั้นที่ต่ำกว่าระดับนี้ข้ามทั้งหมด (กติกา ก)
+    const ownTop = plan.reduce((top, p, i) =>
+        p.row && (Number(p.row.supervisor_id) === userId || Number(p.row.acting_supervisor_id) === userId) ? i : top, -1);
+
+    for (const [i, p] of plan.entries()) {
+        if (i < ownTop) {
+            skipped.push({
+                level: p.level, level_name: LEVEL_NAME[p.level],
+                reason: `ผู้ยื่นเป็น${LEVEL_NAME[plan[ownTop].level]}ซึ่งสูงกว่าขั้นนี้ จึงไม่เสนอผ่านหัวหน้าระดับล่าง`,
+            });
+            continue;
+        }
         const head = p.row ? pickHead(p.row, active) : null;
         if (!head) {
             const reason = p.row && headsGone(p.row)
