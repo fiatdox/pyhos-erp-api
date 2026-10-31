@@ -12,7 +12,7 @@ import {
 import { getLeaveRules } from '../services/leaveRules';
 import { getLeaveAnalytics } from '../controllers/hrLeaveAnalyticsController';
 import { getLegacyImportOptions, listLegacyImportRuns, getLegacyImportRun, startLegacyImportRun } from '../controllers/hrLegacyImportController';
-import { getLeaveDayCount, getHolidays, createHoliday, updateHoliday, deleteHoliday, getLeaveDayCheck, verifyLeaveDays, adjustLeaveDays } from '../controllers/hrLeaveDayController';
+import { getLeaveDayCount, getHolidays, createHoliday, updateHoliday, deleteHoliday, getLeaveDayCheck, verifyLeaveDays, adjustLeaveDays, cancelLeaveDayCheck } from '../controllers/hrLeaveDayController';
 import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances } from '../controllers/hrLeaveBalanceController';
 
 export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
@@ -334,6 +334,10 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         params: t.Object({ id: t.Numeric() }),
         body: t.Object({ total_days: t.Numeric(), note: t.String() }),
         detail: { tags: ['HR'], summary: 'แก้จำนวนวันลา (ADMIN/HR)', description: 'ปรับยอดวันลาที่หักไว้ตามส่วนต่างทันที' }
+    })
+    .post('/leave-day-check/:id/cancel', cancelLeaveDayCheck, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['HR'], summary: 'ยกเลิกผลการตรวจจำนวนวันลา (ADMIN/HR)', description: 'ล้างสถานะตรวจ — จำนวนวันที่เคยแก้คงไว้' }
     })
     // ── วันลาสะสม (ยกยอดปีงบประมาณ / ย้ายเข้าใส่ยอดยกมา) ──────────────────────
     .get('/leave-balances/meta', getLeaveBalanceMeta, {

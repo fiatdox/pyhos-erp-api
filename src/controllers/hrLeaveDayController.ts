@@ -234,6 +234,25 @@ export const verifyLeaveDays = async ({ params, body, user, set }: any) => {
     }
 };
 
+/**
+ * HR ยกเลิกผลการตรวจ — ใบกลับเป็น "ยังไม่ตรวจ" (ผู้ลาแก้จำนวนวันได้อีก และแบบใบลาไม่พิมพ์ชื่อผู้ตรวจ)
+ * จำนวนวันที่เคยแก้ (ADJUSTED) คงไว้ตามเดิม ไม่ย้อนยอดวันลา — ถ้าต้องการค่าเดิมให้แก้จำนวนวันใหม่
+ */
+export const cancelLeaveDayCheck = async ({ params, set }: any) => {
+    try {
+        const rows = await core_kon`
+            UPDATE hr_leave_requests
+            SET day_check_status = NULL, day_check_note = NULL, day_checked_by = NULL, day_checked_at = NULL, updated_at = now()
+            WHERE id = ${Number(params?.id)} AND day_check_status IS NOT NULL
+            RETURNING id
+        `;
+        if (!rows.length) return fail(set, 404, 'ใบลานี้ยังไม่ได้ตรวจ หรือไม่พบใบลา');
+        return { success: true, data: rows[0], message: 'ยกเลิกการตรวจสอบแล้ว' };
+    } catch (error: any) {
+        return serverError(set, 'cancelLeaveDayCheck', error);
+    }
+};
+
 /** HR แก้จำนวนวันลาให้ถูกต้อง — ปรับยอดวันลาที่หักไว้ตามส่วนต่างทันที */
 export const adjustLeaveDays = async ({ params, body, user, set }: any) => {
     const days = Number(body?.total_days);

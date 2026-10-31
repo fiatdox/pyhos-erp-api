@@ -395,7 +395,15 @@ const positionName = (p: string) => core_kon`
 
 /** ผลการตรวจจำนวนวันของงาน HR (alias ใบลา = r) — ผู้ลาและผู้อนุมัติเห็นด้วย */
 const dayCheckCols = () => core_kon`r.day_check_status, r.day_check_note, r.day_checked_at,
-    (SELECT CONCAT(cu.pname, cu.fname, ' ', cu.lname) FROM users cu WHERE cu.id = r.day_checked_by) AS day_checked_by_name`;
+    (SELECT CONCAT(cu.pname, cu.fname, ' ', cu.lname) FROM users cu WHERE cu.id = r.day_checked_by) AS day_checked_by_name,
+    (SELECT json_build_object('pname', cu.pname, 'fname', cu.fname, 'lname', cu.lname,
+            'position_name', CASE WHEN cp.position_name IS NULL THEN NULL ELSE TRIM(CONCAT(cp.position_name,
+                (SELECT CASE WHEN lv.level_name IS NULL OR TRIM(lv.level_name) IN ('', '-') THEN ''
+                             WHEN lv.level_name ~ '[0-9]' THEN ' ' || TRIM(lv.level_name)
+                             ELSE TRIM(lv.level_name) END
+                 FROM user_levels lv WHERE lv.user_level_id = cu.user_level_id))) END)
+     FROM users cu LEFT JOIN user_positions cp ON cp.user_position_id = cu.user_position_id
+     WHERE cu.id = r.day_checked_by) AS day_checker`;
 
 /** ชื่อผู้ปฏิบัติหน้าที่แทน (alias ใบลา = r) */
 const substituteName = () => core_kon`(SELECT CONCAT(su.pname, su.fname, ' ', su.lname) FROM users su WHERE su.id = r.substitute_user_id)`;
