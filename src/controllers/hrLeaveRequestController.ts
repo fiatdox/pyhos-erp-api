@@ -501,10 +501,19 @@ const leavePackage = async (uid: number, status: string | null = null) => {
 };
 
 // ── ใบลาของฉัน ──────────────────────────────────────────────────────────────
+// as_user_id (ADMIN เท่านั้น) = ดูประวัติการลาของบุคลากรคนนั้นแบบที่เจ้าตัวเห็น — อ่านอย่างเดียว
+// (แก้ไข / ลบ / ถอน / ขอยกเลิก ใช้ผู้ login จาก JWT ตรวจความเป็นเจ้าของเสมอ จึงทำแทนไม่ได้)
 export const getMyLeaveRequests = async ({ user, query, set }: any) => {
     try {
         const status = query?.status ? String(query.status).toUpperCase() : null;
-        return { success: true, ...(await leavePackage(Number(user?.id), status)) };
+        let uid = Number(user?.id);
+        if (query?.as_user_id != null && query.as_user_id !== '') {
+            const target = Number(query.as_user_id);
+            if (!Number.isInteger(target) || target < 1) return fail(set, 400, 'รหัสบุคลากรไม่ถูกต้อง');
+            if (target !== uid && !(await isAdmin(uid))) return fail(set, 403, 'ดูประวัติการลาของผู้อื่นได้เฉพาะผู้ดูแลระบบ');
+            uid = target;
+        }
+        return { success: true, ...(await leavePackage(uid, status)) };
     } catch (error: any) {
         return serverError(set, 'getMyLeaveRequests', error);
     }
@@ -769,12 +778,47 @@ export const updateLeaveRequest = async ({ params, body, user, set }: any) => {
     }
 };
 
+// ── รายชื่อผู้มีสิทธิ์อนุมัติ (หัวหน้า/รักษาการ ทุกระดับ + ผอ./รักษาการ ผอ.) ──────────
+// ใช้ในโหมด ADMIN "ดูแบบหัวหน้า" ของหน้าอนุมัติการลา — เฉพาะบุคลากรที่ยังปฏิบัติงานอยู่
+export const getLeaveApprovers = async ({ set }: any) => {
+    try {
+        const rows = await core_kon`
+            WITH heads AS (
+                SELECT supervisor_id AS uid, 'หัวหน้า' AS role, name AS unit, 1 AS lv FROM submajors WHERE is_active = 'Y' AND supervisor_id IS NOT NULL
+                UNION ALL SELECT acting_supervisor_id, 'รักษาการหัวหน้า', name, 1 FROM submajors WHERE is_active = 'Y' AND acting_supervisor_id IS NOT NULL
+                UNION ALL SELECT supervisor_id, 'หัวหน้า', name, 2 FROM majors WHERE is_active = 'Y' AND supervisor_id IS NOT NULL
+                UNION ALL SELECT acting_supervisor_id, 'รักษาการหัวหน้า', name, 2 FROM majors WHERE is_active = 'Y' AND acting_supervisor_id IS NOT NULL
+                UNION ALL SELECT supervisor_id, 'หัวหน้า', name, 3 FROM missions WHERE is_active = 'Y' AND supervisor_id IS NOT NULL
+                UNION ALL SELECT acting_supervisor_id, 'รักษาการหัวหน้า', name, 3 FROM missions WHERE is_active = 'Y' AND acting_supervisor_id IS NOT NULL
+                UNION ALL SELECT NULLIF(value, '')::int, CASE WHEN name = 'director_id' THEN 'ผู้อำนวยการ' ELSE 'รักษาการผู้อำนวยการ' END, NULL, 4
+                    FROM hr_settings WHERE name IN ('director_id', 'acting_director_id') AND NULLIF(value, '') IS NOT NULL
+            )
+            SELECT u.id, CONCAT(u.pname, u.fname, ' ', u.lname) AS name,
+                   json_agg(json_build_object('role', h.role, 'unit', h.unit) ORDER BY h.lv DESC, h.unit) AS heads
+            FROM heads h JOIN users u ON u.id = h.uid
+            WHERE u.is_active = 'Y'
+            GROUP BY u.id, u.pname, u.fname, u.lname
+            ORDER BY u.fname, u.lname`;
+        return { success: true, data: rows };
+    } catch (error: any) {
+        return serverError(set, 'getLeaveApprovers', error);
+    }
+};
+
 // ── ใบลาที่รอฉันอนุมัติ ─────────────────────────────────────────────────────
 // เงื่อนไขเดียว: ขั้นที่ใบกำลังรออยู่ ระบุ approver_id เป็นฉัน
 // หัวหน้าที่ถือหมวกหลายใบจึงเห็นใบของทุกหน่วยที่ตัวเองคุม แต่ไม่เห็นของหน่วยอื่น
+// as_user_id (ADMIN เท่านั้น) = ดูรายการแบบที่หัวหน้าคนนั้นเห็น — ใช้ตรวจการมองเห็น อ่านอย่างเดียว
+// (การกดอนุมัติยังใช้ผู้ login จาก JWT เสมอ จึงอนุมัติแทนไม่ได้)
 export const getPendingApprovals = async ({ user, query, set }: any) => {
     try {
-        const uid = Number(user?.id);
+        let uid = Number(user?.id);
+        if (query?.as_user_id != null && query.as_user_id !== '') {
+            const target = Number(query.as_user_id);
+            if (!Number.isInteger(target) || target < 1) return fail(set, 400, 'รหัสบุคลากรไม่ถูกต้อง');
+            if (target !== uid && !(await isAdmin(uid))) return fail(set, 403, 'ดูแบบหัวหน้าคนอื่นได้เฉพาะผู้ดูแลระบบ');
+            uid = target;
+        }
         const scope = String(query?.scope ?? 'pending').toLowerCase();
         const isHr = await isHrOrAdmin(uid);
 

@@ -4,7 +4,7 @@ import { requireRoles } from '../middlewares/roleGuard';
 import { getLeaveTypes, getLeaveEntitlements, getLeaveEntitlementByUserTypeId, getMissionSupervisorByUserId, getMajorSupervisorByUserId, getSubMajorSupervisorByUserId, updateMissionSupervisor, updateMissionActingSupervisor, updateMajorSupervisor, updateMajorActingSupervisor, updateSubMajorSupervisor, updateSubMajorActingSupervisor, getDirector, updateDirector, updateActingDirector, getMissionHeadCheck, getLeaveApproverCheck, getLeaveTypesFull, updateLeaveType, updateLeaveEntitlement, createLeaveEntitlement, deleteLeaveEntitlement } from '../controllers/hrController';
 import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitReasons, getExitMonthly, getAgeGroups, getGenders, getMissionGroups, getHrPeople, getHrAgeIssues } from '../controllers/hrDashboardController';
 import {
-    createLeaveRequest, previewApprovalChain, getMyLeaveRequests, getPendingApprovals,
+    createLeaveRequest, previewApprovalChain, getMyLeaveRequests, getPendingApprovals, getLeaveApprovers,
     approveLeaveRequest, rejectLeaveRequest, requestCancellation,
     approveCancellation, rejectCancellation, getLeaveRequestById, getLeavePrintData, getLeaveDocument, getStaffLeaveHistory, getLeaveSummary, getLeaveQuota, getLeaveCalendar,
     deleteLeaveRequest, updateLeaveRequest, getMyLeaveOverview, bulkApproveLeaveRequests, bulkApproveCancellations,
@@ -120,11 +120,11 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         detail: { tags: ['HR'], summary: 'สรุปวันลาปีงบปัจจุบันของฉัน (ลาพักผ่อน ลากิจ ลาป่วย ลาคลอด)' }
     })
     .get('/leave-requests/mine', getMyLeaveRequests, {
-        query: t.Object({ status: t.Optional(t.String()) }),
+        query: t.Object({ status: t.Optional(t.String()), as_user_id: t.Optional(t.String()) }),
         detail: { tags: ['HR'], summary: 'ใบลาของฉัน' }
     })
     .get('/leave-requests/pending-approval', getPendingApprovals, {
-        query: t.Object({ scope: t.Optional(t.String()) }),
+        query: t.Object({ scope: t.Optional(t.String()), as_user_id: t.Optional(t.String()) }),
         detail: {
             tags: ['HR'],
             summary: 'ใบลาที่รอฉันอนุมัติ',
@@ -262,6 +262,9 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     // ── ตั้งค่ากำหนดสิทธิ์การลา / แต่งตั้งหัวหน้า — จำกัดเฉพาะ role ADMIN และ HR เท่านั้น ──
     // หมายเหตุ: requireRoles มีผลกับ route ที่ประกาศ "หลัง" บรรทัดนี้เท่านั้น (GET ด้านบนไม่โดน)
     .use(requireRoles('ADMIN', 'HR'))
+    .get('/leave-approvers', getLeaveApprovers, {
+        detail: { tags: ['HR'], summary: 'รายชื่อหัวหน้า/รักษาการทุกระดับ และ ผอ. (ADMIN/HR)', description: 'ใช้เลือกหัวหน้าในโหมดดูแบบหัวหน้าของหน้าอนุมัติการลา' }
+    })
     .get('/leave-analytics', getLeaveAnalytics, {
         query: t.Object({ fiscal_year: t.Optional(t.String()) }),
         detail: { tags: ['HR'], summary: 'วิเคราะห์การลาเชิงลึกรายปีงบ (ADMIN/HR)', description: 'ใบลารายใบ + บุคลากรต่อกลุ่มงาน + ยอดวันลาพักผ่อน — หน้าเว็บสรุปเอง' }
