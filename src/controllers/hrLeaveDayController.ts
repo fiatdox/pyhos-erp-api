@@ -254,7 +254,7 @@ export const adjustLeaveDays = async ({ params, body, user, set }: any) => {
             await tx`
                 UPDATE hr_leave_requests
                 SET total_days = ${days}, actual_days = ${days},
-                    day_check_status = 'ADJUSTED', day_check_note = ${String(body.note).trim()},
+                    day_check_status = 'ADJUSTED', day_check_note = ${`${String(body.note).trim()} (แก้จาก ${before} เป็น ${days} วัน)`},
                     day_checked_by = ${Number(user?.id)}, day_checked_at = now(), updated_at = now()
                 WHERE id = ${req.id}
             `;

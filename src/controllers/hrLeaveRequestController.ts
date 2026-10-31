@@ -1,4 +1,5 @@
 import { core_kon } from '../db/db';
+import { join } from 'path';
 import { resolveApprovalChain, stepFor, parseChain, type ChainStep } from '../services/leaveChain';
 import { resolveLeaveSubject, isHrOrAdmin, hasCreatedByColumn } from '../services/leaveSubject';
 import { countLeaveDays, countWithHolidays, holidaysBetween } from '../services/leaveDays';
@@ -392,6 +393,10 @@ const positionName = (p: string) => core_kon`
                      ELSE TRIM(lv.level_name) END
          FROM user_levels lv WHERE lv.user_level_id = u.user_level_id))) END`;
 
+/** ผลการตรวจจำนวนวันของงาน HR (alias ใบลา = r) — ผู้ลาและผู้อนุมัติเห็นด้วย */
+const dayCheckCols = () => core_kon`r.day_check_status, r.day_check_note, r.day_checked_at,
+    (SELECT CONCAT(cu.pname, cu.fname, ' ', cu.lname) FROM users cu WHERE cu.id = r.day_checked_by) AS day_checked_by_name`;
+
 /** ชื่อผู้ปฏิบัติหน้าที่แทน (alias ใบลา = r) */
 const substituteName = () => core_kon`(SELECT CONCAT(su.pname, su.fname, ' ', su.lname) FROM users su WHERE su.id = r.substitute_user_id)`;
 
@@ -415,7 +420,7 @@ const leavePackage = async (uid: number, status: string | null = null) => {
                    r.start_date, r.end_date, r.total_days, r.actual_days,
                    r.is_half_day, r.half_day_period, r.status, r.reason, r.reject_reason,
                    r.document_url, r.approval_chain, r.current_step, r.created_at, r.updated_at,
-                   r.substitute_user_id, ${substituteName()} AS substitute_name, r.contact_info,
+                   r.substitute_user_id, ${substituteName()} AS substitute_name, r.contact_info, ${dayCheckCols()},
                    c.id AS cancellation_id, c.status AS cancellation_status, c.reason AS cancellation_reason,
                    c.refunded_days AS cancellation_refunded_days, c.reject_comment AS cancellation_reject_comment
             FROM hr_leave_requests r
@@ -499,6 +504,18 @@ export const getMyLeaveRequests = async ({ user, query, set }: any) => {
 
 // ── ข้อมูลพิมพ์แบบใบลาของใบหนึ่ง (หน้า /hr/leave/status) ─────────────────────
 // ดูได้: เจ้าของใบ · ผู้อยู่ในสายอนุมัติของใบ · ADMIN / HR · หัวหน้า/รักษาการของหน่วยที่เจ้าของใบสังกัด (ขอบเขตเดียวกับรายงาน)
+/** ดูใบลานี้ได้ไหม — เจ้าของใบ · ผู้อยู่ในสายอนุมัติ · ADMIN / HR · หัวหน้า/รักษาการของหน่วยที่เจ้าของใบสังกัด */
+const canViewLeave = async (uid: number, row: any): Promise<boolean> =>
+    Number(row.user_id) === uid
+    || parseChain(row.approval_chain).some(s => Number(s.approver_id) === uid)
+    || await isHrOrAdmin(uid)
+    || (await core_kon`
+        SELECT 1 FROM (
+            SELECT supervisor_id, acting_supervisor_id FROM missions WHERE is_active = 'Y' AND mission_id = ${row.mission_id}
+            UNION ALL SELECT supervisor_id, acting_supervisor_id FROM majors WHERE is_active = 'Y' AND major_id = ${row.major_id}
+            UNION ALL SELECT supervisor_id, acting_supervisor_id FROM submajors WHERE is_active = 'Y' AND submajor_id = ${row.submajor_id}
+        ) h WHERE h.supervisor_id = ${uid} OR h.acting_supervisor_id = ${uid} LIMIT 1`).length > 0;
+
 export const getLeavePrintData = async ({ params, user, set }: any) => {
     try {
         const uid = Number(user?.id);
@@ -508,22 +525,129 @@ export const getLeavePrintData = async ({ params, user, set }: any) => {
             WHERE r.id = ${Number(params?.id)}`;
         if (!row) return fail(set, 404, 'ไม่พบใบลานี้');
         const owner = Number(row.user_id);
-        const allowed = owner === uid
-            || parseChain(row.approval_chain).some(s => Number(s.approver_id) === uid)
-            || await isHrOrAdmin(uid)
-            || (await core_kon`
-                SELECT 1 FROM (
-                    SELECT supervisor_id, acting_supervisor_id FROM missions WHERE is_active = 'Y' AND mission_id = ${row.mission_id}
-                    UNION ALL SELECT supervisor_id, acting_supervisor_id FROM majors WHERE is_active = 'Y' AND major_id = ${row.major_id}
-                    UNION ALL SELECT supervisor_id, acting_supervisor_id FROM submajors WHERE is_active = 'Y' AND submajor_id = ${row.submajor_id}
-                ) h WHERE h.supervisor_id = ${uid} OR h.acting_supervisor_id = ${uid} LIMIT 1`).length > 0;
-        if (!allowed) return fail(set, 403, 'ไม่มีสิทธิ์พิมพ์ใบลานี้');
+        if (!(await canViewLeave(uid, row))) return fail(set, 403, 'ไม่มีสิทธิ์พิมพ์ใบลานี้');
 
         const pkg = await leavePackage(owner);
         const request = pkg.data.find((r: any) => Number(r.id) === Number(row.id));
         return { success: true, data: { request, rows: pkg.data, profile: pkg.profile, approvers: pkg.approvers } };
     } catch (error: any) {
         return serverError(set, 'getLeavePrintData', error);
+    }
+};
+
+// ── ไฟล์แนบของใบลา (ใบรับรองแพทย์ ฯลฯ) ─────────────────────────────────────
+// document_url เก็บแค่ชื่อไฟล์ ใบที่โอนจากโปรแกรมเดิมอยู่ที่ uploads/hr-leave/legacy/ ใบที่ยื่นในระบบนี้อยู่ที่ uploads/hr-leave/
+// ดูได้ตามสิทธิ์เดียวกับการพิมพ์ใบลา
+const LEAVE_UPLOAD_DIR = join(process.cwd(), 'uploads', 'hr-leave');
+const DOC_MIME: Record<string, string> = {
+    pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', jfif: 'image/jpeg', png: 'image/png',
+    gif: 'image/gif', webp: 'image/webp', heic: 'image/heic',
+    doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+/** ชื่อไฟล์ล้วน (ตัด path ทิ้ง กันอ่านไฟล์นอกโฟลเดอร์) */
+const docBaseName = (v: unknown): string | null => {
+    const name = String(v ?? '').trim().split(/[\\/]/).pop() ?? '';
+    return name && name !== '.' && name !== '..' ? name : null;
+};
+
+export const getLeaveDocument = async ({ params, user, set }: any) => {
+    try {
+        const uid = Number(user?.id);
+        const [row] = await core_kon`
+            SELECT r.id, r.user_id, r.approval_chain, r.document_url, r.legacy_leave_id,
+                   u.mission_id, u.major_id, u.submajor_id
+            FROM hr_leave_requests r JOIN users u ON u.id = r.user_id
+            WHERE r.id = ${Number(params?.id)}`;
+        // ไม่มีสิทธิ์ตอบ 404 เหมือนไม่มีไฟล์ ไม่บอกว่ามีอยู่
+        if (!row || !(await canViewLeave(uid, row))) return fail(set, 404, 'ไม่พบไฟล์แนบ');
+        const name = docBaseName(row.document_url);
+        if (!name) return fail(set, 404, 'ใบลานี้ไม่มีไฟล์แนบ');
+        const file = Bun.file(join(LEAVE_UPLOAD_DIR, row.legacy_leave_id != null ? 'legacy' : '', name));
+        if (!(await file.exists())) return fail(set, 404, 'ยังไม่มีไฟล์นี้ในเซิร์ฟเวอร์', 'FILE_MISSING');
+        const ext = name.split('.').pop()?.toLowerCase() ?? '';
+        set.headers['content-type'] = DOC_MIME[ext] ?? 'application/octet-stream';
+        set.headers['content-disposition'] = `inline; filename*=UTF-8''${encodeURIComponent(name)}`;
+        return file;
+    } catch (error: any) {
+        return serverError(set, 'getLeaveDocument', error);
+    }
+};
+
+// ── ประวัติการลาเจ้าหน้าที่ (หน้า /hr/leave/staff-history — ADMIN / HR) ──────────
+// ทุกใบของทุกคน กรองตามปีงบ / ประเภท / สถานะ / ชื่อ / มีไฟล์แนบ แบ่งหน้าที่ server
+// ส่งรายละเอียดครบ (ที่ติดต่อ ผู้ปฏิบัติแทน สายอนุมัติ ประวัติการกด) ให้เปิดดูได้โดยไม่ต้องยิงซ้ำ
+const STAFF_HISTORY_STATUS = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'CANCEL_PENDING'];
+
+export const getStaffLeaveHistory = async ({ query, set }: any) => {
+    try {
+        const fy = Number(query?.fiscal_year);
+        const range = Number.isInteger(fy) && fy > 2500 && fy < 2700
+            ? { from: `${fy - 544}-10-01`, to: `${fy - 543}-09-30` } : null;
+        const typeId = Number(query?.leave_type_id) || null;
+        const status = STAFF_HISTORY_STATUS.includes(String(query?.status ?? '').toUpperCase())
+            ? String(query.status).toUpperCase() : null;
+        const q = String(query?.q ?? '').trim().slice(0, 100);
+        const like = q ? `%${q.replace(/[\\%_]/g, m => `\\${m}`)}%` : null;
+        const hasDoc = String(query?.has_document ?? '') === '1';
+        // การตรวจของงาน HR: UNCHECKED = ยังไม่ตรวจ · VERIFIED = ถูกต้อง · ADJUSTED = แก้จำนวนวันแล้ว
+        const check = ['UNCHECKED', 'VERIFIED', 'ADJUSTED'].includes(String(query?.check ?? '').toUpperCase())
+            ? String(query.check).toUpperCase() : null;
+        const page = Math.max(1, Math.floor(Number(query?.page) || 1));
+        const size = Math.min(100, Math.max(1, Math.floor(Number(query?.page_size) || 20)));
+
+        const where = core_kon`
+            WHERE ${range ? core_kon`r.start_date <= ${range.to}::date AND r.end_date >= ${range.from}::date` : core_kon`TRUE`}
+              AND ${typeId ? core_kon`r.leave_type_id = ${typeId}` : core_kon`TRUE`}
+              AND ${status ? core_kon`r.status = ${status}` : core_kon`TRUE`}
+              AND ${hasDoc ? core_kon`NULLIF(TRIM(r.document_url), '') IS NOT NULL` : core_kon`TRUE`}
+              AND ${check === 'UNCHECKED' ? core_kon`r.day_check_status IS NULL` : check ? core_kon`r.day_check_status = ${check}` : core_kon`TRUE`}
+              AND ${like ? core_kon`(CONCAT(u.pname, u.fname, ' ', u.lname) ILIKE ${like} OR CONCAT(u.fname, ' ', u.lname) ILIKE ${like})` : core_kon`TRUE`}`;
+
+        const [[{ total }], rows, years] = await Promise.all([
+            core_kon`SELECT count(*)::int AS total FROM hr_leave_requests r JOIN users u ON u.id = r.user_id ${where}`,
+            core_kon`
+                SELECT r.id, r.user_id, CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
+                       ${positionName('po')} AS position_name, ut.type_name AS user_type_name,
+                       COALESCE(sm.name, ma.name, mi.name) AS unit_name,
+                       t.name_th AS leave_type_name, t.code AS leave_type_code,
+                       r.start_date, r.end_date, r.total_days, r.is_half_day, r.half_day_period,
+                       r.status, r.reason, r.reject_reason, r.contact_info, ${substituteName()} AS substitute_name,
+                       NULLIF(TRIM(r.document_url), '') AS document_name,
+                       r.current_step, r.approval_chain, r.created_at,
+                       c.status AS cancellation_status, c.reason AS cancellation_reason,
+                       t.count_working_days_only, r.day_check_status, r.day_check_note, r.day_checked_at,
+                       (SELECT CONCAT(cu.pname, cu.fname, ' ', cu.lname) FROM users cu WHERE cu.id = r.day_checked_by) AS day_checked_by_name
+                FROM hr_leave_requests r
+                JOIN hr_leave_types t ON t.id = r.leave_type_id
+                JOIN users u ON u.id = r.user_id
+                LEFT JOIN submajors sm ON sm.submajor_id = u.submajor_id
+                LEFT JOIN majors ma ON ma.major_id = u.major_id
+                LEFT JOIN missions mi ON mi.mission_id = u.mission_id
+                LEFT JOIN user_positions po ON po.user_position_id = u.user_position_id
+                LEFT JOIN user_types ut ON ut.user_type_id = u.user_type_id
+                ${latestCancellation()}
+                ${where}
+                ORDER BY r.start_date DESC, r.id DESC
+                LIMIT ${size} OFFSET ${(page - 1) * size}`,
+            // ปีงบที่มีใบลาจริง — ตัวกรองปีงบแสดงเฉพาะปีเหล่านี้ (ปีงบ พ.ศ. เริ่ม 1 ต.ค.)
+            core_kon`
+                SELECT DISTINCT (EXTRACT(YEAR FROM start_date)::int + 543
+                       + CASE WHEN EXTRACT(MONTH FROM start_date) >= 10 THEN 1 ELSE 0 END) AS fy
+                FROM hr_leave_requests ORDER BY fy DESC`,
+        ]);
+
+        const actions = await loadActions(rows.map((r: any) => Number(r.id)));
+        // จำนวนวันที่นับได้ตามกฎของประเภท (วันทำการ / วันปฏิทิน + วันหยุดราชการ) — ให้ HR เทียบกับจำนวนวันในใบ
+        const ruleDays = await Promise.all(rows.map(async (r: any) =>
+            (await countLeaveDays(isoDate(r.start_date), isoDate(r.end_date), !!r.count_working_days_only, !!r.is_half_day)).computed_days));
+        return {
+            success: true,
+            data: rows.map((r: any, i: number) => ({ ...r, rule_days: ruleDays[i], actions: actions.get(Number(r.id)) ?? [] })),
+            pagination: { page, page_size: size, total },
+            fiscal_years: years.map((y: any) => Number(y.fy)),
+        };
+    } catch (error: any) {
+        return serverError(set, 'getStaffLeaveHistory', error);
     }
 };
 
@@ -577,7 +701,7 @@ export const updateLeaveRequest = async ({ params, body, user, set }: any) => {
     try {
         return await core_kon.begin(async (tx: any) => {
             const [req] = await tx`
-                SELECT id, user_id, status, leave_type_id, start_date, total_days, days_deducted
+                SELECT id, user_id, status, leave_type_id, start_date, total_days, days_deducted, day_check_status
                 FROM hr_leave_requests WHERE id = ${requestId} FOR UPDATE
             `;
             if (!req) return fail(set, 404, 'ไม่พบใบลานี้');
@@ -586,6 +710,10 @@ export const updateLeaveRequest = async ({ params, body, user, set }: any) => {
             const [acted] = await tx`SELECT count(*)::int AS n FROM hr_leave_approvals WHERE request_id = ${requestId}`;
             if (Number(acted.n) > 0) {
                 return fail(set, 409, 'ใบลานี้มีผู้อนุมัติดำเนินการไปแล้ว แก้ไขไม่ได้ — ใช้การถอนใบลาแล้วยื่นใหม่', 'ALREADY_ACTIONED');
+            }
+            // งาน HR ตรวจจำนวนวันแล้ว — ผู้ลาแก้เองไม่ได้ (ADMIN / HR แก้ได้ และผลการตรวจจะถูกล้างให้ตรวจใหม่)
+            if (req.day_check_status && !(await isHrOrAdmin(uid))) {
+                return fail(set, 409, 'งานทรัพยากรบุคคลตรวจจำนวนวันของใบลานี้แล้ว แก้ไขไม่ได้ — ติดต่องาน HR หากต้องแก้ไข', 'DAY_CHECKED');
             }
 
             const checked = await checkLeaveInput(uid, body, set, {
@@ -648,7 +776,7 @@ export const getPendingApprovals = async ({ user, query, set }: any) => {
                    r.start_date, r.end_date, r.total_days, r.actual_days,
                    r.is_half_day, r.half_day_period, r.status, r.reason, r.reject_reason,
                    r.document_url, r.approval_chain, r.current_step, r.created_at, r.days_deducted,
-                   step.value AS my_step,
+                   step.value AS my_step, ${dayCheckCols()},
                    c.id AS cancellation_id, c.status AS cancellation_status, c.reason AS cancellation_reason,
                    c.refunded_days AS cancellation_refunded_days, c.reject_comment AS cancellation_reject_comment
             FROM hr_leave_requests r
