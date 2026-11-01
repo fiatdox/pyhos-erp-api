@@ -11,6 +11,7 @@ import {
 } from '../controllers/hrLeaveRequestController';
 import { getLeaveRules } from '../services/leaveRules';
 import { getLeaveAnalytics } from '../controllers/hrLeaveAnalyticsController';
+import { getLeaveAccessPreview } from '../controllers/hrLeaveAccessController';
 import { getLegacyImportOptions, listLegacyImportRuns, getLegacyImportRun, startLegacyImportRun } from '../controllers/hrLegacyImportController';
 import { getLeaveDayCount, getHolidays, createHoliday, updateHoliday, deleteHoliday, getLeaveDayCheck, verifyLeaveDays, adjustLeaveDays, cancelLeaveDayCheck } from '../controllers/hrLeaveDayController';
 import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances } from '../controllers/hrLeaveBalanceController';
@@ -262,6 +263,10 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     // ── ตั้งค่ากำหนดสิทธิ์การลา / แต่งตั้งหัวหน้า — จำกัดเฉพาะ role ADMIN และ HR เท่านั้น ──
     // หมายเหตุ: requireRoles มีผลกับ route ที่ประกาศ "หลัง" บรรทัดนี้เท่านั้น (GET ด้านบนไม่โดน)
     .use(requireRoles('ADMIN', 'HR'))
+    .get('/leave-access-preview', getLeaveAccessPreview, {
+        query: t.Object({ user_id: t.String() }),
+        detail: { tags: ['HR'], summary: 'ADMIN ดูหน้าการลาแบบเจ้าหน้าที่ (role · หัวหน้า · ใบลา)', description: 'ข้อมูลที่หน้า /hr/leave ใช้ตัดสินการแสดงเมนู ของบุคลากรที่เลือก — เฉพาะ ADMIN' }
+    })
     .get('/leave-approvers', getLeaveApprovers, {
         detail: { tags: ['HR'], summary: 'รายชื่อหัวหน้า/รักษาการทุกระดับ และ ผอ. (ADMIN/HR)', description: 'ใช้เลือกหัวหน้าในโหมดดูแบบหัวหน้าของหน้าอนุมัติการลา' }
     })
