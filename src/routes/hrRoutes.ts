@@ -14,7 +14,7 @@ import { getLeaveAnalytics } from '../controllers/hrLeaveAnalyticsController';
 import { getLeaveAccessPreview } from '../controllers/hrLeaveAccessController';
 import { getLegacyImportOptions, listLegacyImportRuns, getLegacyImportRun, startLegacyImportRun } from '../controllers/hrLegacyImportController';
 import { getLeaveDayCount, getHolidays, createHoliday, updateHoliday, deleteHoliday, getLeaveDayCheck, verifyLeaveDays, adjustLeaveDays, cancelLeaveDayCheck } from '../controllers/hrLeaveDayController';
-import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances } from '../controllers/hrLeaveBalanceController';
+import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances, getLeaveBalanceAudit, getLeaveBalanceLogs, fixLeaveBalances, getLeaveBalanceTransferStatus } from '../controllers/hrLeaveBalanceController';
 
 export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     .use(authMiddleware)
@@ -368,8 +368,10 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
             leave_type_id: t.Numeric(),
             fiscal_year: t.Numeric(),
             carried_in: t.Optional(t.Numeric()),
+            entitled: t.Optional(t.Numeric()),
             used: t.Optional(t.Numeric()),
             note: t.Optional(t.Nullable(t.String())),
+            reason: t.Optional(t.String({ maxLength: 255 })),
         }),
         detail: { tags: ['HR'], summary: 'เพิ่มยอดวันลาสะสม (เช่น ข้าราชการย้ายมา)', description: 'entitled ถูก snapshot จาก hr_leave_entitlements อัตโนมัติตาม user_type + อายุงาน — 409 ถ้ามีข้อมูลปีงบนี้อยู่แล้ว' }
     })
@@ -380,8 +382,42 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
             entitled: t.Numeric(),
             used: t.Numeric(),
             note: t.Nullable(t.String()),
+            reason: t.String({ maxLength: 255 }),
+            keep_carry_link: t.Boolean(),
         })),
-        detail: { tags: ['HR'], summary: 'แก้ไขยอดวันลาสะสม' }
+        detail: { tags: ['HR'], summary: 'แก้ไขยอดวันลาสะสม', description: 'แก้ตัวเลขต้องมี reason — เก็บค่าก่อน/หลังใน hr_leave_balance_logs และปรับยอดยกมาปีถัดไปตาม' }
+    })
+    .get('/leave-balances/audit', getLeaveBalanceAudit, {
+        query: t.Object({
+            fiscal_year: t.Optional(t.String()),
+            leave_type_id: t.Optional(t.String()),
+            summary: t.Optional(t.String()),
+        }),
+        detail: { tags: ['HR'], summary: 'ตรวจยอดวันลาสะสมที่น่าจะผิด', description: 'คงเหลือติดลบ · ใช้ไปไม่ตรงใบลา · สิทธิ์ไม่ตรงเกณฑ์ · ยกมาไม่ตรงปีก่อน/เกินเพดาน — พร้อมค่าที่แนะนำ' }
+    })
+    .get('/leave-balances/transfer-status', getLeaveBalanceTransferStatus, {
+        query: t.Object({
+            fiscal_year: t.Optional(t.String()),
+            summary: t.Optional(t.String()),
+        }),
+        detail: { tags: ['HR'], summary: 'สถานะการโอนยอดวันลาพักผ่อนสะสม แยกตามประเภทบุคลากร', description: 'อ่านอย่างเดียว — imported / hr / rolled / auto / none ของบุคลากรที่ยังปฏิบัติงาน' }
+    })
+    .post('/leave-balances/fix', fixLeaveBalances, {
+        body: t.Object({
+            reason: t.String({ maxLength: 255 }),
+            items: t.Array(t.Object({
+                id: t.Numeric(),
+                carried_in: t.Optional(t.Numeric()),
+                entitled: t.Optional(t.Numeric()),
+                used: t.Optional(t.Numeric()),
+                keep_carry_link: t.Optional(t.Boolean()),
+            }), { maxItems: 500 }),
+        }),
+        detail: { tags: ['HR'], summary: 'แก้ยอดวันลาสะสมหลายแถวพร้อมกัน', description: 'ทั้งชุดในธุรกรรมเดียว — บันทึกประวัติทุกแถว' }
+    })
+    .get('/leave-balances/:id/logs', getLeaveBalanceLogs, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['HR'], summary: 'ประวัติการแก้ยอดวันลาสะสม' }
     })
     .post('/leave-balances/rollover', rolloverLeaveBalances, {
         body: t.Object({
