@@ -22,16 +22,28 @@ let cache: { at: number; disabled: string[] } | null = null;
 /** ล้างแคชทันทีที่มีการบันทึก — ไม่ต้องรอ TTL หมด */
 const invalidate = () => { cache = null; };
 
+/** จับคู่แบบทั้งเซกเมนต์ · '=/path' = ตรงหน้านั้นหน้าเดียว (ไม่รวมหน้าย่อย) */
+const matches = (route: string, prefix: string) => prefix.startsWith('=')
+    ? route === prefix.slice(1)
+    : route === prefix || route.startsWith(`${prefix}/`);
+
 /**
  * เส้นทางของโมดูลที่ถูกปิดอยู่ (route_prefix)
+ * โมดูลที่เปิดอยู่แต่ซ้อนอยู่ใต้โมดูลที่ปิด ส่งไปด้วยโดยขึ้นต้น '+' (ข้อยกเว้น — กฎที่เจาะจงกว่าชนะ)
+ *   เช่น ปิด '/hr/leave' แต่เปิด '=/hr/leave' → เห็นเฉพาะหน้าแรกของระบบการลา
+ *   หน้าเว็บรุ่นเก่าที่ไม่รู้จัก '+' จะถือเป็นเส้นทางที่ไม่ตรงกับหน้าใดเลย (ไม่มีผล)
  * ล้มเหลว = คืนรายการว่าง (ถือว่าเปิดหมด) — สวิตช์นี้ต้องไม่ทำให้เมนูหายทั้งระบบเพราะ DB สะดุด
  */
 export async function getDisabledPrefixes(): Promise<string[]> {
     if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.disabled;
     try {
-        const rows = await core_kon`
-            SELECT route_prefix FROM app_modules WHERE enabled <> 'Y'`;
-        const disabled = rows.map((r: any) => String(r.route_prefix));
+        const rows = await core_kon`SELECT route_prefix, enabled FROM app_modules`;
+        const off = rows.filter((r: any) => String(r.enabled) !== 'Y').map((r: any) => String(r.route_prefix));
+        const allow = rows
+            .filter((r: any) => String(r.enabled) === 'Y')
+            .map((r: any) => String(r.route_prefix))
+            .filter(p => off.some(d => !d.startsWith('=') && p !== d && matches(p.replace(/^=/, ''), d)));
+        const disabled = [...off, ...allow.map(p => `+${p}`)];
         cache = { at: Date.now(), disabled };
         return disabled;
     } catch (e: any) {
@@ -104,7 +116,7 @@ export const updateModules = async ({ body, user, set }: any) => {
         }
 
         invalidate();
-        const disabled = await getDisabledPrefixes();
+        const disabled = (await getDisabledPrefixes()).filter(p => !p.startsWith('+'));
         return {
             success: true,
             data: { changed, disabled_count: disabled.length },
