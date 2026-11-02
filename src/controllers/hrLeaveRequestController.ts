@@ -1,6 +1,6 @@
 import { core_kon } from '../db/db';
 import { join } from 'path';
-import { mkdir } from 'fs/promises';
+import { mkdir, unlink } from 'fs/promises';
 import { resolveApprovalChain, stepFor, parseChain, canActOnStep, type ChainStep } from '../services/leaveChain';
 import { resolveLeaveSubject, isHrOrAdmin, isDirector, hasCreatedByColumn } from '../services/leaveSubject';
 import { countLeaveDays, countWithHolidays, holidaysBetween } from '../services/leaveDays';
@@ -591,6 +591,42 @@ export const getLeaveDocument = async ({ params, user, set }: any) => {
         return file;
     } catch (error: any) {
         return serverError(set, 'getLeaveDocument', error);
+    }
+};
+
+// ── แนบไฟล์ใบลา (ยื่นในระบบนี้) — เจ้าของใบ / ADMIN / HR (รวมผู้ยื่นแทน) ─────────────────────
+// เก็บที่ uploads/hr-leave/<uuid>.<ext> · document_url = ชื่อไฟล์ที่เก็บ · แนบใหม่แทนไฟล์เดิม (ลบไฟล์เดิมทิ้ง)
+// ใบที่โอนจากโปรแกรมเดิมไม่รับ (ไฟล์อยู่ uploads/hr-leave/legacy/ ตามชื่อเดิม) · ใบที่ไม่อนุมัติ/ยกเลิกแล้วไม่รับ
+const DOC_MAX_BYTES = 10 * 1024 * 1024;
+
+export const uploadLeaveDocument = async ({ params, body, user, set }: any) => {
+    try {
+        const uid = Number(user?.id);
+        const file: File | null = body?.file instanceof File && body.file.size > 0 ? body.file : null;
+        if (!file) return fail(set, 400, 'กรุณาเลือกไฟล์แนบ');
+        const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+        if (!DOC_MIME[ext]) return fail(set, 400, `ไฟล์แนบต้องเป็น ${Object.keys(DOC_MIME).join(', ')}`);
+        if (file.size > DOC_MAX_BYTES) return fail(set, 400, 'ไฟล์แนบมีขนาดเกิน 10MB');
+
+        const [row] = await core_kon`
+            SELECT id, user_id, status, document_url, legacy_leave_id
+            FROM hr_leave_requests WHERE id = ${Number(params?.id)}`;
+        if (!row) return fail(set, 404, 'ไม่พบใบลานี้');
+        // ผู้ยื่นแทน (HR) ผ่านด้วย isHrOrAdmin
+        const allowed = Number(row.user_id) === uid || await isHrOrAdmin(uid);
+        if (!allowed) return fail(set, 403, 'แนบไฟล์ได้เฉพาะใบลาของตัวเอง');
+        if (row.legacy_leave_id != null) return fail(set, 409, 'ใบที่โอนจากโปรแกรมเดิมแนบไฟล์จากหน้านี้ไม่ได้');
+        if (['REJECTED', 'CANCELLED'].includes(String(row.status))) return fail(set, 409, `ใบลาสถานะ ${row.status} แนบไฟล์ไม่ได้`);
+
+        const stored = `${crypto.randomUUID()}.${ext}`;
+        await mkdir(LEAVE_UPLOAD_DIR, { recursive: true });
+        await Bun.write(join(LEAVE_UPLOAD_DIR, stored), file);
+        await core_kon`UPDATE hr_leave_requests SET document_url = ${stored}, updated_at = now() WHERE id = ${row.id}`;
+        const old = docBaseName(row.document_url);
+        if (old && old !== stored) await unlink(join(LEAVE_UPLOAD_DIR, old)).catch(() => {});
+        return { success: true, data: { document_url: stored }, message: 'แนบไฟล์แล้ว' };
+    } catch (error: any) {
+        return serverError(set, 'uploadLeaveDocument', error);
     }
 };
 

@@ -6,7 +6,7 @@ import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitR
 import {
     createLeaveRequest, previewApprovalChain, getMyLeaveRequests, getPendingApprovals, getLeaveApprovers,
     approveLeaveRequest, rejectLeaveRequest, requestCancellation,
-    approveCancellation, rejectCancellation, getLeaveRequestById, getLeavePrintData, getLeaveDocument, getStaffLeaveHistory, getLeaveSummary, getLeaveQuota, getLeaveCalendar,
+    approveCancellation, rejectCancellation, getLeaveRequestById, getLeavePrintData, getLeaveDocument, uploadLeaveDocument, getStaffLeaveHistory, getLeaveSummary, getLeaveQuota, getLeaveCalendar,
     deleteLeaveRequest, updateLeaveRequest, getMyLeaveOverview, bulkApproveLeaveRequests, bulkApproveCancellations,
 } from '../controllers/hrLeaveRequestController';
 import { getLeaveRules } from '../services/leaveRules';
@@ -139,6 +139,11 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     .get('/leave-requests/:id/document', getLeaveDocument, {
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['HR'], summary: 'เปิดไฟล์แนบของใบลา (สิทธิ์เดียวกับการพิมพ์ใบลา)' }
+    })
+    .post('/leave-requests/:id/document', uploadLeaveDocument, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({ file: t.File() }),
+        detail: { tags: ['HR'], summary: 'แนบไฟล์ใบลา (ใบรับรองแพทย์ ฯลฯ) — เจ้าของใบ / ผู้ยื่นแทน / ADMIN / HR · ไม่เกิน 10MB · แนบใหม่แทนไฟล์เดิม' }
     })
     .get('/leave-requests/:id', getLeaveRequestById, {
         params: t.Object({ id: t.Numeric() }),
