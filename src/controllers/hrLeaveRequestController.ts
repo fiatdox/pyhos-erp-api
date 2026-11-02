@@ -1,5 +1,6 @@
 import { core_kon } from '../db/db';
 import { join } from 'path';
+import { mkdir } from 'fs/promises';
 import { resolveApprovalChain, stepFor, parseChain, canActOnStep, type ChainStep } from '../services/leaveChain';
 import { resolveLeaveSubject, isHrOrAdmin, hasCreatedByColumn } from '../services/leaveSubject';
 import { countLeaveDays, countWithHolidays, holidaysBetween } from '../services/leaveDays';
@@ -556,6 +557,8 @@ export const getLeavePrintData = async ({ params, user, set }: any) => {
 // document_url เก็บแค่ชื่อไฟล์ ใบที่โอนจากโปรแกรมเดิมอยู่ที่ uploads/hr-leave/legacy/ ใบที่ยื่นในระบบนี้อยู่ที่ uploads/hr-leave/
 // ดูได้ตามสิทธิ์เดียวกับการพิมพ์ใบลา
 const LEAVE_UPLOAD_DIR = join(process.cwd(), 'uploads', 'hr-leave');
+// สร้างโฟลเดอร์รอไว้ตอนเริ่มระบบ — งาน HR คัดลอกไฟล์แนบจากโปรแกรมเดิมมาวางที่ uploads/hr-leave/legacy/ ได้ทันที
+await mkdir(join(LEAVE_UPLOAD_DIR, 'legacy'), { recursive: true }).catch(() => {});
 const DOC_MIME: Record<string, string> = {
     pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', jfif: 'image/jpeg', png: 'image/png',
     gif: 'image/gif', webp: 'image/webp', heic: 'image/heic',
