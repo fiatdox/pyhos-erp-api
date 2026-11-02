@@ -2,7 +2,7 @@ import { core_kon } from '../db/db';
 import { join } from 'path';
 import { mkdir } from 'fs/promises';
 import { resolveApprovalChain, stepFor, parseChain, canActOnStep, type ChainStep } from '../services/leaveChain';
-import { resolveLeaveSubject, isHrOrAdmin, hasCreatedByColumn } from '../services/leaveSubject';
+import { resolveLeaveSubject, isHrOrAdmin, isDirector, hasCreatedByColumn } from '../services/leaveSubject';
 import { countLeaveDays, countWithHolidays, holidaysBetween } from '../services/leaveDays';
 import { maxAdvanceDays, bangkokDate } from '../services/leaveRules';
 import { syncCarriedForward } from '../services/leaveRollover';
@@ -527,6 +527,7 @@ const canViewLeave = async (uid: number, row: any): Promise<boolean> =>
     Number(row.user_id) === uid
     || parseChain(row.approval_chain).some(s => Number(s.approver_id) === uid)
     || await isHrOrAdmin(uid)
+    || await isDirector(uid)
     || (await core_kon`
         SELECT 1 FROM (
             SELECT supervisor_id, acting_supervisor_id FROM missions WHERE is_active = 'Y' AND mission_id = ${row.mission_id}
@@ -598,8 +599,11 @@ export const getLeaveDocument = async ({ params, user, set }: any) => {
 // ส่งรายละเอียดครบ (ที่ติดต่อ ผู้ปฏิบัติแทน สายอนุมัติ ประวัติการกด) ให้เปิดดูได้โดยไม่ต้องยิงซ้ำ
 const STAFF_HISTORY_STATUS = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'CANCEL_PENDING'];
 
-export const getStaffLeaveHistory = async ({ query, set }: any) => {
+// เปิดให้ ADMIN / HR และ ผอ. / รักษาการ ผอ. (อ่านอย่างเดียว — ปุ่มตรวจวันลาอยู่หลัง requireRoles('ADMIN','HR'))
+export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
     try {
+        const uid = Number(user?.id);
+        if (!(await isHrOrAdmin(uid)) && !(await isDirector(uid))) return fail(set, 403, 'เฉพาะงานทรัพยากรบุคคล ผู้ดูแลระบบ และผู้อำนวยการ');
         const fy = Number(query?.fiscal_year);
         const range = Number.isInteger(fy) && fy > 2500 && fy < 2700
             ? { from: `${fy - 544}-10-01`, to: `${fy - 543}-09-30` } : null;

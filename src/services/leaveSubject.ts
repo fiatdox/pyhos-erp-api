@@ -7,6 +7,12 @@ import { core_kon } from '../db/db';
 
 export const LEAVE_ON_BEHALF_ROLES = ['ADMIN', 'HR'];
 
+/** ผอ. / รักษาการ ผอ. (hr_settings.director_id / acting_director_id) — ไม่ได้มาจาก role */
+export const isDirector = async (userId: number): Promise<boolean> => {
+    const rows = await core_kon`SELECT value FROM hr_settings WHERE name IN ('director_id', 'acting_director_id')`;
+    return rows.some((r: any) => r.value != null && Number(r.value) === userId);
+};
+
 export const isHrOrAdmin = async (userId: number): Promise<boolean> => {
     const rows = await core_kon`
         SELECT 1 FROM core_kon.user_m_users_roles mu

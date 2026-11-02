@@ -1,6 +1,6 @@
 import { core_kon } from '../db/db';
 import { resyncPendingChainsSafe } from '../services/leaveChain';
-import { resolveLeaveSubject } from '../services/leaveSubject';
+import { resolveLeaveSubject, isHrOrAdmin, isDirector } from '../services/leaveSubject';
 
 // ── ตอบ 500 แบบไม่เผยรายละเอียดภายใน (SQL error ฯลฯ log ไว้ฝั่ง server เท่านั้น) ──
 const serverError = (set: any, where: string, error: any) => {
@@ -360,8 +360,14 @@ export const getLeaveEntitlementByUserTypeId = async ({ params, set }: any) => {
 // ใช้ในเมนู HR settings: กำหนดสิทธิ์การลา — จำกัดเฉพาะ ADMIN/HR (requireRoles ใน route)
 
 // ดึงประเภทการลาทั้งหมดพร้อมฟิลด์ครบ (สำหรับหน้าแก้ไขการตั้งค่า)
-export const getLeaveTypesFull = async ({ set }: any) => {
+// ADMIN / HR (หน้ากำหนดสิทธิ์การลา) และ ผอ. / รักษาการ ผอ. (ตัวกรองหน้าประวัติการลาเจ้าหน้าที่) — อ่านอย่างเดียว
+export const getLeaveTypesFull = async ({ user, set }: any) => {
     try {
+        const uid = Number(user?.id);
+        if (!(await isHrOrAdmin(uid)) && !(await isDirector(uid))) {
+            set.status = 403;
+            return { success: false, message: 'เฉพาะงานทรัพยากรบุคคล ผู้ดูแลระบบ และผู้อำนวยการ' };
+        }
         const rows = await core_kon`
             SELECT id, code, name_th, name_en, requires_document, requires_document_after_days,
                    requires_approval, gender_restriction, is_paid, sort_order, is_active

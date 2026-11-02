@@ -260,6 +260,19 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         detail: { tags: ['HR'], summary: 'วันหยุดราชการ', description: 'ระบุปี ค.ศ. (year) หรือช่วง from / to' }
     })
 
+    // ดึงประเภทการลาทั้งหมดพร้อมฟิลด์ครบ (หน้ากำหนดสิทธิ์การลา · ตัวกรองหน้าประวัติการลาเจ้าหน้าที่)
+    .get('/leave-types/full', getLeaveTypesFull, {
+        detail: { tags: ['HR'], summary: 'ดึงประเภทการลาทั้งหมด (ฟิลด์ครบ)', description: 'สำหรับหน้าตั้งค่ากำหนดสิทธิ์การลา — ADMIN/HR และ ผอ./รักษาการ ผอ. (ตรวจสิทธิ์ใน controller)' }
+    })
+    .get('/leave-requests/staff-history', getStaffLeaveHistory, {
+        query: t.Object({
+            fiscal_year: t.Optional(t.String()), leave_type_id: t.Optional(t.String()), status: t.Optional(t.String()),
+            q: t.Optional(t.String()), has_document: t.Optional(t.String()), check: t.Optional(t.String()),
+            page: t.Optional(t.String()), page_size: t.Optional(t.String()),
+        }),
+        detail: { tags: ['HR'], summary: 'ประวัติการลาเจ้าหน้าที่ทุกคน พร้อมรายละเอียดและไฟล์แนบ (ADMIN/HR และ ผอ./รักษาการ ผอ. — ตรวจสิทธิ์ใน controller)' }
+    })
+
     // ── ตั้งค่ากำหนดสิทธิ์การลา / แต่งตั้งหัวหน้า — จำกัดเฉพาะ role ADMIN และ HR เท่านั้น ──
     // หมายเหตุ: requireRoles มีผลกับ route ที่ประกาศ "หลัง" บรรทัดนี้เท่านั้น (GET ด้านบนไม่โดน)
     .use(requireRoles('ADMIN', 'HR'))
@@ -273,14 +286,6 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     .get('/leave-analytics', getLeaveAnalytics, {
         query: t.Object({ fiscal_year: t.Optional(t.String()) }),
         detail: { tags: ['HR'], summary: 'วิเคราะห์การลาเชิงลึกรายปีงบ (ADMIN/HR)', description: 'ใบลารายใบ + บุคลากรต่อกลุ่มงาน + ยอดวันลาพักผ่อน — หน้าเว็บสรุปเอง' }
-    })
-    .get('/leave-requests/staff-history', getStaffLeaveHistory, {
-        query: t.Object({
-            fiscal_year: t.Optional(t.String()), leave_type_id: t.Optional(t.String()), status: t.Optional(t.String()),
-            q: t.Optional(t.String()), has_document: t.Optional(t.String()), check: t.Optional(t.String()),
-            page: t.Optional(t.String()), page_size: t.Optional(t.String()),
-        }),
-        detail: { tags: ['HR'], summary: 'ประวัติการลาเจ้าหน้าที่ทุกคน พร้อมรายละเอียดและไฟล์แนบ (ADMIN/HR)' }
     })
     // ── จัดการวันหยุดราชการ ────────────────────────────────────────────────
     .post('/holidays', createHoliday, {
@@ -425,10 +430,6 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
             to_fiscal_year: t.Numeric(),
         }),
         detail: { tags: ['HR'], summary: 'ยกยอดวันลาสะสมขึ้นปีงบประมาณใหม่', description: 'ทำเฉพาะลาพักผ่อน (ANNUAL) เท่านั้น — คัดลอกคงเหลือ (cap ตาม carry_over_max_days ของแต่ละคน) จาก from → to — ข้ามคนที่มีข้อมูลปีใหม่อยู่แล้ว (กันกดซ้ำ)' }
-    })
-    // ดึงประเภทการลาทั้งหมดพร้อมฟิลด์ครบ (สำหรับหน้ากำหนดสิทธิ์การลา)
-    .get('/leave-types/full', getLeaveTypesFull, {
-        detail: { tags: ['HR'], summary: 'ดึงประเภทการลาทั้งหมด (ฟิลด์ครบ)', description: 'สำหรับหน้าตั้งค่ากำหนดสิทธิ์การลา — เฉพาะ ADMIN/HR' }
     })
     // แก้ไขเงื่อนไขพื้นฐานของประเภทการลา
     .patch('/leave-types/:id', updateLeaveType, {
