@@ -1326,9 +1326,14 @@ export const getLeaveSummary = async ({ user, query, set }: any) => {
 //   chain  = ใบลาที่สายอนุมัติระบุรหัสของฉัน (หัวหน้า/รักษาการ หน่วยงาน กลุ่มงาน กลุ่มภารกิจ และ ผอ.)
 //            ตรงกับหน้าอนุมัติการลา — ผอ. จึงเห็นเฉพาะใบของหัวหน้ากลุ่มภารกิจ/รักษาการ ที่เสนอ ผอ. โดยตรง
 //   all    = ทั้งโรงพยาบาล (ADMIN / HR)
+//   <kind>:<id> = เลือกดูหน่วยใดก็ได้ในโรงพยาบาล (kind = mission / major / submajor)
+//            เฉพาะหัวหน้า/รักษาการทุกระดับ (รวมผู้ควบหลายหน่วย) ผอ./รักษาการ ผอ. ADMIN และ HR
+//            ใบที่ฉันไม่ได้อยู่ในสายอนุมัติ เห็นแค่ว่า "ลา" (ซ่อนประเภท/เหตุผล) เว้นแต่ ADMIN / HR
 // ไม่รวมใบที่ไม่อนุมัติ/ยกเลิกแล้ว
 const CALENDAR_STATUSES = ['PENDING', 'APPROVED', 'CANCEL_PENDING'];
 const CALENDAR_MAX_DAYS = 62;
+const UNIT_SCOPE = /^(mission|major|submajor):(\d+)$/;
+const UNIT_GROUP: Record<string, string> = { mission: 'กลุ่มภารกิจ', major: 'กลุ่มงาน', submajor: 'หน่วยงาน/ตึก' };
 
 export const getLeaveCalendar = async ({ user, query, set }: any) => {
     try {
@@ -1364,6 +1369,17 @@ export const getLeaveCalendar = async ({ user, query, set }: any) => {
         const directorRole = directorRows.find((r: any) => r.value != null && Number(r.value) === uid)?.name;
         const canSeeAll = roles.includes('ADMIN') || roles.includes('HR');
         const units = [...missions, ...majors, ...submajors];
+        // เลือกดูหน่วยอื่นได้ — หัวหน้า/รักษาการทุกระดับ ผอ. ADMIN HR
+        const canBrowse = canSeeAll || !!directorRole || units.length > 0;
+        const allUnits = canBrowse ? await core_kon`
+            SELECT 'mission' AS kind, mission_id AS id, name, NULL::text AS parent FROM missions WHERE is_active = 'Y'
+            UNION ALL
+            SELECT 'major', mj.major_id, mj.name, mi.name FROM majors mj
+                LEFT JOIN missions mi ON mi.mission_id = mj.mission_id WHERE mj.is_active = 'Y'
+            UNION ALL
+            SELECT 'submajor', sm.submajor_id, sm.name, mj.name FROM submajors sm
+                LEFT JOIN majors mj ON mj.major_id = sm.major_id WHERE sm.is_active = 'Y'
+            ORDER BY 1, 3` : [];
 
         // ตัวเลือกเรียงจากกว้างไปแคบ — ค่าตั้งต้นคือขอบเขตที่กว้างที่สุดที่มีสิทธิ์
         const options: { key: string; label: string; group: string }[] = [];
@@ -1383,19 +1399,36 @@ export const getLeaveCalendar = async ({ user, query, set }: any) => {
         }
         if (me?.major_id != null) options.push({ key: 'team', label: `เพื่อนร่วม${me.major_name ?? 'กลุ่มงาน'}`, group: 'เจ้าหน้าที่' });
         options.push({ key: 'me', label: 'การลาของฉัน', group: 'เจ้าหน้าที่' });
+        if (canBrowse) {
+            // หน่วยที่ฉันเป็นหัวหน้า/รักษาการ ขึ้นก่อน (ผู้ควบหลายหน่วยเลือกดูทีละหน่วยได้) แล้วตามด้วยทุกหน่วยในโรงพยาบาล
+            const kindOf = (u: any) => missions.includes(u) ? 'mission' : majors.includes(u) ? 'major' : 'submajor';
+            const mine = new Set(units.map((u: any) => `${kindOf(u)}:${u.id}`));
+            for (const u of units) options.push({ key: `${kindOf(u)}:${u.id}`, label: u.name, group: 'หน่วยที่ฉันดูแล' });
+            for (const u of allUnits as any[]) {
+                const key = `${u.kind}:${u.id}`;
+                if (mine.has(key)) continue;
+                options.push({ key, label: u.parent ? `${u.name} (${u.parent})` : u.name, group: UNIT_GROUP[u.kind] });
+            }
+        }
 
         const scope = String(query?.scope ?? options[0].key);
         if (!options.some(o => o.key === scope)) return fail(set, 403, 'ไม่มีสิทธิ์ดูขอบเขตนี้');
+        const unit = UNIT_SCOPE.exec(scope);
+        const unitId = unit ? Number(unit[2]) : 0;
 
         const scopeFrag =
             scope === 'all' ? core_kon`TRUE`
             : scope === 'me' ? core_kon`r.user_id = ${uid}`
             : scope === 'team' ? core_kon`u.major_id = ${me.major_id}`
+            : unit?.[1] === 'mission' ? core_kon`u.mission_id = ${unitId}`
+            : unit?.[1] === 'major' ? core_kon`u.major_id = ${unitId}`
+            : unit?.[1] === 'submajor' ? core_kon`u.submajor_id = ${unitId}`
             // สายอนุมัติที่ "แช่แข็ง" ไว้ในใบตอนยื่น มีรหัสของฉันเป็นผู้อนุมัติขั้นใดขั้นหนึ่ง
             : core_kon`jsonb_typeof(r.approval_chain) = 'array' AND EXISTS (
                   SELECT 1 FROM jsonb_array_elements(r.approval_chain) AS step(value)
                   WHERE (step.value ->> 'approver_id')::int = ${uid})`;
-        const masked = scope === 'team';
+        // เพื่อนร่วมกลุ่มงาน / หน่วยที่เลือกดู — ใบที่ไม่ใช่ของฉันและฉันไม่ได้อยู่ในสายอนุมัติ ซ่อนประเภทและเหตุผล (ADMIN / HR เห็นครบ)
+        const masked = !canSeeAll && (scope === 'team' || !!unit);
 
         const rows = await core_kon`
             SELECT r.id, r.user_id, CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
@@ -1430,14 +1463,16 @@ export const getLeaveCalendar = async ({ user, query, set }: any) => {
                     const { approval_chain, current_step, ...rest } = r;
                     const steps = parseChain(approval_chain);
                     const cur = r.status === 'PENDING' || r.status === 'CANCEL_PENDING' ? stepFor(steps, Number(current_step)) : null;
+                    const inChain = steps.some(st => Number(st.approver_id) === uid);
+                    const full = mine || !masked || inChain;
                     return {
                         ...rest,
                         waiting_for: cur
                             ? { step: cur.step, total: steps.length, level_name: cur.level_name, approver_name: cur.approver_name, is_acting: cur.is_acting }
                             : null,
                         is_mine: mine,
-                        reason: mine || scope === 'all' || scope === 'chain' ? r.reason : null,
-                        ...(masked && !mine ? { leave_type_code: null, leave_type_name: null } : {}),
+                        reason: mine || canSeeAll || inChain ? r.reason : null,
+                        ...(full ? {} : { leave_type_code: null, leave_type_name: null }),
                     };
                 }),
             },
