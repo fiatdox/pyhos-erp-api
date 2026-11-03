@@ -24,6 +24,7 @@ import { pageViewRoutes } from "./routes/pageViewRoutes";
 import { hrPostRoutes } from "./routes/hrPostRoutes";
 import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 import { startLeaveRolloverJob } from "./services/leaveRollover";
+import { startLeaveNotifyJob } from "./services/leaveNotify";
 
 const app = new Elysia()
   .use(loggerMiddleware)
@@ -101,6 +102,7 @@ const app = new Elysia()
 
 // ยกยอดวันลาพักผ่อนอัตโนมัติเมื่อข้ามปีงบประมาณ (ปิดได้ด้วย LEAVE_AUTO_ROLLOVER=false)
 startLeaveRolloverJob();
+startLeaveNotifyJob();
 
 console.log(
   `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`

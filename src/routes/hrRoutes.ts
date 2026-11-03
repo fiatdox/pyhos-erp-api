@@ -1,6 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { requireRoles } from '../middlewares/roleGuard';
+import { getLeaveNotifyConfig, updateLeaveNotifyConfig, getLeaveNotifyLog, previewLeaveNotifyDigest, testLeaveNotify } from '../controllers/hrLeaveNotifyController';
 import { getLeaveTypes, getLeaveEntitlements, getLeaveEntitlementByUserTypeId, getMissionSupervisorByUserId, getMajorSupervisorByUserId, getSubMajorSupervisorByUserId, updateMissionSupervisor, updateMissionActingSupervisor, updateMajorSupervisor, updateMajorActingSupervisor, updateSubMajorSupervisor, updateSubMajorActingSupervisor, getDirector, updateDirector, updateActingDirector, getMissionHeadCheck, getLeaveApproverCheck, getLeaveTypesFull, updateLeaveType, updateLeaveEntitlement, createLeaveEntitlement, deleteLeaveEntitlement } from '../controllers/hrController';
 import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitReasons, getExitMonthly, getAgeGroups, getGenders, getMissionGroups, getHrPeople, getHrAgeIssues } from '../controllers/hrDashboardController';
 import {
@@ -265,6 +266,27 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         detail: { tags: ['HR'], summary: 'วันหยุดราชการ', description: 'ระบุปี ค.ศ. (year) หรือช่วง from / to' }
     })
 
+    // ── ตั้งค่าการแจ้งเตือนระบบลา — เฉพาะ ADMIN (ตรวจใน controller) ─────────────────
+    .get('/leave-notify/config', getLeaveNotifyConfig, {
+        detail: { tags: ['HR'], summary: 'ค่าตั้งการแจ้งเตือนระบบลา (ADMIN)' }
+    })
+    .put('/leave-notify/config', updateLeaveNotifyConfig, {
+        body: t.Object({ config: t.Any() }),
+        detail: { tags: ['HR'], summary: 'บันทึกค่าตั้งการแจ้งเตือนระบบลา (ADMIN)' }
+    })
+    .get('/leave-notify/log', getLeaveNotifyLog, {
+        query: t.Object({ limit: t.Optional(t.String()) }),
+        detail: { tags: ['HR'], summary: 'ประวัติการส่งแจ้งเตือนระบบลา (ADMIN)' }
+    })
+    .post('/leave-notify/preview', previewLeaveNotifyDigest, {
+        body: t.Object({ config: t.Optional(t.Any()) }),
+        detail: { tags: ['HR'], summary: 'ตัวอย่างรอบสรุปรออนุมัติ ถ้าส่งตอนนี้ (ไม่ส่งจริง · ADMIN)' }
+    })
+    .post('/leave-notify/test', testLeaveNotify, {
+        body: t.Optional(t.Object({ kind: t.Optional(t.String()), level: t.Optional(t.String()), mission_id: t.Optional(t.Number()), config: t.Optional(t.Any()) })),
+        detail: { tags: ['HR'], summary: 'ทดสอบส่งแจ้งเตือนถึงผู้ดูแลระบบเอง — ระบุ level/mission_id = ส่งข้อความแบบที่ผู้อนุมัติระดับนั้นจะได้รับ (ADMIN)' }
+    })
+
     // ดึงประเภทการลาทั้งหมดพร้อมฟิลด์ครบ (หน้ากำหนดสิทธิ์การลา · ตัวกรองหน้าประวัติการลาเจ้าหน้าที่)
     .get('/leave-types/full', getLeaveTypesFull, {
         detail: { tags: ['HR'], summary: 'ดึงประเภทการลาทั้งหมด (ฟิลด์ครบ)', description: 'สำหรับหน้าตั้งค่ากำหนดสิทธิ์การลา — ADMIN/HR และ ผอ./รักษาการ ผอ. (ตรวจสิทธิ์ใน controller)' }
@@ -273,6 +295,7 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         query: t.Object({
             fiscal_year: t.Optional(t.String()), leave_type_id: t.Optional(t.String()), status: t.Optional(t.String()),
             q: t.Optional(t.String()), has_document: t.Optional(t.String()), check: t.Optional(t.String()),
+            date_from: t.Optional(t.String()), date_to: t.Optional(t.String()),
             page: t.Optional(t.String()), page_size: t.Optional(t.String()),
         }),
         detail: { tags: ['HR'], summary: 'ประวัติการลาเจ้าหน้าที่ทุกคน พร้อมรายละเอียดและไฟล์แนบ (ADMIN/HR และ ผอ./รักษาการ ผอ. — ตรวจสิทธิ์ใน controller)' }
@@ -295,7 +318,6 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     // ── จัดการวันหยุดราชการ ────────────────────────────────────────────────
     .post('/holidays', createHoliday, {
         body: t.Object({
-            date_from: t.Optional(t.String()), date_to: t.Optional(t.String()),
             holiday_date: t.String(), name_th: t.String(),
             holiday_type: t.Optional(t.String()), note: t.Optional(t.Nullable(t.String())),
         }),

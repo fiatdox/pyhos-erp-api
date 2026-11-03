@@ -6,6 +6,13 @@ import { resolveLeaveSubject, isHrOrAdmin, isDirector, hasCreatedByColumn } from
 import { countLeaveDays, countWithHolidays, holidaysBetween } from '../services/leaveDays';
 import { maxAdvanceDays, bangkokDate } from '../services/leaveRules';
 import { syncCarriedForward } from '../services/leaveRollover';
+import { notifyLeaveEvent, type LeaveEvent } from '../services/leaveNotify';
+
+/** แจ้งเตือนหลังบันทึกสำเร็จ (นอก transaction ไม่รอผล) — ส่งไม่สำเร็จไม่กระทบใบลา */
+const notifyAfter = <T extends { success?: boolean; data?: any }>(r: T, id: unknown, event: LeaveEvent): T => {
+    if (r?.success && Number(id) > 0) void notifyLeaveEvent(Number(id), event);
+    return r;
+};
 
 // ── ใบลา: ยื่น → อนุมัติตามสายบังคับบัญชา → ตัดยอดวันลา → ยกเลิก ────────────────
 //
@@ -359,11 +366,11 @@ export const createLeaveRequest = async ({ body, user, set }: any) => {
             return r;
         });
 
-        return {
+        return notifyAfter({
             success: true,
             data: { ...row, approval_chain: chain.steps, skipped: chain.skipped, quota, on_behalf: subject.onBehalf },
             message: `${subject.onBehalf ? 'บันทึกใบลาแทนบุคลากรเรียบร้อย' : 'ส่งใบลาเรียบร้อย'} รออนุมัติจาก${chain.steps[0].level_name} (${chain.steps[0].approver_name})`,
-        };
+        }, row.id, 'SUBMITTED');
     } catch (error: any) {
         return serverError(set, 'createLeaveRequest', error);
     }
@@ -646,6 +653,9 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
         const fy = Number(query?.fiscal_year);
         const range = Number.isInteger(fy) && fy > 2500 && fy < 2700
             ? { from: `${fy - 544}-10-01`, to: `${fy - 543}-09-30` } : null;
+        // ช่วงวันที่ค้นหา — ได้ใบที่ช่วงลา "คาบเกี่ยว" ช่วงนี้ (เริ่มก่อน/จบหลังช่วงก็นับ) ส่งข้างเดียวได้
+        const isoQ = (v: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(v ?? '')) ? String(v) : null;
+        const dFrom = isoQ(query?.date_from), dTo = isoQ(query?.date_to);
         const typeId = Number(query?.leave_type_id) || null;
         const status = STAFF_HISTORY_STATUS.includes(String(query?.status ?? '').toUpperCase())
             ? String(query.status).toUpperCase() : null;
@@ -653,9 +663,6 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
         const like = q ? `%${q.replace(/[\\%_]/g, m => `\\${m}`)}%` : null;
         const hasDoc = String(query?.has_document ?? '') === '1';
         // การตรวจของงาน HR: UNCHECKED = ยังไม่ตรวจ · VERIFIED = ถูกต้อง · ADJUSTED = แก้จำนวนวันแล้ว
-        // ช่วงวันที่ค้นหา — ได้ใบที่ช่วงลา "คาบเกี่ยว" ช่วงนี้ (เริ่มก่อน/จบหลังช่วงก็นับ) ส่งข้างเดียวได้
-        const isoQ = (v: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(v ?? '')) ? String(v) : null;
-        const dFrom = isoQ(query?.date_from), dTo = isoQ(query?.date_to);
         const check = ['UNCHECKED', 'VERIFIED', 'ADJUSTED'].includes(String(query?.check ?? '').toUpperCase())
             ? String(query.check).toUpperCase() : null;
         const page = Math.max(1, Math.floor(Number(query?.page) || 1));
@@ -663,6 +670,8 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
 
         const where = core_kon`
             WHERE ${range ? core_kon`r.start_date <= ${range.to}::date AND r.end_date >= ${range.from}::date` : core_kon`TRUE`}
+              AND ${dTo ? core_kon`r.start_date <= ${dTo}::date` : core_kon`TRUE`}
+              AND ${dFrom ? core_kon`r.end_date >= ${dFrom}::date` : core_kon`TRUE`}
               AND ${typeId ? core_kon`r.leave_type_id = ${typeId}` : core_kon`TRUE`}
               AND ${status ? core_kon`r.status = ${status}` : core_kon`TRUE`}
               AND ${hasDoc ? core_kon`NULLIF(TRIM(r.document_url), '') IS NOT NULL` : core_kon`TRUE`}
@@ -670,8 +679,6 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
               AND ${like ? core_kon`(CONCAT(u.pname, u.fname, ' ', u.lname) ILIKE ${like} OR CONCAT(u.fname, ' ', u.lname) ILIKE ${like})` : core_kon`TRUE`}`;
 
         const [[{ total }], rows, years] = await Promise.all([
-              AND ${dTo ? core_kon`r.start_date <= ${dTo}::date` : core_kon`TRUE`}
-              AND ${dFrom ? core_kon`r.end_date >= ${dFrom}::date` : core_kon`TRUE`}
             core_kon`SELECT count(*)::int AS total FROM hr_leave_requests r JOIN users u ON u.id = r.user_id ${where}`,
             core_kon`
                 SELECT r.id, r.user_id, CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
@@ -1037,8 +1044,8 @@ const actOnRequest = async (
     }
 };
 
-export const approveLeaveRequest = (ctx: any) => actOnRequest(ctx, 'APPROVED');
-export const rejectLeaveRequest = (ctx: any) => actOnRequest(ctx, 'REJECTED');
+export const approveLeaveRequest = async (ctx: any) => notifyAfter(await actOnRequest(ctx, 'APPROVED'), ctx.params?.id, 'ACTED');
+export const rejectLeaveRequest = async (ctx: any) => notifyAfter(await actOnRequest(ctx, 'REJECTED'), ctx.params?.id, 'ACTED');
 
 /**
  * บวก/ลบยอดวันลาที่ใช้ไปของปีงบนั้น
@@ -1078,7 +1085,7 @@ export const setDeduction = async (tx: any, req: DeductRow, target: number) => {
 };
 
 // ── ขอยกเลิกใบลาที่อนุมัติแล้ว ──────────────────────────────────────────────
-export const requestCancellation = async ({ params, body, user, set }: any) => {
+const requestCancellationTx = async ({ params, body, user, set }: any) => {
     const uid = Number(user?.id);
     const requestId = Number(params?.id);
     try {
@@ -1128,6 +1135,9 @@ export const requestCancellation = async ({ params, body, user, set }: any) => {
         return serverError(set, 'requestCancellation', error);
     }
 };
+
+// ขอยกเลิกใบที่อนุมัติแล้ว → แจ้งผู้อนุมัติขั้นแรกของสายยกเลิก
+export const requestCancellation = async (ctx: any) => notifyAfter(await requestCancellationTx(ctx), ctx.params?.id, 'CANCEL_REQUESTED');
 
 const actOnCancellation = async (
     { params, body, user, set }: any,
@@ -1219,8 +1229,8 @@ const actOnCancellation = async (
     }
 };
 
-export const approveCancellation = (ctx: any) => actOnCancellation(ctx, 'APPROVED');
-export const rejectCancellation = (ctx: any) => actOnCancellation(ctx, 'REJECTED');
+export const approveCancellation = async (ctx: any) => notifyAfter(await actOnCancellation(ctx, 'APPROVED'), ctx.params?.id, 'ACTED');
+export const rejectCancellation = async (ctx: any) => notifyAfter(await actOnCancellation(ctx, 'REJECTED'), ctx.params?.id, 'ACTED');
 
 // ── อนุมัติแบบกลุ่ม (เลือกหลายใบจากหน้าอนุมัติ) ───────────────────────────────
 // ทำทีละใบด้วยกติกาเดียวกับกดทีละใบ (แต่ละใบ transaction ของตัวเอง) — ใบที่ไม่ใช่คิวของผู้กด
