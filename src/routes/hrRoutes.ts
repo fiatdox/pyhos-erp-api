@@ -295,6 +295,7 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     // ── จัดการวันหยุดราชการ ────────────────────────────────────────────────
     .post('/holidays', createHoliday, {
         body: t.Object({
+            date_from: t.Optional(t.String()), date_to: t.Optional(t.String()),
             holiday_date: t.String(), name_th: t.String(),
             holiday_type: t.Optional(t.String()), note: t.Optional(t.Nullable(t.String())),
         }),

@@ -653,6 +653,9 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
         const like = q ? `%${q.replace(/[\\%_]/g, m => `\\${m}`)}%` : null;
         const hasDoc = String(query?.has_document ?? '') === '1';
         // การตรวจของงาน HR: UNCHECKED = ยังไม่ตรวจ · VERIFIED = ถูกต้อง · ADJUSTED = แก้จำนวนวันแล้ว
+        // ช่วงวันที่ค้นหา — ได้ใบที่ช่วงลา "คาบเกี่ยว" ช่วงนี้ (เริ่มก่อน/จบหลังช่วงก็นับ) ส่งข้างเดียวได้
+        const isoQ = (v: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(v ?? '')) ? String(v) : null;
+        const dFrom = isoQ(query?.date_from), dTo = isoQ(query?.date_to);
         const check = ['UNCHECKED', 'VERIFIED', 'ADJUSTED'].includes(String(query?.check ?? '').toUpperCase())
             ? String(query.check).toUpperCase() : null;
         const page = Math.max(1, Math.floor(Number(query?.page) || 1));
@@ -667,6 +670,8 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
               AND ${like ? core_kon`(CONCAT(u.pname, u.fname, ' ', u.lname) ILIKE ${like} OR CONCAT(u.fname, ' ', u.lname) ILIKE ${like})` : core_kon`TRUE`}`;
 
         const [[{ total }], rows, years] = await Promise.all([
+              AND ${dTo ? core_kon`r.start_date <= ${dTo}::date` : core_kon`TRUE`}
+              AND ${dFrom ? core_kon`r.end_date >= ${dFrom}::date` : core_kon`TRUE`}
             core_kon`SELECT count(*)::int AS total FROM hr_leave_requests r JOIN users u ON u.id = r.user_id ${where}`,
             core_kon`
                 SELECT r.id, r.user_id, CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
@@ -690,7 +695,7 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
                 LEFT JOIN user_types ut ON ut.user_type_id = u.user_type_id
                 ${latestCancellation()}
                 ${where}
-                ORDER BY r.start_date DESC, r.id DESC
+                ORDER BY r.id DESC
                 LIMIT ${size} OFFSET ${(page - 1) * size}`,
             // ปีงบที่มีใบลาจริง — ตัวกรองปีงบแสดงเฉพาะปีเหล่านี้ (ปีงบ พ.ศ. เริ่ม 1 ต.ค.)
             core_kon`
