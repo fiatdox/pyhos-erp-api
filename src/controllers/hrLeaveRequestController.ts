@@ -562,7 +562,7 @@ const LEAVE_UPLOAD_DIR = join(process.cwd(), 'uploads', 'hr-leave');
 await mkdir(join(LEAVE_UPLOAD_DIR, 'legacy'), { recursive: true }).catch(() => {});
 const DOC_MIME: Record<string, string> = {
     pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', jfif: 'image/jpeg', png: 'image/png',
-    gif: 'image/gif', webp: 'image/webp', heic: 'image/heic',
+    gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif',
     doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 };
 /** ชื่อไฟล์ล้วน (ตัด path ทิ้ง กันอ่านไฟล์นอกโฟลเดอร์) */
@@ -604,7 +604,10 @@ export const uploadLeaveDocument = async ({ params, body, user, set }: any) => {
         const uid = Number(user?.id);
         const file: File | null = body?.file instanceof File && body.file.size > 0 ? body.file : null;
         if (!file) return fail(set, 400, 'กรุณาเลือกไฟล์แนบ');
-        const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+        // นามสกุลจากชื่อไฟล์ — ไฟล์จากมือถือ (กล้อง / Google Drive บน Android) บางทีชื่อไม่มีนามสกุล ใช้ชนิดไฟล์ (MIME) แทน
+        const nameExt = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : '';
+        const mime = String(file.type ?? '').toLowerCase();
+        const ext = DOC_MIME[nameExt] ? nameExt : (Object.keys(DOC_MIME).find(k => DOC_MIME[k] === mime) ?? '');
         if (!DOC_MIME[ext]) return fail(set, 400, `ไฟล์แนบต้องเป็น ${Object.keys(DOC_MIME).join(', ')}`);
         if (file.size > DOC_MAX_BYTES) return fail(set, 400, 'ไฟล์แนบมีขนาดเกิน 10MB');
 
