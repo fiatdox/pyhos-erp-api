@@ -6,7 +6,7 @@
 //   ผู้อนุมัติ     ตั้งรายระดับ instant / digest / off — กลุ่มภารกิจตั้งรายภารกิจได้ (ภารกิจคนเยอะให้สรุปเป็นรอบ)
 //                 instant: รวมใบที่เข้าคิวของคนเดียวกันภายใน 1 นาทีเป็นข้อความเดียว (กดอนุมัติแบบกลุ่มไม่เตือนรัว)
 //                 digest : สรุปยอดรออนุมัติตามเวลาที่ตั้ง (ค่าตั้งต้น 08:00 12:00 16:00) ไม่มีใบรอ = ไม่ส่ง
-//   ผู้ลา         แจ้งผลอนุมัติ / ไม่อนุมัติ / ยกเลิกสำเร็จ
+//   ผู้ลา         แจ้งเมื่อยื่นใบลาเข้าระบบแล้ว (รวมกรณี HR ยื่นแทน) · แจ้งผลอนุมัติ / ไม่อนุมัติ / ยกเลิกสำเร็จ
 //
 // ปลอดภัยไว้ก่อน: ไม่มีค่าตั้ง / ตารางยังไม่ได้สร้าง / ยังไม่ตั้ง MOPH_ALERT_* = ไม่ส่งอะไรเลย
 // การส่งทำหลัง transaction ของใบลาเสร็จ และไม่โยน error กลับ — ส่งไม่สำเร็จต้องไม่ทำให้การลาล้ม
@@ -26,6 +26,7 @@ export interface LeaveNotifyConfig {
     mission_overrides: Record<string, NotifyMode>;
     digest_times: string[];
     digest_skip_holidays: boolean;
+    applicant_submitted: boolean;
     applicant_result: boolean;
     /** ที่อยู่หน้าเว็บ เช่น https://erp.example.go.th — ใส่แล้วข้อความมีปุ่มเปิดหน้าอนุมัติ/ประวัติ */
     app_url: string | null;
@@ -38,6 +39,7 @@ export const DEFAULT_CONFIG: LeaveNotifyConfig = {
     mission_overrides: {},
     digest_times: ['08:00', '12:00', '16:00'],
     digest_skip_holidays: true,
+    applicant_submitted: true,
     applicant_result: true,
     app_url: null,
 };
@@ -67,6 +69,7 @@ export const normalizeConfig = (raw: any): LeaveNotifyConfig => {
         mission_overrides: overrides,
         digest_times: times,
         digest_skip_holidays: c.digest_skip_holidays !== false,
+        applicant_submitted: c.applicant_submitted !== false,
         applicant_result: c.applicant_result !== false,
         app_url: url,
     };
@@ -378,6 +381,20 @@ export const notifyLeaveEvent = async (requestId: number, event: LeaveEvent): Pr
         const r = await loadRequest(requestId);
         if (!r) return;
         const chain = parseChain(r.approval_chain);
+
+        // ผู้ลา — ยืนยันว่าใบเข้าระบบแล้ว (รู้ตัวด้วยถ้า HR ยื่นแทน)
+        if (event === 'SUBMITTED' && config.applicant_submitted) {
+            await send('SUBMITTED', [r.id_card], {
+                title: 'ยื่นใบลาแล้ว',
+                heading: 'ระบบรับใบลาของท่านแล้ว',
+                rows: [
+                    { label: 'ประเภท', value: r.leave_type_name },
+                    { label: 'วันที่', value: `${span(r.start_date, r.end_date)} (${daysText(r.total_days)})` },
+                    { label: 'สถานะ', value: r.status === 'APPROVED' ? 'อนุมัติแล้ว' : 'รออนุมัติ' },
+                ],
+                link: { label: 'ดูประวัติการลา', path: '/hr/leave/history' },
+            }, Number(r.id));
+        }
 
         // เพื่อนร่วมงาน — ตอนยื่นใบลาเท่านั้น
         if (event === 'SUBMITTED' && config.colleague.enabled) {

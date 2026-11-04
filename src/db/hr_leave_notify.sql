@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS hr_leave_notify_config (
 
 CREATE TABLE IF NOT EXISTS hr_leave_notify_log (
     id          BIGSERIAL   PRIMARY KEY,
-    kind        VARCHAR(30) NOT NULL,       -- COLLEAGUE / APPROVER / DIGEST / RESULT / TEST
+    kind        VARCHAR(30) NOT NULL,       -- SUBMITTED / COLLEAGUE / APPROVER / DIGEST / RESULT / TEST
     request_id  INT,
     recipients  INT         NOT NULL DEFAULT 0,
     slot_key    VARCHAR(60),                -- DIGEST: 'digest:YYYY-MM-DD HH:MM'
