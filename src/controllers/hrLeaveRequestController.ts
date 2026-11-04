@@ -418,7 +418,7 @@ const substituteName = () => core_kon`(SELECT CONCAT(su.pname, su.fname, ' ', su
 
 const latestCancellation = () => core_kon`
     LEFT JOIN LATERAL (
-        SELECT c.id, c.status, c.reason, c.refunded_days,
+        SELECT c.id, c.status, c.reason, c.refunded_days, c.created_at, c.updated_at,
                (SELECT a.comment FROM hr_leave_approvals a
                 WHERE a.cancellation_id = c.id AND a.action = 'REJECTED'
                 ORDER BY a.actioned_at DESC LIMIT 1) AS reject_comment
@@ -643,7 +643,29 @@ export const uploadLeaveDocument = async ({ params, body, user, set }: any) => {
 // ── ประวัติการลาเจ้าหน้าที่ (หน้า /hr/leave/staff-history — ADMIN / HR) ──────────
 // ทุกใบของทุกคน กรองตามปีงบ / ประเภท / สถานะ / ชื่อ / มีไฟล์แนบ แบ่งหน้าที่ server
 // ส่งรายละเอียดครบ (ที่ติดต่อ ผู้ปฏิบัติแทน สายอนุมัติ ประวัติการกด) ให้เปิดดูได้โดยไม่ต้องยิงซ้ำ
-const STAFF_HISTORY_STATUS = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'CANCEL_PENDING'];
+// view: leave = ใบลาที่ยังเดินตามปกติ · cancel = ใบที่เคยขอยกเลิก/ถอนแล้ว (ไม่อนุมัติการยกเลิก = ใบยังมีผล จึงอยู่ทั้งสองแท็บ)
+const STAFF_HISTORY_STATUS = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'CANCEL_PENDING', 'CANCEL_REJECTED'];
+const viewIsLeave = () => core_kon`r.status IN ('PENDING', 'APPROVED', 'REJECTED')`;
+const viewIsCancel = () => core_kon`(r.status IN ('CANCEL_PENDING', 'CANCELLED')
+    OR EXISTS (SELECT 1 FROM hr_leave_cancellations x WHERE x.request_id = r.id))`;
+
+/** การกดในรอบขอยกเลิก — ผูกกับ cancellation_id ไม่ใช่ request_id */
+const loadCancelActions = async (cancellationIds: number[]): Promise<Map<number, any[]>> => {
+    const out = new Map<number, any[]>();
+    if (cancellationIds.length === 0) return out;
+    const rows = await core_kon`
+        SELECT a.cancellation_id, a.step, a.action, a.comment, a.actioned_at,
+               CONCAT(u.pname, u.fname, ' ', u.lname) AS approver_name
+        FROM hr_leave_approvals a
+        JOIN users u ON u.id = a.approver_id
+        WHERE a.cancellation_id IN ${core_kon(cancellationIds)}
+        ORDER BY a.step ASC, a.actioned_at ASC`;
+    for (const r of rows) {
+        const key = Number(r.cancellation_id);
+        out.set(key, [...(out.get(key) ?? []), r]);
+    }
+    return out;
+};
 
 // เปิดให้ ADMIN / HR และ ผอ. / รักษาการ ผอ. (อ่านอย่างเดียว — ปุ่มตรวจวันลาอยู่หลัง requireRoles('ADMIN','HR'))
 export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
@@ -659,6 +681,7 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
         const typeId = Number(query?.leave_type_id) || null;
         const status = STAFF_HISTORY_STATUS.includes(String(query?.status ?? '').toUpperCase())
             ? String(query.status).toUpperCase() : null;
+        const view = query?.view === 'leave' || query?.view === 'cancel' ? String(query.view) : null;
         const q = String(query?.q ?? '').trim().slice(0, 100);
         const like = q ? `%${q.replace(/[\\%_]/g, m => `\\${m}`)}%` : null;
         const hasDoc = String(query?.has_document ?? '') === '1';
@@ -668,18 +691,28 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
         const page = Math.max(1, Math.floor(Number(query?.page) || 1));
         const size = Math.min(100, Math.max(1, Math.floor(Number(query?.page_size) || 20)));
 
-        const where = core_kon`
+        // ตัวกรองร่วมของทุกแท็บ — ตัวนับบนแท็บใช้ชุดนี้ ไม่ขึ้นกับแท็บ/สถานะที่เลือกอยู่
+        const base = core_kon`
             WHERE ${range ? core_kon`r.start_date <= ${range.to}::date AND r.end_date >= ${range.from}::date` : core_kon`TRUE`}
               AND ${dTo ? core_kon`r.start_date <= ${dTo}::date` : core_kon`TRUE`}
               AND ${dFrom ? core_kon`r.end_date >= ${dFrom}::date` : core_kon`TRUE`}
               AND ${typeId ? core_kon`r.leave_type_id = ${typeId}` : core_kon`TRUE`}
-              AND ${status ? core_kon`r.status = ${status}` : core_kon`TRUE`}
               AND ${hasDoc ? core_kon`NULLIF(TRIM(r.document_url), '') IS NOT NULL` : core_kon`TRUE`}
               AND ${check === 'UNCHECKED' ? core_kon`r.day_check_status IS NULL` : check ? core_kon`r.day_check_status = ${check}` : core_kon`TRUE`}
               AND ${like ? core_kon`(CONCAT(u.pname, u.fname, ' ', u.lname) ILIKE ${like} OR CONCAT(u.fname, ' ', u.lname) ILIKE ${like})` : core_kon`TRUE`}`;
+        const where = core_kon`${base}
+              AND ${view === 'leave' ? viewIsLeave() : view === 'cancel' ? viewIsCancel() : core_kon`TRUE`}
+              AND ${status === 'CANCEL_REJECTED'
+                ? core_kon`(SELECT x.status FROM hr_leave_cancellations x WHERE x.request_id = r.id ORDER BY x.id DESC LIMIT 1) = 'REJECTED'`
+                : status ? core_kon`r.status = ${status}` : core_kon`TRUE`}`;
 
-        const [[{ total }], rows, years] = await Promise.all([
+        const [[{ total }], [counts], rows, years] = await Promise.all([
             core_kon`SELECT count(*)::int AS total FROM hr_leave_requests r JOIN users u ON u.id = r.user_id ${where}`,
+            core_kon`
+                SELECT COUNT(*) FILTER (WHERE ${viewIsLeave()})::int AS leave_total,
+                       COUNT(*) FILTER (WHERE ${viewIsCancel()})::int AS cancel_total,
+                       COUNT(*) FILTER (WHERE r.status = 'CANCEL_PENDING')::int AS cancel_pending
+                FROM hr_leave_requests r JOIN users u ON u.id = r.user_id ${base}`,
             core_kon`
                 SELECT r.id, r.user_id, CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
                        ${positionName('po')} AS position_name, ut.type_name AS user_type_name,
@@ -688,8 +721,10 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
                        r.start_date, r.end_date, r.total_days, r.is_half_day, r.half_day_period,
                        r.status, r.reason, r.reject_reason, r.contact_info, ${substituteName()} AS substitute_name,
                        NULLIF(TRIM(r.document_url), '') AS document_name,
-                       r.current_step, r.approval_chain, r.created_at,
-                       c.status AS cancellation_status, c.reason AS cancellation_reason,
+                       r.current_step, r.approval_chain, r.created_at, r.updated_at,
+                       c.id AS cancellation_id, c.status AS cancellation_status, c.reason AS cancellation_reason,
+                       c.created_at AS cancellation_created_at, c.updated_at AS cancellation_updated_at,
+                       c.refunded_days AS cancellation_refunded_days, c.reject_comment AS cancellation_reject_comment,
                        t.count_working_days_only, r.day_check_status, r.day_check_note, r.day_checked_at,
                        (SELECT CONCAT(cu.pname, cu.fname, ' ', cu.lname) FROM users cu WHERE cu.id = r.day_checked_by) AS day_checked_by_name
                 FROM hr_leave_requests r
@@ -702,7 +737,7 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
                 LEFT JOIN user_types ut ON ut.user_type_id = u.user_type_id
                 ${latestCancellation()}
                 ${where}
-                ORDER BY r.id DESC
+                ORDER BY ${view === 'cancel' ? core_kon`(r.status = 'CANCEL_PENDING') DESC,` : core_kon``} r.id DESC
                 LIMIT ${size} OFFSET ${(page - 1) * size}`,
             // ปีงบที่มีใบลาจริง — ตัวกรองปีงบแสดงเฉพาะปีเหล่านี้ (ปีงบ พ.ศ. เริ่ม 1 ต.ค.)
             core_kon`
@@ -712,13 +747,18 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
         ]);
 
         const actions = await loadActions(rows.map((r: any) => Number(r.id)));
+        const cancelActions = await loadCancelActions(rows.filter((r: any) => r.cancellation_id != null).map((r: any) => Number(r.cancellation_id)));
         // จำนวนวันที่นับได้ตามกฎของประเภท (วันทำการ / วันปฏิทิน + วันหยุดราชการ) — ให้ HR เทียบกับจำนวนวันในใบ
         const ruleDays = await Promise.all(rows.map(async (r: any) =>
             (await countLeaveDays(isoDate(r.start_date), isoDate(r.end_date), !!r.count_working_days_only, !!r.is_half_day)).computed_days));
         return {
             success: true,
-            data: rows.map((r: any, i: number) => ({ ...r, rule_days: ruleDays[i], actions: actions.get(Number(r.id)) ?? [] })),
+            data: rows.map((r: any, i: number) => ({
+                ...r, rule_days: ruleDays[i], actions: actions.get(Number(r.id)) ?? [],
+                cancellation_actions: cancelActions.get(Number(r.cancellation_id)) ?? [],
+            })),
             pagination: { page, page_size: size, total },
+            counts,
             fiscal_years: years.map((y: any) => Number(y.fy)),
         };
     } catch (error: any) {
