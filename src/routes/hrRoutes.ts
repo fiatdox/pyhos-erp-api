@@ -1,6 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { requireRoles } from '../middlewares/roleGuard';
+import { getLeaveChainMismatches, previewLeaveChainResync, applyLeaveChainResync, getLeaveChainResyncLog } from '../controllers/hrLeaveChainResyncController';
 import { getLeaveNotifyConfig, updateLeaveNotifyConfig, getLeaveNotifyLog, previewLeaveNotifyDigest, testLeaveNotify } from '../controllers/hrLeaveNotifyController';
 import { getLeaveTypes, getLeaveEntitlements, getLeaveEntitlementByUserTypeId, getMissionSupervisorByUserId, getMajorSupervisorByUserId, getSubMajorSupervisorByUserId, updateMissionSupervisor, updateMissionActingSupervisor, updateMajorSupervisor, updateMajorActingSupervisor, updateSubMajorSupervisor, updateSubMajorActingSupervisor, getDirector, updateDirector, updateActingDirector, getMissionHeadCheck, getLeaveApproverCheck, getLeaveTypesFull, updateLeaveType, updateLeaveEntitlement, createLeaveEntitlement, deleteLeaveEntitlement } from '../controllers/hrController';
 import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitReasons, getExitMonthly, getAgeGroups, getGenders, getMissionGroups, getHrPeople, getHrAgeIssues } from '../controllers/hrDashboardController';
@@ -285,6 +286,22 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     .post('/leave-notify/test', testLeaveNotify, {
         body: t.Optional(t.Object({ kind: t.Optional(t.String()), level: t.Optional(t.String()), mission_id: t.Optional(t.Number()), config: t.Optional(t.Any()) })),
         detail: { tags: ['HR'], summary: 'ทดสอบส่งแจ้งเตือนถึงผู้ดูแลระบบเอง — ระบุ level/mission_id = ส่งข้อความแบบที่ผู้อนุมัติระดับนั้นจะได้รับ (ADMIN)' }
+    })
+
+    // ── ปรับสายอนุมัติใบลาที่ยื่นแล้วให้ตรงผังปัจจุบัน — เฉพาะ ADMIN (ตรวจใน controller) ─────
+    .get('/leave-chain-resync', getLeaveChainMismatches, {
+        detail: { tags: ['HR'], summary: 'ใบลาที่สายอนุมัติไม่ตรงผังปัจจุบัน พร้อมผลที่จะเกิดถ้าปรับ (อ่านอย่างเดียว · ADMIN)' }
+    })
+    .get('/leave-chain-resync/log', getLeaveChainResyncLog, {
+        query: t.Object({ limit: t.Optional(t.String()) }),
+        detail: { tags: ['HR'], summary: 'ประวัติการปรับสายอนุมัติ (ADMIN)' }
+    })
+    .get('/leave-chain-resync/:id', previewLeaveChainResync, {
+        detail: { tags: ['HR'], summary: 'ผลที่จะเกิดถ้าปรับสายอนุมัติของใบนี้ (อ่านอย่างเดียว · ADMIN)' }
+    })
+    .post('/leave-chain-resync/:id/apply', applyLeaveChainResync, {
+        body: t.Object({ note: t.Optional(t.String()) }),
+        detail: { tags: ['HR'], summary: 'ปรับสายอนุมัติของใบนี้ตามผังปัจจุบัน ทีละใบ — ไม่แตะสถานะและยอดวันลา เก็บค่าเดิมใน log (ADMIN)' }
     })
 
     // ดึงประเภทการลาทั้งหมดพร้อมฟิลด์ครบ (หน้ากำหนดสิทธิ์การลา · ตัวกรองหน้าประวัติการลาเจ้าหน้าที่)

@@ -8,7 +8,7 @@ const isAdmin = async (uid: number) => (await core_kon`
     SELECT 1 FROM core_kon.user_m_users_roles mu JOIN core_kon.user_roles r ON r.id = mu.role_id
     WHERE mu.user_id = ${uid} AND UPPER(r.role_name) = 'ADMIN' LIMIT 1`).length > 0;
 
-const guard = async (user: any, set: any) => (await isAdmin(Number(user?.id))) ? null : fail(set, 403, 'เฉพาะผู้ดูแลระบบ (ADMIN)');
+export const guard = async (user: any, set: any) => (await isAdmin(Number(user?.id))) ? null : fail(set, 403, 'เฉพาะผู้ดูแลระบบ (ADMIN)');
 
 export const getLeaveNotifyConfig = async ({ user, set }: any) => {
     try {

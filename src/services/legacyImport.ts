@@ -212,6 +212,40 @@ const legacyDetails = async (l: any, steps: ChainStep[], uid: number, empUser: E
     return { contact, substitute, document, approvals };
 };
 
+/** ระดับในสายใหม่ → การกดจริงในโปรแกรมเดิม (วันที่ + ความเห็น) */
+export type LegacyStepApprovals = Partial<Record<string, { at: string; comment: string }>>;
+
+/**
+ * การกดของใบเดิมตามระดับ — ใช้กติกาเดียวกับ legacyDetails: เฉพาะระดับที่กดอนุมัติไว้จริง,
+ * วันที่ว่างใช้วันของระดับถัดไป ไม่มีเลยใช้วันยื่น, ผู้ลากดให้ตัวเองไม่นับ
+ */
+export const legacyStepApprovals = async (items: { legacy_id: number; user_id: number }[]) => {
+    const out = new Map<number, LegacyStepApprovals>();
+    if (!items.length) return out;
+    const legacy = await connectLegacy();
+    try {
+        const lq: Lq = async (q, params = []) => (await legacy.query(q, params))[0] as any[];
+        const empUser = makeEmpUser(lq);
+        const owner = new Map(items.map(i => [i.legacy_id, i.user_id]));
+        const rows = await lq('SELECT * FROM tb_leave WHERE leave_id IN (?)', [[...owner.keys()]]);
+        const order: LegacyLevel[] = ['header', 'major', 'branch'];
+        for (const l of rows) {
+            const found: LegacyStepApprovals = {};
+            for (const [level, lv] of Object.entries(LEGACY_LEVEL)) {
+                if (String(l[`${lv}_approve`]) !== '1') continue;
+                if (await empUser(l[`${lv}_user_approve`]) === owner.get(Number(l.leave_id))) continue;
+                const later = order.slice(order.indexOf(lv)).map(x => ceStamp(l[`${x}_approve_date`])).find(Boolean);
+                const at = later ?? ceStamp(l.leave_create);
+                if (at) found[level] = { at, comment: String(l[`${lv}_comment`] ?? '').trim() || 'อนุมัติ' };
+            }
+            out.set(Number(l.leave_id), found);
+        }
+        return out;
+    } finally {
+        await legacy.end().catch(() => {});
+    }
+};
+
 const insertLegacyApprovals = async (sql: any, requestId: number, approvals: LegacyApproval[]) => {
     for (const a of approvals) {
         await sql`
