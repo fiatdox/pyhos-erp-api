@@ -310,6 +310,7 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     })
     .get('/leave-requests/staff-history', getStaffLeaveHistory, {
         query: t.Object({
+            view: t.Optional(t.String()),
             fiscal_year: t.Optional(t.String()), leave_type_id: t.Optional(t.String()), status: t.Optional(t.String()),
             q: t.Optional(t.String()), has_document: t.Optional(t.String()), check: t.Optional(t.String()),
             date_from: t.Optional(t.String()), date_to: t.Optional(t.String()),

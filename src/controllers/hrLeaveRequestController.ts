@@ -418,7 +418,7 @@ const substituteName = () => core_kon`(SELECT CONCAT(su.pname, su.fname, ' ', su
 
 const latestCancellation = () => core_kon`
     LEFT JOIN LATERAL (
-        SELECT c.id, c.status, c.reason, c.refunded_days, c.created_at, c.updated_at,
+        SELECT c.id, c.status, c.reason, c.refunded_days, c.created_at, c.updated_at, c.cancelled_by,
                (SELECT a.comment FROM hr_leave_approvals a
                 WHERE a.cancellation_id = c.id AND a.action = 'REJECTED'
                 ORDER BY a.actioned_at DESC LIMIT 1) AS reject_comment
@@ -643,11 +643,13 @@ export const uploadLeaveDocument = async ({ params, body, user, set }: any) => {
 // ── ประวัติการลาเจ้าหน้าที่ (หน้า /hr/leave/staff-history — ADMIN / HR) ──────────
 // ทุกใบของทุกคน กรองตามปีงบ / ประเภท / สถานะ / ชื่อ / มีไฟล์แนบ แบ่งหน้าที่ server
 // ส่งรายละเอียดครบ (ที่ติดต่อ ผู้ปฏิบัติแทน สายอนุมัติ ประวัติการกด) ให้เปิดดูได้โดยไม่ต้องยิงซ้ำ
-// view: leave = ใบลาที่ยังเดินตามปกติ · cancel = ใบที่เคยขอยกเลิก/ถอนแล้ว (ไม่อนุมัติการยกเลิก = ใบยังมีผล จึงอยู่ทั้งสองแท็บ)
+// view: cancel = เฉพาะใบที่มีคำขอยกเลิกจริง · leave = ที่เหลือ รวมใบที่ถอนก่อนอนุมัติ (ไม่เคยยื่นคำขอยกเลิก)
+// ไม่อนุมัติการยกเลิก = ใบยังมีผล จึงอยู่ทั้งสองแท็บ
 const STAFF_HISTORY_STATUS = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'CANCEL_PENDING', 'CANCEL_REJECTED'];
-const viewIsLeave = () => core_kon`r.status IN ('PENDING', 'APPROVED', 'REJECTED')`;
-const viewIsCancel = () => core_kon`(r.status IN ('CANCEL_PENDING', 'CANCELLED')
-    OR EXISTS (SELECT 1 FROM hr_leave_cancellations x WHERE x.request_id = r.id))`;
+const viewIsCancel = () => core_kon`EXISTS (SELECT 1 FROM hr_leave_cancellations x WHERE x.request_id = r.id)`;
+const viewIsLeave = () => core_kon`(r.status IN ('PENDING', 'APPROVED', 'REJECTED')
+    OR (r.status = 'CANCELLED' AND NOT ${viewIsCancel()}))`;
+const latestCancelRejected = () => core_kon`(SELECT x.status FROM hr_leave_cancellations x WHERE x.request_id = r.id ORDER BY x.id DESC LIMIT 1) = 'REJECTED'`;
 
 /** การกดในรอบขอยกเลิก — ผูกกับ cancellation_id ไม่ใช่ request_id */
 const loadCancelActions = async (cancellationIds: number[]): Promise<Map<number, any[]>> => {
@@ -702,8 +704,7 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
               AND ${like ? core_kon`(CONCAT(u.pname, u.fname, ' ', u.lname) ILIKE ${like} OR CONCAT(u.fname, ' ', u.lname) ILIKE ${like})` : core_kon`TRUE`}`;
         const where = core_kon`${base}
               AND ${view === 'leave' ? viewIsLeave() : view === 'cancel' ? viewIsCancel() : core_kon`TRUE`}
-              AND ${status === 'CANCEL_REJECTED'
-                ? core_kon`(SELECT x.status FROM hr_leave_cancellations x WHERE x.request_id = r.id ORDER BY x.id DESC LIMIT 1) = 'REJECTED'`
+              AND ${status === 'CANCEL_REJECTED' ? latestCancelRejected()
                 : status ? core_kon`r.status = ${status}` : core_kon`TRUE`}`;
 
         const [[{ total }], [counts], rows, years] = await Promise.all([
@@ -711,7 +712,9 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
             core_kon`
                 SELECT COUNT(*) FILTER (WHERE ${viewIsLeave()})::int AS leave_total,
                        COUNT(*) FILTER (WHERE ${viewIsCancel()})::int AS cancel_total,
-                       COUNT(*) FILTER (WHERE r.status = 'CANCEL_PENDING')::int AS cancel_pending
+                       COUNT(*) FILTER (WHERE r.status = 'CANCEL_PENDING')::int AS cancel_pending,
+                       COUNT(*) FILTER (WHERE r.status = 'CANCELLED' AND ${viewIsCancel()})::int AS cancel_approved,
+                       COUNT(*) FILTER (WHERE ${latestCancelRejected()})::int AS cancel_rejected
                 FROM hr_leave_requests r JOIN users u ON u.id = r.user_id ${base}`,
             core_kon`
                 SELECT r.id, r.user_id, CONCAT(u.pname, u.fname, ' ', u.lname) AS employee_name,
@@ -723,6 +726,7 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
                        NULLIF(TRIM(r.document_url), '') AS document_name,
                        r.current_step, r.approval_chain, r.created_at, r.updated_at,
                        c.id AS cancellation_id, c.status AS cancellation_status, c.reason AS cancellation_reason,
+                       (SELECT CONCAT(cb.pname, cb.fname, ' ', cb.lname) FROM users cb WHERE cb.id = c.cancelled_by) AS cancelled_by_name,
                        c.created_at AS cancellation_created_at, c.updated_at AS cancellation_updated_at,
                        c.refunded_days AS cancellation_refunded_days, c.reject_comment AS cancellation_reject_comment,
                        t.count_working_days_only, r.day_check_status, r.day_check_note, r.day_checked_at,
