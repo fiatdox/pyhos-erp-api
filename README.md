@@ -1,6 +1,7 @@
 # ERP API (Core Kon)
 
-REST API สำหรับระบบ ERP พัฒนาด้วย [Bun](https://bun.sh) + [Elysia](https://elysiajs.com) + PostgreSQL
+REST API ของระบบ PYHOS-EXP พัฒนาด้วย [Bun](https://bun.sh) + [Elysia](https://elysiajs.com) + PostgreSQL
+หน้าเว็บอยู่ที่ repo `fiatx` (Next.js) — เรียก API นี้ผ่าน proxy route ของ Next ไม่ได้เรียกจากเบราว์เซอร์ตรง
 
 ## Tech Stack
 
@@ -8,155 +9,143 @@ REST API สำหรับระบบ ERP พัฒนาด้วย [Bun](ht
 |---|---|
 | Runtime | Bun |
 | Framework | Elysia |
-| Database | PostgreSQL (via `postgres`) |
-| Auth | JWT (8 ชั่วโมง) |
+| Database หลัก | PostgreSQL (`postgres` — tagged template) ฐาน `core_kon` |
+| ฐานภายนอก (อ่าน) | MySQL (`mysql2`) — HIS, ครุภัณฑ์, คลังพัสดุ, เงินเดือน, โปรแกรมลาเดิม |
+| Auth | JWT (8 ชั่วโมง) + OTP / MFA |
 | Password Hashing | Argon2id (Bun built-in) |
+| แจ้งเตือน | MOPH Alert / หมอพร้อม (ระบบลา, งานซ่อม IT) |
 | API Docs | Swagger UI (`/docs`) |
 
 ## โครงสร้างโปรเจกต์
 
 ```
 src/
-├── controllers/
-│   ├── authController.ts       # Login
-│   ├── userController.ts       # จัดการผู้ใช้
-│   └── systemController.ts     # ข้อมูล Master Data
-├── routes/
-│   ├── authRoutes.ts
-│   ├── userRoutes.ts
-│   └── systemRoutes.ts
-├── middlewares/
-│   ├── authMiddleware.ts       # ตรวจสอบ JWT
-│   ├── corsMiddleware.ts
-│   ├── loggerMiddleware.ts
-│   └── securityMiddleware.ts
-├── db/
-│   └── db.ts                  # PostgreSQL connection pool
-└── index.ts
+├── index.ts            # ประกอบ route ทั้งหมด + เริ่ม job ตามเวลา (ยกยอดวันลา, รอบสรุปแจ้งเตือนใบลา)
+├── routes/             # ประกาศ endpoint + schema (t.Object) + Swagger detail — แยกตามโมดูล
+├── controllers/        # logic ของแต่ละ endpoint
+├── services/           # logic ที่ใช้ร่วมกัน (นับวันลา, ยกยอด, แจ้งเตือนใบลา, นำเข้าข้อมูลโปรแกรมเดิม)
+├── middlewares/        # authMiddleware (JWT), roleGuard (requireRoles), logger
+├── utils/              # ตัวช่วยทั่วไป (ส่งหมอพร้อม, IP ผู้ใช้, ชื่อตำแหน่ง)
+├── db/                 # connection pool + ไฟล์ DDL (*.sql) ของตารางที่ระบบนี้สร้างเอง
+└── scripts/            # สคริปต์รันมือครั้งคราว
 ```
 
-## ติดตั้งและเริ่มใช้งาน
+## ติดตั้ง
+
+### เครื่องพัฒนา
 
 ```bash
-# ติดตั้ง dependencies
 bun install
-
-# รัน development server (auto-reload)
-bun run dev
+bun run dev        # auto-reload
 ```
 
-Server จะรันที่ `http://localhost:5000`
-Swagger UI: `http://localhost:5000/docs`
+Server รันที่ `http://localhost:5000` (เปลี่ยนด้วย `PORT`) · Swagger UI: `http://localhost:5000/docs`
+
+### เครื่อง Production (Windows)
+
+1. ติดตั้ง [Bun](https://bun.sh) (`bun -v` ต้องใช้งานได้)
+2. ดึงโค้ดล่าสุด (`git pull` หรือดาวน์โหลด zip) — **อย่าคัดลอก `node_modules` จากเครื่องอื่น**
+3. ติดตั้ง package
+   ```bat
+   bun install
+   ```
+4. สร้าง / ตรวจไฟล์ `.env` ที่ root ของโปรเจกต์ (ดูหัวข้อ [Environment Variables](#environment-variables))
+5. รัน DDL ที่ยังไม่เคยรันบนฐาน `core_kon` (ดูหัวข้อ [ฐานข้อมูล](#ฐานข้อมูล))
+6. เริ่ม / รีสตาร์ทเซิร์ฟเวอร์
+   ```bat
+   bun src/index.ts
+   ```
 
 ## Environment Variables
 
-สร้างไฟล์ `.env` ที่ root ของโปรเจกต์:
+ไฟล์ `.env` ที่ root ของโปรเจกต์ — **ห้าม commit** ไฟล์นี้ ตัวอย่างด้านล่างเป็นชื่อตัวแปรเท่านั้น
 
 ```env
 PORT=5000
-JWT_SECRET=your-secret-key
+JWT_SECRET=...                 # สุ่มยาว ๆ — เปลี่ยนแล้วทุกคนต้องล็อกอินใหม่
 
+# PostgreSQL หลัก
 CORE_KON_HOST=localhost
 CORE_KON_PORT=5432
-CORE_KON_USER=postgres
-CORE_KON_PASSWORD=your-password
-CORE_KON_DB_NAME=your-database
-CORE_KON_SCHEMA=public
+CORE_KON_USER=...
+CORE_KON_PASSWORD=...
+CORE_KON_DB_NAME=...
+CORE_KON_SCHEMA=core_kon
+
+# ฐานภายนอก (MySQL) — ใส่เฉพาะที่ใช้
+HIS_HOST= / HIS_PORT= / HIS_USER= / HIS_PASSWORD= / HIS_DB_NAME=
+EQUIPMENT_HOST= ... EQUIPMENT_DB_NAME=          # ครุภัณฑ์
+EQUIPMENT_V2_HOST= ... EQUIPMENT_V2_DB_NAME=
+INVENTORY_HOST= ... INVENTORY_DB_NAME=          # คลังพัสดุ
+SALARY_HOST= ... SALARY_DB_NAME=                # เงินเดือน
+DB_LEAVE_HOST= / DB_LEAVE_PORT= / DB_LEAVE_USERNAME= / DB_LEAVE_PASSWORD= / DB_LEAVE_DATABASE=   # โปรแกรมลาเดิม (นำเข้าข้อมูล)
+
+# แจ้งเตือนหมอพร้อม
+MOPH_NOTIFY_BASE_URL=...       # งานซ่อม IT / OTP
+IT_MATENANCE_CLIENT_ID=...
+IT_MATENANCE_SECRET_ID=...
+MOPH_ALERT_BASE_URL=...        # แจ้งเตือนระบบลา (การ์ด Flex รายคนตามเลขบัตร)
+MOPH_ALERT_CLIENT_ID=...
+MOPH_ALERT_SECRET_ID=...
+
+# ตัวเลือก
+TRUSTED_PROXIES=ip1,ip2        # reverse proxy ที่อยู่คนละเครื่อง — ใช้หา IP จริงของผู้ใช้
+LEAVE_AUTO_ROLLOVER=false      # ปิดการยกยอดวันลาพักผ่อนอัตโนมัติเมื่อข้ามปีงบ (ค่าเริ่มต้นเปิด)
+LEAVE_MAX_ADVANCE_DAYS=...     # ยื่นลาล่วงหน้าได้ไม่เกินกี่วัน
 ```
 
-## API Endpoints
+## ฐานข้อมูล
 
-ทุก endpoint (ยกเว้น `/auth/login`) ต้องแนบ Header:
+ตารางที่ระบบนี้สร้างเองมี DDL อยู่ใน `src/db/*.sql` — ทุกไฟล์รันซ้ำได้ (`IF NOT EXISTS` / `ON CONFLICT DO NOTHING`)
+เมื่อติดตั้งเครื่องใหม่หรืออัปเดตแล้วมีไฟล์ใหม่ ให้รันไฟล์นั้นบนฐาน `core_kon` ด้วย pgAdmin หรือ psql
+
+```bat
+psql -h <host> -U <user> -d <database> -f src\db\<ไฟล์>.sql
+```
+
+| กลุ่ม | ไฟล์ |
+|---|---|
+| ระบบลา | `hr_leave_workflow`, `hr_leave_balances`, `hr_leave_balance_logs`, `hr_leave_day_count`, `hr_leave_cancel_refund`, `hr_leave_substitute`, `hr_leave_contact`, `hr_leave_service_dates`, `hr_leave_auto_rollover`, `hr_leave_legacy_import`, `hr_legacy_import_runs`, `hr_leave_notify`, `hr_settings`, `hr_posts` |
+| บัญชีผู้ใช้ / ความปลอดภัย | `auth_mfa`, `auth_password_policy`, `auth_username_policy`, `user_credential_audit`, `user_salary_ids` |
+| IT | `it_repair_pr`, `it_repair_progress`, `it_repair_complete`, `it_roadmap`, `it_roadmap_meta`, `it_user_request`, `it_user_request_consent`, `it_user_request_license` |
+| อื่น ๆ | `app_modules` (สวิตช์เปิด/ปิดโมดูล), `app_page_views`, `asset_donation`, `medical_stat` |
+
+### แจ้งเตือนระบบลา (หมอพร้อม)
+
+1. ใส่ `MOPH_ALERT_*` ใน `.env` แล้วรัน `src/db/hr_leave_notify.sql`
+2. รีสตาร์ทเซิร์ฟเวอร์ (job รอบสรุปเริ่มจาก `startLeaveNotifyJob()` ใน `src/index.ts`)
+3. ADMIN เปิดใช้ที่หน้าเว็บ `/hr/leave/notify-settings` — ค่าเริ่มต้น **ปิด**
+   - เลือกโหมดต่อระดับผู้อนุมัติ / กลุ่มภารกิจ: ส่งทันที · สรุปตามรอบ · ปิด
+   - ตั้ง `app_url` เพื่อให้การ์ดมีปุ่มเข้าระบบ
+   - ปุ่ม "ทดสอบ" ส่งข้อความเข้าหมอพร้อมของผู้กดเอง (ตามเลขบัตรของบัญชีนั้น)
+4. รอบสรุปไม่ส่งข้อความถ้าไม่มีใบรออนุมัติ · ประวัติการส่งดูได้ในหน้าเดียวกัน
+
+## API
+
+รายการ endpoint ทั้งหมดพร้อม schema ดูที่ Swagger UI `/docs` — กลุ่มหลัก:
+
+| Prefix | โมดูล |
+|---|---|
+| `/api/v1/auth`, `/api/v1/mfa` | เข้าสู่ระบบ, OTP / MFA |
+| `/api/v1/users`, `/api/v1/system` | ทะเบียนบุคลากร, Master Data (ด้าน / กลุ่มงาน / หน่วยงาน / ตำแหน่ง ฯลฯ) |
+| `/api/v1/roles`, `/api/v1/user-roles`, `/api/v1/permissions`, `/api/v1/user-credentials` | สิทธิ์และบัญชีผู้ใช้ |
+| `/api/v1/hr`, `/api/v1/hr-posts` | ระบบลา, ผังผู้บริหาร, dashboard HR, ตั้งค่าแจ้งเตือน, ข่าว / เอกสาร HR |
+| `/api/v1/it` (`/activity`, `/incident`, `/risk`, `/roadmap`, `/user-requests`), `/api/v1/his` | งานซ่อมคอมพิวเตอร์, HAIT, ขอรหัสผู้ใช้, roadmap, เซสชัน HIS |
+| `/api/v1/equipment`, `/api/v1/equipment-v2`, `/api/v1/asset-donation` | ครุภัณฑ์ |
+| `/api/v1/accounting` | เงินเดือน, เลขที่เงินเดือน |
+| `/api/v1/medical-stat` | สถิติบริการ |
+| `/api/v1/modules`, `/api/v1/page-views` | สวิตช์เปิด/ปิดโมดูล, สถิติการเข้าชมหน้า |
+
+ทุก endpoint (ยกเว้นการล็อกอิน) ต้องแนบ Header:
 ```
 Authorization: Bearer <token>
 ```
+สิทธิ์ตาม role ตรวจด้วย `requireRoles(...)` ที่ route หรือใน controller
 
-### Auth
+### Response Format
 
-| Method | Path | คำอธิบาย |
-|--------|------|----------|
-| POST | `/api/v1/auth/login` | เข้าสู่ระบบ รับ JWT token |
-
-**Request body:**
-```json
-{ "username": "string", "password": "string" }
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "token": "...",
-  "weak": false,
-  "data": {
-    "id": 1,
-    "username": "string",
-    "name": "string",
-    "mission_name": "string",
-    "major_name": "string",
-    "position_name": "string"
-  }
-}
-```
-
-> `weak: true` หมายถึงรหัสผ่านยังเป็นค่าเริ่มต้นควรแจ้งให้ผู้ใช้เปลี่ยน
-
----
-
-### Users
-
-| Method | Path | คำอธิบาย |
-|--------|------|----------|
-| GET | `/api/v1/users` | ดึงรายชื่อผู้ใช้ทั้งหมด |
-| GET | `/api/v1/users/:id` | ดึงข้อมูลผู้ใช้ตาม ID |
-| POST | `/api/v1/users` | สร้างผู้ใช้ใหม่ |
-| PUT | `/api/v1/users/:id` | อัปเดตข้อมูลผู้ใช้ |
-| PATCH | `/api/v1/users/:id/deactivate` | ปิดการใช้งานผู้ใช้ |
-| PATCH | `/api/v1/users/:id/activate` | เปิดการใช้งานผู้ใช้ |
-
----
-
-### System (Master Data)
-
-| Method | Path | คำอธิบาย |
-|--------|------|----------|
-| GET | `/api/v1/system/missions` | ดึงภารกิจทั้งหมด |
-| GET | `/api/v1/system/missions/:id` | ดึงภารกิจตาม ID |
-| GET | `/api/v1/system/missions/:id/majors` | ดึงกลุ่มงานของภารกิจ |
-| GET | `/api/v1/system/majors` | ดึงกลุ่มงานทั้งหมด |
-| GET | `/api/v1/system/majors/:id` | ดึงกลุ่มงานตาม ID |
-| GET | `/api/v1/system/majors/:id/submajors` | ดึงกลุ่มงานย่อยของกลุ่มงาน |
-| GET | `/api/v1/system/submajors` | ดึงกลุ่มงานย่อยทั้งหมด |
-| GET | `/api/v1/system/submajors/:id` | ดึงกลุ่มงานย่อยตาม ID |
-| GET | `/api/v1/system/levels` | ดึงระดับผู้ใช้ทั้งหมด |
-| GET | `/api/v1/system/levels/:id` | ดึงระดับผู้ใช้ตาม ID |
-| GET | `/api/v1/system/positions` | ดึงตำแหน่งทั้งหมด |
-| GET | `/api/v1/system/positions/:id` | ดึงตำแหน่งตาม ID |
-| GET | `/api/v1/system/user-types` | ดึงประเภทผู้ใช้ทั้งหมด |
-| GET | `/api/v1/system/user-types/:id` | ดึงประเภทผู้ใช้ตาม ID |
-| GET | `/api/v1/system/user-statuses` | ดึงสถานะผู้ใช้ทั้งหมด |
-| GET | `/api/v1/system/user-statuses/:id` | ดึงสถานะผู้ใช้ตาม ID |
-
----
-
-## Response Format
-
-**สำเร็จ:**
 ```json
 { "success": true, "data": { } }
+{ "success": false, "message": "..." }
 ```
-
-**ไม่พบข้อมูล (404):**
-```json
-{ "success": false, "message": "... not found" }
-```
-
-**ไม่ได้รับอนุญาต (401):**
-```json
-{ "success": false, "message": "Unauthorized" }
-```
-
-**เกิดข้อผิดพลาด (500):**
-```json
-{ "success": false, "message": "error message" }
-```
+HTTP status: `401` ไม่ได้ล็อกอิน / token หมดอายุ · `403` ไม่มีสิทธิ์ · `404` ไม่พบข้อมูล · `500` ข้อผิดพลาดฝั่งเซิร์ฟเวอร์
