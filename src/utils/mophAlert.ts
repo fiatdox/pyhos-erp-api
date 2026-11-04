@@ -1093,7 +1093,6 @@ export async function sendRepairCompletedAlert(idCard: string, data: RepairCompl
 // ข้อควรระวัง: ฟังก์ชันนี้คือ "ช่องทางส่งมอบ credential" เพียงช่องทางเดียว —
 //   username/password ต้องไม่ถูกบันทึกลง DB และต้องไม่ถูก log (จึง log แค่ status code)
 export interface CredentialIssuedData {
-    requestNo: string;
     username: string;
     password: string;
     systemName?: string;
@@ -1103,7 +1102,7 @@ export interface CredentialIssuedData {
 
 function buildCredentialIssuedTemplate(data: CredentialIssuedData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
-    const { requestNo, username, password, systemName, issuedBy, note } = data;
+    const { username, password, systemName, issuedBy, note } = data;
 
     const toRow = (label: string, value: string, color = '#10b981') => ({
         type: 'box', layout: 'baseline',
@@ -1114,7 +1113,6 @@ function buildCredentialIssuedTemplate(data: CredentialIssuedData): object {
     });
 
     const rows = [
-        toRow('เลขที่คำร้อง', requestNo, '#f8fafc'),
         ...(systemName ? [toRow('ระบบ', systemName, '#f8fafc')] : []),
         toRow('วันที่ออกรหัส', `${thaiDate} ${thaiTime} น.`, '#f8fafc'),
         ...(issuedBy ? [toRow('ออกรหัสโดย', issuedBy, '#f8fafc')] : []),
@@ -1122,13 +1120,13 @@ function buildCredentialIssuedTemplate(data: CredentialIssuedData): object {
 
     return {
         message_title: 'แจ้งบัญชีเข้าใช้งานระบบโรงพยาบาล',
-        message_html: `<div><p><strong>บัญชีเข้าใช้งานระบบ${systemName ? ` ${systemName}` : ''}</strong></p><ul><li><b>เลขที่คำร้อง:</b> ${requestNo}</li><li><b>Username:</b> ${username}</li><li><b>Password:</b> ${password}</li><li><b>วันที่ออกรหัส:</b> ${thaiDate} ${thaiTime} น.</li></ul><p style="color:#cc0000;">กรุณาเปลี่ยนรหัสผ่านเมื่อเข้าใช้งานครั้งแรก และห้ามเปิดเผยรหัสผ่านแก่ผู้อื่น</p></div>`,
-        message_text: `บัญชีเข้าใช้งานระบบ${systemName ? ` ${systemName}` : ''} (คำร้อง ${requestNo}) Username: ${username} Password: ${password} กรุณาเปลี่ยนรหัสผ่านเมื่อเข้าใช้ครั้งแรก`,
+        message_html: `<div><p><strong>บัญชีเข้าใช้งานระบบ${systemName ? ` ${systemName}` : ''}</strong></p><ul><li><b>Username:</b> ${username}</li><li><b>Password:</b> ${password}</li><li><b>วันที่ออกรหัส:</b> ${thaiDate} ${thaiTime} น.</li></ul><p style="color:#cc0000;">กรุณาเปลี่ยนรหัสผ่านเมื่อเข้าใช้งานครั้งแรก และห้ามเปิดเผยรหัสผ่านแก่ผู้อื่น</p></div>`,
+        message_text: `บัญชีเข้าใช้งานระบบ${systemName ? ` ${systemName}` : ''} Username: ${username} Password: ${password} กรุณาเปลี่ยนรหัสผ่านเมื่อเข้าใช้ครั้งแรก`,
         message_type: 'HPT',
         messages: [
             {
                 type: 'flex',
-                altText: `บัญชีเข้าใช้งานระบบ${systemName ? ` ${systemName}` : ''} (${requestNo})`,
+                altText: `บัญชีเข้าใช้งานระบบ${systemName ? ` ${systemName}` : ''}`,
                 contents: {
                     type: 'bubble',
                     size: 'mega',

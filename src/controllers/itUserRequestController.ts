@@ -273,7 +273,6 @@ export const createUserRequest = async ({ body, user, set }: any) => {
                 // แจ้งเข้ากลุ่มงาน IT แบบ best-effort — ส่งไม่สำเร็จไม่ทำให้สร้างคำร้องล้ม
                 try {
                     await mophUserRequestNotify({
-                        requestNo: row.request_no,
                         systemName: sys.name_th,
                         requesterName: requester_name,
                         positionName: position_name ?? undefined,
@@ -426,7 +425,6 @@ export const issueCredential = async ({ params, body, user, set }: any) => {
         // 2) ส่ง credential ผ่านหมอพร้อม — ถ้าล้มเหลวจะ throw → คงสถานะ pending แล้วคืน 502
         try {
             await sendCredentialIssuedAlert(citizenId, {
-                requestNo: reqInfo.request_no,
                 username,
                 password,
                 systemName: reqInfo.system_name ?? undefined,
@@ -462,7 +460,6 @@ export const issueCredential = async ({ params, body, user, set }: any) => {
         // 4) แจ้งเข้ากลุ่มงาน IT แบบ best-effort — ไม่แสดง username/password (ปกปิดชื่อผู้ขอบางส่วน)
         try {
             await mophCredentialIssuedNotify({
-                requestNo: reqInfo.request_no,
                 systemName: reqInfo.system_name ?? '-',
                 requesterName: reqInfo.requester_name,
                 issuedBy: issuedByName,

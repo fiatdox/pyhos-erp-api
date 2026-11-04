@@ -807,7 +807,6 @@ export async function mophMissionApprove(data: MissionApproveData): Promise<void
 
 // User Account Request Template (แจ้งเข้ากลุ่มงาน IT เมื่อมีคำขอรหัสผู้ใช้งานระบบใหม่)
 export interface UserRequestNotifyData {
-    requestNo: string;
     systemName: string;
     requesterName: string;
     positionName?: string;
@@ -820,7 +819,7 @@ export interface UserRequestNotifyData {
 function buildUserRequestTemplate(data: UserRequestNotifyData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
-        requestNo, systemName, requesterName,
+        systemName, requesterName,
         positionName, department, phone, purpose, licenseNo,
     } = data;
 
@@ -834,7 +833,6 @@ function buildUserRequestTemplate(data: UserRequestNotifyData): object {
     });
 
     const rows = [
-        { label: 'เลขคำร้อง', value: requestNo },
         { label: 'วันที่', value: thaiDate },
         { label: 'เวลา', value: `${thaiTime} น.` },
         { label: 'ระบบที่ขอใช้', value: systemName },
@@ -853,7 +851,7 @@ function buildUserRequestTemplate(data: UserRequestNotifyData): object {
         messages: [
             {
                 type: 'flex',
-                altText: `คำขอรหัสผู้ใช้งานใหม่ ${requestNo}`,
+                altText: 'คำขอรหัสผู้ใช้งานใหม่',
                 contents: {
                     type: 'bubble',
                     size: 'mega',
@@ -873,7 +871,7 @@ function buildUserRequestTemplate(data: UserRequestNotifyData): object {
                         paddingAll: '20px',
                         backgroundColor: '#0f172a',
                         contents: [
-                            { type: 'text', text: `คำขอรหัสผู้ใช้งานใหม่ ${requestNo}`, weight: 'bold', size: 'xl', color: '#f8fafc', wrap: true },
+                            { type: 'text', text: 'คำขอรหัสผู้ใช้งานใหม่', weight: 'bold', size: 'xl', color: '#f8fafc', wrap: true },
                             { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
                             { type: 'separator', margin: 'lg', color: '#1e293b' },
                             {
@@ -930,7 +928,6 @@ function maskPersonName(name: string): string {
 
 // Credential Issued Template (แจ้งเข้ากลุ่มงาน IT เมื่อออกรหัสแล้ว — ไม่แสดง username/password)
 export interface CredentialIssuedNotifyData {
-    requestNo: string;
     systemName: string;
     requesterName: string;
     issuedBy: string;
@@ -938,7 +935,7 @@ export interface CredentialIssuedNotifyData {
 
 function buildCredentialIssuedNotifyTemplate(data: CredentialIssuedNotifyData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
-    const { requestNo, systemName, requesterName, issuedBy } = data;
+    const { systemName, requesterName, issuedBy } = data;
 
     const toRow = (row: { label: string; value: string }) => ({
         type: 'box',
@@ -950,7 +947,6 @@ function buildCredentialIssuedNotifyTemplate(data: CredentialIssuedNotifyData): 
     });
 
     const rows = [
-        { label: 'เลขคำร้อง', value: requestNo },
         { label: 'วันที่ออก', value: thaiDate },
         { label: 'เวลา', value: `${thaiTime} น.` },
         { label: 'ระบบที่ออกให้', value: systemName },
@@ -962,7 +958,7 @@ function buildCredentialIssuedNotifyTemplate(data: CredentialIssuedNotifyData): 
         messages: [
             {
                 type: 'flex',
-                altText: `ออกรหัสผู้ใช้งานแล้ว ${requestNo}`,
+                altText: 'ออกรหัสผู้ใช้งานแล้ว',
                 contents: {
                     type: 'bubble',
                     size: 'mega',
@@ -982,7 +978,7 @@ function buildCredentialIssuedNotifyTemplate(data: CredentialIssuedNotifyData): 
                         paddingAll: '20px',
                         backgroundColor: '#0f172a',
                         contents: [
-                            { type: 'text', text: `ออกรหัสผู้ใช้งานแล้ว ${requestNo}`, weight: 'bold', size: 'xl', color: '#f8fafc', wrap: true },
+                            { type: 'text', text: 'ออกรหัสผู้ใช้งานแล้ว', weight: 'bold', size: 'xl', color: '#f8fafc', wrap: true },
                             { type: 'text', text: 'โรงพยาบาลพะเยา', size: 'xs', color: '#6b7280', margin: 'xs', align: 'center' },
                             { type: 'separator', margin: 'lg', color: '#1e293b' },
                             {
