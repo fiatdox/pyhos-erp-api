@@ -1486,12 +1486,12 @@ export const getLeaveCalendar = async ({ user, query, set }: any) => {
         // เลือกดูหน่วยอื่นได้ — หัวหน้า/รักษาการทุกระดับ ผอ. ADMIN HR
         const canBrowse = canSeeAll || !!directorRole || units.length > 0;
         const allUnits = canBrowse ? await core_kon`
-            SELECT 'mission' AS kind, mission_id AS id, name, NULL::text AS parent FROM missions WHERE is_active = 'Y'
+            SELECT 'mission' AS kind, mission_id AS id, name, NULL::text AS parent, NULL::int AS parent_id FROM missions WHERE is_active = 'Y'
             UNION ALL
-            SELECT 'major', mj.major_id, mj.name, mi.name FROM majors mj
+            SELECT 'major', mj.major_id, mj.name, mi.name, mj.mission_id FROM majors mj
                 LEFT JOIN missions mi ON mi.mission_id = mj.mission_id WHERE mj.is_active = 'Y'
             UNION ALL
-            SELECT 'submajor', sm.submajor_id, sm.name, mj.name FROM submajors sm
+            SELECT 'submajor', sm.submajor_id, sm.name, mj.name, sm.major_id FROM submajors sm
                 LEFT JOIN majors mj ON mj.major_id = sm.major_id WHERE sm.is_active = 'Y'
             ORDER BY 1, 3` : [];
 
@@ -1566,7 +1566,9 @@ export const getLeaveCalendar = async ({ user, query, set }: any) => {
             success: true,
             data: {
                 scope,
-                options,
+                // ทุกหน่วยในโรงพยาบาลส่งแยกใน units ให้หน้าเว็บเลือกตามลำดับ กลุ่มภารกิจ → กลุ่มงาน → หน่วยงาน
+                options: options.filter(o => !Object.values(UNIT_GROUP).includes(o.group)),
+                units: (allUnits as any[]).map(u => ({ kind: u.kind, id: Number(u.id), name: u.name, parent_id: u.parent_id == null ? null : Number(u.parent_id) })),
                 masked,
                 // เหตุผลการลาเป็นข้อมูลส่วนตัว — ส่งให้เจ้าของใบ, ADMIN/HR (ทั้งโรงพยาบาล) และผู้อนุมัติในสาย
                 // (ขอบเขต chain = ใบที่ฉันเป็นผู้อนุมัติขั้นใดขั้นหนึ่ง เห็นเหตุผลในหน้าอนุมัติอยู่แล้ว) · เพื่อนร่วมกลุ่มงานไม่เห็น
