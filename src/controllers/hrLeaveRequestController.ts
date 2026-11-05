@@ -943,6 +943,7 @@ export const getPendingApprovals = async ({ user, query, set }: any) => {
                    r.start_date, r.end_date, r.total_days, r.actual_days,
                    r.is_half_day, r.half_day_period, r.status, r.reason, r.reject_reason,
                    r.document_url, r.approval_chain, r.current_step, r.created_at, r.days_deducted,
+                   ${substituteName()} AS substitute_name,
                    step.value AS my_step, ${dayCheckCols()},
                    c.id AS cancellation_id, c.status AS cancellation_status, c.reason AS cancellation_reason,
                    c.refunded_days AS cancellation_refunded_days, c.reject_comment AS cancellation_reject_comment
