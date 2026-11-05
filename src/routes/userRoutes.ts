@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { requireRoles } from '../middlewares/roleGuard';
-import { getAllUsers, getUserById, getUserInfo, createUser, updateUser, deactivateUser, activateUser, changePassword, getMyPasswordStatus, getMyUsernameStatus, checkMyUsername, changeMyUsername, getMySalaryId, getMyWorkProfile, setMySalaryId, updateMyCodes, getMyColleagues } from '../controllers/userController';
+import { getAllUsers, getUserById, getUserInfo, createUser, updateUser, deactivateUser, activateUser, verifyUser, unverifyUser, changePassword, getMyPasswordStatus, getMyUsernameStatus, checkMyUsername, changeMyUsername, getMySalaryId, getMyWorkProfile, setMySalaryId, updateMyCodes, getMyColleagues } from '../controllers/userController';
 
 // สร้าง Schema สำหรับตรวจสอบข้อมูล (Validation) ให้ตรงกับโครงสร้างตาราง users
 const userSchema = t.Object({
@@ -124,4 +124,15 @@ export const userRoutes = new Elysia({ prefix: '/api/v1/users' })
     .patch('/:id/activate', activateUser, {
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['Users'], description: 'เฉพาะ ADMIN, HR, IT_STAFF' }
+    })
+    // ── การตรวจสอบข้อมูลบุคลากร — แคบกว่าการแก้ไข: IT_STAFF แก้ทะเบียนได้แต่รับรองข้อมูลไม่ได้ ──
+    // ตรวจ ADMIN/HR ใน controller ห้ามใช้ .use(requireRoles) ตัวที่สอง: Elysia ใช้ hook ชุดเดียวกัน
+    // จึงย้อนไปมีผลกับ route ด้านบนที่อยู่หลัง guard ตัวแรกด้วย ทำให้ IT_STAFF แก้ทะเบียนไม่ได้
+    .patch('/:id/verify', verifyUser, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['Users'], summary: 'บันทึกว่าตรวจสอบข้อมูลบุคลากรแล้ว', description: 'เฉพาะ ADMIN, HR — ผู้ตรวจจาก JWT' }
+    })
+    .delete('/:id/verify', unverifyUser, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['Users'], summary: 'ยกเลิกการตรวจสอบข้อมูลบุคลากร', description: 'เฉพาะ ADMIN, HR' }
     });

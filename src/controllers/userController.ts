@@ -1,7 +1,7 @@
 import { core_kon } from '../db/db';
 import { positionWithLevel } from '../utils/position';
 import { resyncPendingChainsSafe } from '../services/leaveChain';
-import { resolveLeaveSubject } from '../services/leaveSubject';
+import { resolveLeaveSubject, isHrOrAdmin } from '../services/leaveSubject';
 import { sendChangePasswordAlert } from '../utils/mophAlert';
 import { getPasswordPolicy, evaluatePassword } from '../utils/passwordPolicy';
 import { checkPassword } from '../utils/passwordStrength';
@@ -18,10 +18,13 @@ export const getAllUsers = async ({ set }: any) => {
                 u.mission_id, u.major_id, u.submajor_id, u.attendance_id, u.salary_id,
                 u.username, u.is_active, u.work_end_date, u.created_at, u.updated_at, u.hospital_lc_pid,
                 up.position_name,
-                ut.type_name AS user_type_name
+                ut.type_name AS user_type_name,
+                u.verified_at,
+                CASE WHEN vu.id IS NOT NULL THEN CONCAT(vu.pname, vu.fname, ' ', vu.lname) END AS verified_by_name
             FROM users u
             LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
             LEFT JOIN user_types     ut ON ut.user_type_id     = u.user_type_id
+            LEFT JOIN users          vu ON vu.id               = u.verified_by
             ORDER BY u.id DESC
         `;
         return { success: true, data: users };
@@ -170,6 +173,52 @@ export const activateUser = async ({ params, set }: any) => {
     } catch (error: any) {
         set.status = 500;
         return { success: false, message: error.message };
+    }
+};
+
+// บันทึก / ยกเลิกการตรวจสอบข้อมูลบุคลากร — เฉพาะ ADMIN / HR ผู้ตรวจมาจาก JWT เท่านั้น
+export const verifyUser = async ({ params, user, set }: any) => {
+    try {
+        if (!(await isHrOrAdmin(Number(user.id)))) {
+            set.status = 403;
+            return { success: false, message: 'การตรวจสอบข้อมูลบุคลากรทำได้เฉพาะงานทรัพยากรบุคคลและผู้ดูแลระบบ' };
+        }
+        const [row] = await core_kon`
+            UPDATE users SET verified_at = now(), verified_by = ${Number(user.id)}
+            WHERE id = ${params.id}
+            RETURNING verified_at,
+                      (SELECT CONCAT(a.pname, a.fname, ' ', a.lname) FROM users a WHERE a.id = ${Number(user.id)}) AS verified_by_name`;
+        if (!row) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบบุคลากร' };
+        }
+        return { success: true, data: row };
+    } catch (error: any) {
+        console.error('[userController] verifyUser:', error);
+        set.status = 500;
+        return { success: false, message: 'เกิดข้อผิดพลาดภายในระบบ' };
+    }
+};
+
+export const unverifyUser = async ({ params, user, set }: any) => {
+    try {
+        if (!(await isHrOrAdmin(Number(user.id)))) {
+            set.status = 403;
+            return { success: false, message: 'การตรวจสอบข้อมูลบุคลากรทำได้เฉพาะงานทรัพยากรบุคคลและผู้ดูแลระบบ' };
+        }
+        const [row] = await core_kon`
+            UPDATE users SET verified_at = NULL, verified_by = NULL
+            WHERE id = ${params.id}
+            RETURNING id`;
+        if (!row) {
+            set.status = 404;
+            return { success: false, message: 'ไม่พบบุคลากร' };
+        }
+        return { success: true };
+    } catch (error: any) {
+        console.error('[userController] unverifyUser:', error);
+        set.status = 500;
+        return { success: false, message: 'เกิดข้อผิดพลาดภายในระบบ' };
     }
 };
 
