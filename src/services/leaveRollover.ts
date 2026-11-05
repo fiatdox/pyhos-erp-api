@@ -135,12 +135,14 @@ export const syncCarriedForward = async (
 //   ยังไม่มีค่า (ติดตั้งครั้งแรก) → ตั้งเป็นปีปัจจุบันโดยไม่ยกยอด เพราะข้อมูลการลาของปีก่อน
 //   ไม่ได้อยู่ในระบบนี้ ยกยอดไปทุกคนจะได้เต็มสิทธิ์ซึ่งผิด (ปีแรก HR กดยกยอดเองได้ที่หน้าวันลาสะสม)
 //   ค่าน้อยกว่าปีปัจจุบัน → ยกยอดทีละปีจนถึงปีปัจจุบัน
-// ตรวจตอนเริ่มเซิร์ฟเวอร์และทุก 6 ชั่วโมง · ปิดได้ด้วย LEAVE_AUTO_ROLLOVER=false
+// ปิดเป็นค่าเริ่มต้น — ให้แอดมินหรืองาน HR ยกยอดเอง เปิดได้ด้วย LEAVE_AUTO_ROLLOVER_ENABLED=true
+// (ชื่อใหม่ เพราะเซิร์ฟเวอร์เดิมอาจตั้ง LEAVE_AUTO_ROLLOVER=true ไว้ตาม .env.example)
+// เมื่อเปิด: ตรวจตอนเริ่มเซิร์ฟเวอร์และทุก 6 ชั่วโมง
 // ล็อกด้วย advisory lock — รันหลาย instance พร้อมกันก็ยกยอดครั้งเดียว
 const ROLLOVER_KEY = 'leave_rollover_fy';
 const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 
-export const autoRolloverEnabled = () => String(process.env.LEAVE_AUTO_ROLLOVER ?? 'true').toLowerCase() !== 'false';
+export const autoRolloverEnabled = () => String(process.env.LEAVE_AUTO_ROLLOVER_ENABLED ?? '').toLowerCase() === 'true';
 
 export const runAutoRollover = async (now = new Date()) => core_kon.begin(async (sql: any) => {
     const [lock] = await sql`SELECT pg_try_advisory_xact_lock(hashtext(${ROLLOVER_KEY})) AS ok`;

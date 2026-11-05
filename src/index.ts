@@ -100,7 +100,7 @@ const app = new Elysia()
   //.get("/", () => "Hello Elysia")
   .listen(process.env.PORT || 5000);
 
-// ยกยอดวันลาพักผ่อนอัตโนมัติเมื่อข้ามปีงบประมาณ (ปิดได้ด้วย LEAVE_AUTO_ROLLOVER=false)
+// ยกยอดวันลาพักผ่อนอัตโนมัติเมื่อข้ามปีงบประมาณ (ปิดอยู่ เปิดได้ด้วย LEAVE_AUTO_ROLLOVER_ENABLED=true)
 startLeaveRolloverJob();
 startLeaveNotifyJob();
 

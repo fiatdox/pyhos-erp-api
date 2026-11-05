@@ -90,7 +90,7 @@ MOPH_ALERT_SECRET_ID=...
 
 # ตัวเลือก
 TRUSTED_PROXIES=ip1,ip2        # reverse proxy ที่อยู่คนละเครื่อง — ใช้หา IP จริงของผู้ใช้
-LEAVE_AUTO_ROLLOVER=false      # ปิดการยกยอดวันลาพักผ่อนอัตโนมัติเมื่อข้ามปีงบ (ค่าเริ่มต้นเปิด)
+LEAVE_AUTO_ROLLOVER_ENABLED=true  # เปิดการยกยอดวันลาพักผ่อนอัตโนมัติเมื่อข้ามปีงบ (ค่าเริ่มต้นปิด)
 LEAVE_MAX_ADVANCE_DAYS=...     # ยื่นลาล่วงหน้าได้ไม่เกินกี่วัน
 ```
 
