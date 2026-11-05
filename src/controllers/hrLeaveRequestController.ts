@@ -438,7 +438,8 @@ const leavePackage = async (uid: number, status: string | null = null) => {
                    r.document_url, r.approval_chain, r.current_step, r.created_at, r.updated_at,
                    r.substitute_user_id, ${substituteName()} AS substitute_name, r.contact_info, ${dayCheckCols()},
                    c.id AS cancellation_id, c.status AS cancellation_status, c.reason AS cancellation_reason,
-                   c.refunded_days AS cancellation_refunded_days, c.reject_comment AS cancellation_reject_comment
+                   c.refunded_days AS cancellation_refunded_days, c.reject_comment AS cancellation_reject_comment,
+                   c.created_at AS cancellation_created_at, c.updated_at AS cancellation_updated_at, r.legacy_leave_id
             FROM hr_leave_requests r
             JOIN hr_leave_types t ON t.id = r.leave_type_id
             ${latestCancellation()}
@@ -447,6 +448,15 @@ const leavePackage = async (uid: number, status: string | null = null) => {
             ORDER BY r.created_at DESC
         `;
         const actions = await loadActions(rows.map((r: any) => Number(r.id)));
+        // ผลการอนุมัติของรอบยกเลิกล่าสุด (รออนุมัติ / สำเร็จ) — กรอกแบบใบขอยกเลิกวันลา
+        const cancelIds = rows.filter((r: any) => ['APPROVED', 'PENDING'].includes(r.cancellation_status)).map((r: any) => Number(r.cancellation_id));
+        const cancelActionRows = cancelIds.length ? await core_kon`
+            SELECT a.cancellation_id, a.step, a.action, a.comment, a.actioned_at, a.approver_id, a.level,
+                   CONCAT(u.pname, u.fname, ' ', u.lname) AS approver_name
+            FROM hr_leave_approvals a
+            JOIN users u ON u.id = a.approver_id
+            WHERE a.cancellation_id IN ${core_kon(cancelIds)}
+            ORDER BY a.step ASC, a.actioned_at ASC` : [];
 
         // ข้อมูลผู้ยื่นและยอดวันลาสะสม — ใช้กรอกแบบฟอร์มใบลาที่พิมพ์ออกมา
         const [profile] = await core_kon`
@@ -478,6 +488,7 @@ const leavePackage = async (uid: number, status: string | null = null) => {
         const approverIds = [...new Set([
             ...rows.flatMap((r: any) => parseChain(r.approval_chain).map(s => Number(s.approver_id))),
             ...[...actions.values()].flat().map((a: any) => Number(a.approver_id)),
+            ...cancelActionRows.map((a: any) => Number(a.approver_id)),
         ])];
         const approverRows = approverIds.length
             ? await core_kon`SELECT id, pname, fname, lname FROM users WHERE id IN ${core_kon(approverIds)}`
@@ -496,6 +507,7 @@ const leavePackage = async (uid: number, status: string | null = null) => {
                 return {
                     ...r,
                     actions: actions.get(Number(r.id)) ?? [],
+                    cancellation_actions: cancelActionRows.filter((a: any) => Number(a.cancellation_id) === Number(r.cancellation_id)),
                     fiscal_year: fy,
                     carried_in: bal ? Number(bal.carried_in) : 0,
                     // สิทธิ์ปีนี้ตามยอดจริงของปีงบนั้น (อายุงานเปลี่ยนเกณฑ์ได้) — ยังไม่มียอดใช้เกณฑ์ตามประเภทเจ้าหน้าที่
