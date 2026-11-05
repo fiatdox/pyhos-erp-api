@@ -464,7 +464,7 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
                 keep_carry_link: t.Optional(t.Boolean()),
             }), { maxItems: 500 }),
         }),
-        detail: { tags: ['HR'], summary: 'แก้ยอดวันลาสะสมหลายแถวพร้อมกัน', description: 'ทั้งชุดในธุรกรรมเดียว — บันทึกประวัติทุกแถว' }
+        detail: { tags: ['HR'], summary: 'แก้ยอดวันลาสะสมหลายแถวพร้อมกัน (เฉพาะ ADMIN)', description: 'ทั้งชุดในธุรกรรมเดียว — บันทึกประวัติทุกแถว' }
     })
     .get('/leave-balances/:id/logs', getLeaveBalanceLogs, {
         params: t.Object({ id: t.Numeric() }),

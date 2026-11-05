@@ -186,9 +186,14 @@ export const updateLeaveBalance = async ({ params, body, user, set }: any) => {
     } catch (error: any) { return serverError(set, 'updateLeaveBalance', error); }
 };
 
-// ── แก้หลายแถวพร้อมกัน (ปุ่ม "แก้ตามที่แนะนำ" ในหน้าตรวจแก้วันลาสะสม) — ทั้งชุดหรือไม่เลย ──
+// ── แก้หลายแถวพร้อมกัน (ปุ่ม "แก้ตามที่แนะนำ" ในหน้าตรวจแก้วันลาสะสม) — เฉพาะ ADMIN ทั้งชุดหรือไม่เลย ──
+// งาน HR แก้ทีละแถวผ่าน updateLeaveBalance
 export const fixLeaveBalances = async ({ body, user, set }: any) => {
     try {
+        if (!(await isAdmin(Number(user.id)))) {
+            set.status = 403;
+            return { success: false, message: 'การแก้หลายรายการพร้อมกันทำได้เฉพาะผู้ดูแลระบบ' };
+        }
         const items: any[] = Array.isArray(body.items) ? body.items : [];
         const reason = cleanReason(body.reason);
         if (!items.length) { set.status = 400; return { success: false, message: 'ไม่มีรายการให้แก้ไข' }; }
