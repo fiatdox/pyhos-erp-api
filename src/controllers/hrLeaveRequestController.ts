@@ -50,7 +50,7 @@ const fiscalYearOf = (value: unknown): number => {
     return (m >= 10 ? y + 1 : y) + 543;
 };
 
-const isAdmin = async (userId: number): Promise<boolean> => {
+export const isAdmin = async (userId: number): Promise<boolean> => {
     const rows = await core_kon`
         SELECT 1 FROM core_kon.user_m_users_roles mu
         JOIN core_kon.user_roles r ON r.id = mu.role_id

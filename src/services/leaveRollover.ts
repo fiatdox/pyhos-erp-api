@@ -2,7 +2,7 @@ import { core_kon } from '../db/db';
 
 // ── ยกยอดวันลาพักผ่อนข้ามปีงบประมาณ ─────────────────────────────────────────
 //
-// ใช้ทั้งปุ่ม "ยกยอด" ของงาน HR และงานอัตโนมัติเมื่อข้ามปีงบ (startLeaveRolloverJob)
+// ใช้ทั้งปุ่มยกยอดทั้งองค์กร (เฉพาะ ADMIN) ปุ่มยกยอดรายคน (ADMIN/HR) และงานอัตโนมัติเมื่อข้ามปีงบ (startLeaveRolloverJob)
 // ทำเฉพาะ "ลาพักผ่อน" (hr_leave_types.code = 'ANNUAL') — ตามระเบียบที่ให้สะสมลาพักผ่อนได้เป็นหลัก
 //
 // คนที่ไม่มีแถวของปีเดิม = ไม่เคยลาเลย ถือว่าเหลือเต็มสิทธิ์ · ยกได้ไม่เกิน carry_over_max_days
@@ -43,12 +43,12 @@ export const entitlementsOf = async (sql: any, leaveTypeId: number, asOf: string
 };
 
 export const rolloverAnnualLeave = async (
-    sql: any, fromFy: number, toFy: number, actorId: number | null,
+    sql: any, fromFy: number, toFy: number, actorId: number | null, userId?: number,
 ): Promise<RolloverResult> => {
     const [annual] = await sql`SELECT id FROM hr_leave_types WHERE code = 'ANNUAL'`;
     if (!annual) throw new Error('ไม่พบประเภทการลาพักผ่อน (ANNUAL) ในระบบ');
     const leaveTypeId = Number(annual.id);
-    const ents = await entitlementsOf(sql, leaveTypeId, fiscalYearStart(toFy));
+    const ents = await entitlementsOf(sql, leaveTypeId, fiscalYearStart(toFy), userId);
 
     const users = await sql`
         SELECT u.id AS user_id,
@@ -59,10 +59,10 @@ export const rolloverAnnualLeave = async (
                ON prev.user_id = u.id AND prev.leave_type_id = ${leaveTypeId} AND prev.fiscal_year = ${fromFy}
         LEFT JOIN hr_leave_balances nxt
                ON nxt.user_id = u.id AND nxt.leave_type_id = ${leaveTypeId} AND nxt.fiscal_year = ${toFy}
-        WHERE u.is_active = 'Y'`;
+        WHERE u.is_active = 'Y' ${userId != null ? sql`AND u.id = ${userId}` : sql``}`;
 
     const out: RolloverResult = { created: 0, filled: 0, skipped_existing: 0, skipped_no_entitlement: 0 };
-    const note = `ยกยอดอัตโนมัติจากปีงบประมาณ ${fromFy}`;
+    const note = userId != null ? `ยกยอดรายบุคคลจากปีงบประมาณ ${fromFy}` : `ยกยอดอัตโนมัติจากปีงบประมาณ ${fromFy}`;
     for (const u of users) {
         const hasNext = u.next_id != null;
         // แถวปีใหม่ที่ HR ตั้งเอง หรือยกยอดไปแล้ว — ไม่แตะ

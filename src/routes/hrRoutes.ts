@@ -16,7 +16,7 @@ import { getLeaveAnalytics } from '../controllers/hrLeaveAnalyticsController';
 import { getLeaveAccessPreview } from '../controllers/hrLeaveAccessController';
 import { getLegacyImportOptions, listLegacyImportRuns, getLegacyImportRun, startLegacyImportRun } from '../controllers/hrLegacyImportController';
 import { getLeaveDayCount, getHolidays, createHoliday, updateHoliday, deleteHoliday, getLeaveDayCheck, verifyLeaveDays, adjustLeaveDays, cancelLeaveDayCheck } from '../controllers/hrLeaveDayController';
-import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances, getLeaveBalanceAudit, getLeaveBalanceLogs, fixLeaveBalances, getLeaveBalanceTransferStatus } from '../controllers/hrLeaveBalanceController';
+import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances, rolloverLeaveBalanceForUser, getLeaveBalanceAudit, getLeaveBalanceLogs, fixLeaveBalances, getLeaveBalanceTransferStatus } from '../controllers/hrLeaveBalanceController';
 
 export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     .use(authMiddleware)
@@ -475,7 +475,14 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
             from_fiscal_year: t.Numeric(),
             to_fiscal_year: t.Numeric(),
         }),
-        detail: { tags: ['HR'], summary: 'ยกยอดวันลาสะสมขึ้นปีงบประมาณใหม่', description: 'ทำเฉพาะลาพักผ่อน (ANNUAL) เท่านั้น — คัดลอกคงเหลือ (cap ตาม carry_over_max_days ของแต่ละคน) จาก from → to — ข้ามคนที่มีข้อมูลปีใหม่อยู่แล้ว (กันกดซ้ำ)' }
+        detail: { tags: ['HR'], summary: 'ยกยอดวันลาสะสมทั้งองค์กร (เฉพาะ ADMIN)', description: 'ทำเฉพาะลาพักผ่อน (ANNUAL) เท่านั้น — คัดลอกคงเหลือ (cap ตาม carry_over_max_days ของแต่ละคน) จาก from → to — ข้ามคนที่มีข้อมูลปีใหม่อยู่แล้ว (กันกดซ้ำ)' }
+    })
+    .post('/leave-balances/rollover-user', rolloverLeaveBalanceForUser, {
+        body: t.Object({
+            user_id: t.Numeric(),
+            fiscal_year: t.Numeric(),
+        }),
+        detail: { tags: ['HR'], summary: 'ยกยอดวันลาพักผ่อนรายคน (ADMIN/HR)', description: 'ยกคงเหลือจากปีก่อนหน้าเข้าปี fiscal_year — บันทึกประวัติผู้กดใน hr_leave_balance_logs — 409 ถ้ามียอดที่ตั้งเองหรือยกยอดแล้ว' }
     })
     // แก้ไขเงื่อนไขพื้นฐานของประเภทการลา
     .patch('/leave-types/:id', updateLeaveType, {

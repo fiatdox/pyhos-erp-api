@@ -1,5 +1,6 @@
 import { core_kon } from '../db/db';
 import { rolloverAnnualLeave, autoRolloverEnabled, syncCarriedForward, entitlementsOf, fiscalYearStart, currentFiscalYear } from '../services/leaveRollover';
+import { isAdmin } from './hrLeaveRequestController';
 
 const serverError = (set: any, where: string, error: any) => {
     console.error(`[hrLeaveBalanceController] ${where}:`, error);
@@ -92,7 +93,9 @@ export const getLeaveBalances = async ({ query, set }: any) => {
             SELECT
                 u.id AS user_id, u.pname, u.fname, u.lname,
                 up.position_name, m.name AS mission_name, mj.name AS major_name, sm.name AS submajor_name,
-                b.id AS balance_id, b.carried_in, b.entitled, b.used, b.remaining, b.note, b.updated_at
+                b.id AS balance_id, b.carried_in, b.entitled, b.used, b.remaining, b.note, b.updated_at,
+                b.auto_created, b.carried_from_fy,
+                prev.remaining AS prev_remaining
             FROM users u
             LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
             LEFT JOIN missions   m  ON m.mission_id   = u.mission_id
@@ -100,6 +103,8 @@ export const getLeaveBalances = async ({ query, set }: any) => {
             LEFT JOIN submajors  sm ON sm.submajor_id = u.submajor_id
             LEFT JOIN hr_leave_balances b
                    ON b.user_id = u.id AND b.leave_type_id = ${leaveTypeId} AND b.fiscal_year = ${fiscalYear}
+            LEFT JOIN hr_leave_balances prev
+                   ON prev.user_id = u.id AND prev.leave_type_id = ${leaveTypeId} AND prev.fiscal_year = ${fiscalYear - 1}
             WHERE u.is_active = 'Y'
               AND (${missionId}::int   IS NULL OR u.mission_id   = ${missionId})
               AND (${majorId}::int     IS NULL OR u.major_id     = ${majorId})
@@ -410,10 +415,15 @@ export const getLeaveBalanceTransferStatus = async ({ query, set }: any) => {
     } catch (error: any) { return serverError(set, 'getLeaveBalanceTransferStatus', error); }
 };
 
-// ── ยกยอดปีงบประมาณใหม่ (ปุ่มของงาน HR) ─────────────────────────────────────
+// ── ยกยอดทั้งองค์กร (เฉพาะ ADMIN) ──────────────────────────────────────────
+// มีผลกับบุคลากรทุกคนในครั้งเดียว งาน HR ใช้ยกยอดรายคนแทน (rolloverLeaveBalanceForUser)
 // ตรรกะอยู่ที่ services/leaveRollover.ts — ใช้ร่วมกับงานยกยอดอัตโนมัติเมื่อข้ามปีงบ
 export const rolloverLeaveBalances = async ({ body, user, set }: any) => {
     try {
+        if (!(await isAdmin(Number(user.id)))) {
+            set.status = 403;
+            return { success: false, message: 'การยกยอดทั้งองค์กรทำได้เฉพาะผู้ดูแลระบบ' };
+        }
         const { from_fiscal_year, to_fiscal_year } = body;
         if (to_fiscal_year <= from_fiscal_year) {
             set.status = 400;
@@ -422,4 +432,49 @@ export const rolloverLeaveBalances = async ({ body, user, set }: any) => {
         const data = await core_kon.begin((sql: any) => rolloverAnnualLeave(sql, Number(from_fiscal_year), Number(to_fiscal_year), Number(user.id)));
         return { success: true, data };
     } catch (error: any) { return serverError(set, 'rolloverLeaveBalances', error); }
+};
+
+// ── ยกยอดรายคน (ADMIN / HR) ─────────────────────────────────────────────────
+// ยกจากปีก่อนหน้าเข้าปี fiscal_year ด้วยกติกาเดียวกับยกยอดทั้งองค์กร
+// แถวที่ HR ตั้งเองหรือยกยอดแล้วจะไม่ถูกแตะ · เก็บค่าก่อน/หลังและผู้กดไว้ใน hr_leave_balance_logs
+export const rolloverLeaveBalanceForUser = async ({ body, user, set }: any) => {
+    try {
+        const userId = Number(body.user_id);
+        const fy = Number(body.fiscal_year);
+        const actorId = Number(user.id);
+        const out = await core_kon.begin(async (tx: any) => {
+            const [annual] = await tx`SELECT id FROM hr_leave_types WHERE code = 'ANNUAL'`;
+            if (!annual) throw new Error('ไม่พบประเภทการลาพักผ่อน (ANNUAL) ในระบบ');
+            const typeId = Number(annual.id);
+            const [before] = await tx`
+                SELECT * FROM hr_leave_balances
+                WHERE user_id = ${userId} AND leave_type_id = ${typeId} AND fiscal_year = ${fy} FOR UPDATE`;
+            const [prev] = await tx`
+                SELECT id FROM hr_leave_balances
+                WHERE user_id = ${userId} AND leave_type_id = ${typeId} AND fiscal_year = ${fy - 1}`;
+            const r = await rolloverAnnualLeave(tx, fy - 1, fy, actorId, userId);
+            if (r.skipped_existing) return { status: 409, message: 'บุคลากรคนนี้มียอดของปีงบนี้ที่ตั้งเองหรือยกยอดแล้ว' };
+            if (r.skipped_no_entitlement) return { status: 400, message: 'บุคลากรคนนี้ไม่มีสิทธิ์สะสมวันลาพักผ่อน' };
+            if (!r.created && !r.filled) return { status: 404, message: 'ไม่พบบุคลากรที่ยังปฏิบัติงาน' };
+
+            const [after] = await tx`
+                SELECT * FROM hr_leave_balances
+                WHERE user_id = ${userId} AND leave_type_id = ${typeId} AND fiscal_year = ${fy}`;
+            await logBalance(tx, after.id, before ? 'UPDATE' : 'CREATE', before ? snapshot(before) : null, snapshot(after),
+                `ยกยอดรายบุคคลจากปีงบประมาณ ${fy - 1}`, actorId);
+            await syncCarriedForward(tx, userId, typeId, fy);
+            return { data: { carried_in: Number(after.carried_in), remaining: Number(after.remaining), assumed_full: !prev } };
+        });
+        if ('status' in out) {
+            set.status = out.status;
+            return { success: false, message: out.message };
+        }
+        return { success: true, data: out.data };
+    } catch (error: any) {
+        if (error.code === '23505') {
+            set.status = 409;
+            return { success: false, message: 'บุคลากรคนนี้มียอดของปีงบนี้แล้ว' };
+        }
+        return serverError(set, 'rolloverLeaveBalanceForUser', error);
+    }
 };
