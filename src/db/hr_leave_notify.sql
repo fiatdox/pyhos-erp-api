@@ -28,5 +28,16 @@ CREATE TABLE IF NOT EXISTS hr_leave_notify_log (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_hr_leave_notify_slot ON hr_leave_notify_log (slot_key) WHERE slot_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_hr_leave_notify_log_created ON hr_leave_notify_log (created_at DESC);
 
+-- ยกเว้นการแจ้งเตือนรายคน — ADMIN จัดการที่ /hr/leave/notify-exempt (ไม่มีแถว = ตามค่าตั้งของระดับ)
+--   digest = ไม่แจ้งทันที ใบรออนุมัติรับเป็นสรุปตามรอบ · off = ไม่แจ้งใบรออนุมัติเลย
+--   ทั้งสองแบบไม่รับแจ้งเพื่อนร่วมงานลา แต่ยังได้รับการแจ้งเรื่องใบลาของตัวเอง
+CREATE TABLE IF NOT EXISTS hr_leave_notify_exempt (
+    user_id     INT         PRIMARY KEY,
+    mode        VARCHAR(10) NOT NULL CHECK (mode IN ('digest', 'off')),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by  INT
+);
+
+COMMENT ON TABLE hr_leave_notify_exempt IS 'ยกเว้นการแจ้งเตือนระบบลารายคน — ADMIN จัดการที่ /hr/leave/notify-exempt';
 COMMENT ON TABLE hr_leave_notify_config IS 'ค่าตั้งการแจ้งเตือนระบบลา (JSON ชุดเดียว) — ADMIN แก้ที่ /hr/leave/notify-settings';
 COMMENT ON TABLE hr_leave_notify_log    IS 'ประวัติการส่งแจ้งเตือนระบบลา — slot_key กันรอบสรุปส่งซ้ำ';

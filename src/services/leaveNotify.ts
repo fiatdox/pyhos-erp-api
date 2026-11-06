@@ -7,6 +7,8 @@
 //                 instant: รวมใบที่เข้าคิวของคนเดียวกันภายใน 1 นาทีเป็นข้อความเดียว (กดอนุมัติแบบกลุ่มไม่เตือนรัว)
 //                 digest : สรุปยอดรออนุมัติตามเวลาที่ตั้ง (ค่าตั้งต้น 08:00 12:00 16:00) ไม่มีใบรอ = ไม่ส่ง
 //   ผู้ลา         แจ้งเมื่อยื่นใบลาเข้าระบบแล้ว (รวมกรณี HR ยื่นแทน) · แจ้งผลอนุมัติ / ไม่อนุมัติ / ยกเลิกสำเร็จ
+//   ยกเว้นรายคน    ตั้งที่ /hr/leave/notify-exempt (hr_leave_notify_exempt) — ลดการแจ้งได้อย่างเดียว ไม่เพิ่มเกินค่าระดับ
+//                 digest: ทันที → สรุปตามรอบ · off: ไม่แจ้งใบรออนุมัติ · ทั้งคู่ไม่รับแจ้งเพื่อนร่วมงาน แต่ยังรับเรื่องใบลาของตัวเอง
 //
 // ปลอดภัยไว้ก่อน: ไม่มีค่าตั้ง / ตารางยังไม่ได้สร้าง / ยังไม่ตั้ง MOPH_ALERT_* = ไม่ส่งอะไรเลย
 // การส่งทำหลัง transaction ของใบลาเสร็จ และไม่โยน error กลับ — ส่งไม่สำเร็จต้องไม่ทำให้การลาล้ม
@@ -77,7 +79,7 @@ export const normalizeConfig = (raw: any): LeaveNotifyConfig => {
 
 // ── ค่าตั้ง (แคช 30 วินาที — อ่านทุกครั้งที่มีการยื่น/อนุมัติ) ───────────────────────────
 let cache: { at: number; config: LeaveNotifyConfig; ready: boolean } | null = null;
-const missingTable = (e: any) => /hr_leave_notify_(config|log)/.test(String(e?.message ?? '')) && /does not exist/.test(String(e?.message ?? ''));
+const missingTable = (e: any) => /hr_leave_notify_(config|log|exempt)/.test(String(e?.message ?? '')) && /does not exist/.test(String(e?.message ?? ''));
 
 export const loadConfig = async (): Promise<{ config: LeaveNotifyConfig; ready: boolean }> => {
     if (cache && Date.now() - cache.at < 30_000) return cache;
@@ -98,6 +100,36 @@ export const saveConfig = async (raw: any, actorId: number | null) => {
         ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = now(), updated_by = EXCLUDED.updated_by`;
     cache = null;
     return config;
+};
+
+// ── ยกเว้นรายคน (แคช 30 วินาทีเหมือนค่าตั้ง) ───────────────────────────────────────────
+export type ExemptMode = 'digest' | 'off';
+let exemptCache: { at: number; map: Map<number, ExemptMode> } | null = null;
+
+/** อ่านไม่ได้ = ถือว่าไม่มีคนถูกยกเว้น — ส่งเกินดีกว่าหัวหน้าไม่รู้ว่ามีใบรออนุมัติ */
+export const loadExempt = async (): Promise<Map<number, ExemptMode>> => {
+    if (exemptCache && Date.now() - exemptCache.at < 30_000) return exemptCache.map;
+    let map = new Map<number, ExemptMode>();
+    try {
+        const rows = await core_kon`SELECT user_id, mode FROM hr_leave_notify_exempt`;
+        map = new Map((rows as any[]).map(r => [Number(r.user_id), r.mode as ExemptMode]));
+    } catch (e: any) {
+        if (!missingTable(e)) console.error('[leaveNotify] อ่านรายการยกเว้นไม่สำเร็จ:', e?.message);
+    }
+    exemptCache = { at: Date.now(), map };
+    return map;
+};
+
+/** mode = null คือเลิกยกเว้น (กลับไปตามค่าตั้งของระดับ) */
+export const saveExempt = async (userId: number, mode: ExemptMode | null, actorId: number | null) => {
+    if (mode) {
+        await core_kon`
+            INSERT INTO hr_leave_notify_exempt (user_id, mode, updated_by) VALUES (${userId}, ${mode}, ${actorId})
+            ON CONFLICT (user_id) DO UPDATE SET mode = EXCLUDED.mode, updated_at = now(), updated_by = EXCLUDED.updated_by`;
+    } else {
+        await core_kon`DELETE FROM hr_leave_notify_exempt WHERE user_id = ${userId}`;
+    }
+    exemptCache = null;
 };
 
 export const mophConfigured = () => !!(process.env.MOPH_ALERT_BASE_URL && process.env.MOPH_ALERT_CLIENT_ID && process.env.MOPH_ALERT_SECRET_ID);
@@ -233,13 +265,15 @@ const loadRequest = async (id: number) => {
     return r ?? null;
 };
 
-/** โหมดแจ้งของขั้นนี้ — กลุ่มภารกิจดูค่าตั้งรายภารกิจก่อน */
-export const modeOfStep = (config: LeaveNotifyConfig, step: ChainStep | null | undefined): NotifyMode => {
+/** โหมดแจ้งของขั้นนี้ — กลุ่มภารกิจดูค่าตั้งรายภารกิจก่อน แล้วจึงดูการยกเว้นรายคน (ถ้าส่ง exempt มา) */
+export const modeOfStep = (config: LeaveNotifyConfig, step: ChainStep | null | undefined, exempt?: Map<number, ExemptMode>): NotifyMode => {
     if (!step || step.external || !step.approver_id || step.level === 'PROVINCIAL') return 'off';
-    if (step.level === 'MISSION' && step.unit_id != null && config.mission_overrides[String(step.unit_id)]) {
-        return config.mission_overrides[String(step.unit_id)];
-    }
-    return config.approver[step.level as ApproverLevel] ?? 'off';
+    const base = step.level === 'MISSION' && step.unit_id != null && config.mission_overrides[String(step.unit_id)]
+        ? config.mission_overrides[String(step.unit_id)]
+        : config.approver[step.level as ApproverLevel] ?? 'off';
+    const personal = exempt?.get(Number(step.approver_id));
+    // ลดการแจ้งได้อย่างเดียว — ระดับที่ปิดอยู่แล้วไม่ถูกเปิดด้วยการยกเว้น
+    return !personal || base === 'off' ? base : personal;
 };
 
 // ── ผู้อนุมัติแบบทันที: รวมคิวของคนเดียวกันภายใน 1 นาที ──────────────────────────────────
@@ -329,13 +363,14 @@ const flushApprover = async (approverId: number) => {
     try {
         const { config } = await loadConfig();
         if (!config.enabled) return;
-        // ยังรอคนนี้อยู่จริงไหม (อาจอนุมัติไปแล้วระหว่างรอ 1 นาที)
+        const exempt = await loadExempt();
+        // ยังรอคนนี้อยู่จริงไหม (อาจอนุมัติไปแล้วระหว่างรอ 1 นาที) และยังแจ้งทันทีอยู่ไหม (อาจเพิ่งถูกยกเว้น — ใบไปรอรอบสรุปแทน)
         const steps = new Map<number, ChainStep | null>();
         const rows = (await Promise.all([...q.ids].map(loadRequest))).filter((r: any) => {
             if (!r || !['PENDING', 'CANCEL_PENDING'].includes(r.status)) return false;
             const st = stepFor(parseChain(r.approval_chain), Number(r.current_step));
             steps.set(Number(r.id), st ?? null);
-            return Number(st?.approver_id) === approverId;
+            return Number(st?.approver_id) === approverId && modeOfStep(config, st, exempt) === 'instant';
         });
         if (rows.length === 0) return;
         const [me] = await core_kon`SELECT id_card FROM users WHERE id = ${approverId} AND is_active = 'Y'`;
@@ -350,13 +385,14 @@ const flushApprover = async (approverId: number) => {
 
 // ── เพื่อนร่วมงาน: คนในหน่วยงานเดียวกัน (ไม่มีหน่วยงาน → คนในกลุ่มงานที่ไม่มีหน่วยงานเช่นกัน ถ้าตั้ง unit_or_group) ──
 const colleaguesOf = async (r: any, config: LeaveNotifyConfig) => {
+    let mates: any[] = [];
     if (r.submajor_id != null) {
-        return core_kon`SELECT id_card FROM users WHERE is_active = 'Y' AND submajor_id = ${r.submajor_id} AND id <> ${r.user_id}`;
+        mates = await core_kon`SELECT id, id_card FROM users WHERE is_active = 'Y' AND submajor_id = ${r.submajor_id} AND id <> ${r.user_id}`;
+    } else if (config.colleague.scope === 'unit_or_group' && r.major_id != null) {
+        mates = await core_kon`SELECT id, id_card FROM users WHERE is_active = 'Y' AND major_id = ${r.major_id} AND submajor_id IS NULL AND id <> ${r.user_id}`;
     }
-    if (config.colleague.scope === 'unit_or_group' && r.major_id != null) {
-        return core_kon`SELECT id_card FROM users WHERE is_active = 'Y' AND major_id = ${r.major_id} AND submajor_id IS NULL AND id <> ${r.user_id}`;
-    }
-    return [];
+    const exempt = await loadExempt();
+    return mates.filter(m => !exempt.has(Number(m.id)));
 };
 
 /** บอกแค่ชื่อ วันที่ และว่า "ลา" — ไม่บอกประเภท/เหตุผล (ข้อมูลส่วนตัว) */
@@ -405,7 +441,7 @@ export const notifyLeaveEvent = async (requestId: number, event: LeaveEvent): Pr
         // ผู้อนุมัติขั้นที่ใบกำลังรอ
         if (r.status === 'PENDING' || r.status === 'CANCEL_PENDING') {
             const step = stepFor(chain, Number(r.current_step));
-            if (modeOfStep(config, step) === 'instant') queueApprover(Number(step!.approver_id), Number(r.id));
+            if (modeOfStep(config, step, await loadExempt()) === 'instant') queueApprover(Number(step!.approver_id), Number(r.id));
             return;
         }
 
@@ -440,10 +476,11 @@ export const digestBuckets = async (config: LeaveNotifyConfig, only?: (step: Cha
         LEFT JOIN submajors sm ON sm.submajor_id = u.submajor_id
         LEFT JOIN majors mj ON mj.major_id = u.major_id
         WHERE r.status IN ('PENDING', 'CANCEL_PENDING')`;
+    const exempt = await loadExempt();
     const buckets = new Map<number, { level: string; code: string; count: number; cancel: number; oldest: Date; units: Map<string, number>; ids: number[] }>();
     for (const r of rows as any[]) {
         const step = stepFor(parseChain(r.approval_chain), Number(r.current_step));
-        if (modeOfStep(config, step) !== 'digest' || (only && !only(step!))) continue;
+        if (modeOfStep(config, step, exempt) !== 'digest' || (only && !only(step!))) continue;
         const id = Number(step!.approver_id);
         const b = buckets.get(id) ?? { level: step!.level_name, code: step!.level, count: 0, cancel: 0, oldest: new Date(r.updated_at ?? r.created_at), units: new Map(), ids: [] as number[] };
         b.count++;

@@ -2,7 +2,7 @@ import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { requireRoles } from '../middlewares/roleGuard';
 import { getLeaveChainMismatches, previewLeaveChainResync, applyLeaveChainResync, getLeaveChainResyncLog } from '../controllers/hrLeaveChainResyncController';
-import { getLeaveNotifyConfig, updateLeaveNotifyConfig, getLeaveNotifyLog, previewLeaveNotifyDigest, testLeaveNotify } from '../controllers/hrLeaveNotifyController';
+import { getLeaveNotifyConfig, updateLeaveNotifyConfig, getLeaveNotifyLog, previewLeaveNotifyDigest, testLeaveNotify, getLeaveNotifyExempt, updateLeaveNotifyExempt } from '../controllers/hrLeaveNotifyController';
 import { getLeaveTypes, getLeaveEntitlements, getLeaveEntitlementByUserTypeId, getMissionSupervisorByUserId, getMajorSupervisorByUserId, getSubMajorSupervisorByUserId, updateMissionSupervisor, updateMissionActingSupervisor, updateMajorSupervisor, updateMajorActingSupervisor, updateSubMajorSupervisor, updateSubMajorActingSupervisor, getDirector, updateDirector, updateActingDirector, getMissionHeadCheck, getLeaveApproverCheck, getLeaveTypesFull, updateLeaveType, updateLeaveEntitlement, createLeaveEntitlement, deleteLeaveEntitlement } from '../controllers/hrController';
 import { getHrSummary, getStaffTypes, getPositions, getPositionBubbles, getExitReasons, getExitMonthly, getAgeGroups, getGenders, getMissionGroups, getHrPeople, getHrAgeIssues } from '../controllers/hrDashboardController';
 import {
@@ -286,6 +286,15 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     .post('/leave-notify/test', testLeaveNotify, {
         body: t.Optional(t.Object({ kind: t.Optional(t.String()), level: t.Optional(t.String()), mission_id: t.Optional(t.Number()), config: t.Optional(t.Any()) })),
         detail: { tags: ['HR'], summary: 'ทดสอบส่งแจ้งเตือนถึงผู้ดูแลระบบเอง — ระบุ level/mission_id = ส่งข้อความแบบที่ผู้อนุมัติระดับนั้นจะได้รับ (ADMIN)' }
+    })
+
+    .get('/leave-notify/exempt', getLeaveNotifyExempt, {
+        detail: { tags: ['HR'], summary: 'หัวหน้าและบุคลากรที่ถูกยกเว้นการแจ้งเตือนระบบลา (ADMIN)' }
+    })
+    .put('/leave-notify/exempt/:userId', updateLeaveNotifyExempt, {
+        params: t.Object({ userId: t.String() }),
+        body: t.Object({ mode: t.Nullable(t.String()) }),
+        detail: { tags: ['HR'], summary: 'ตั้งการยกเว้นการแจ้งเตือนรายคน — digest / off / null = เลิกยกเว้น (ADMIN)' }
     })
 
     // ── ปรับสายอนุมัติใบลาที่ยื่นแล้วให้ตรงผังปัจจุบัน — เฉพาะ ADMIN (ตรวจใน controller) ─────
