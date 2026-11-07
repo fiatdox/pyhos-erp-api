@@ -17,6 +17,7 @@ import { accountingRoutes } from "./routes/accountingRoutes";
 import { medicalStatRoutes } from "./routes/medicalStatRoutes";
 import { itRoadmapRoutes, itRoadmapSwaggerTags } from "./routes/itRoadmapRoutes";
 import { assetDonationRoutes } from "./routes/assetDonationRoutes";
+import { contractGuaranteeRoutes } from "./routes/contractGuaranteeRoutes";
 import { mfaAdminRoutes } from "./routes/mfaAdminRoutes";
 import { userCredentialRoutes } from "./routes/userCredentialRoutes";
 import { appModuleRoutes } from "./routes/appModuleRoutes";
@@ -92,6 +93,7 @@ const app = new Elysia()
   .use(medicalStatRoutes)
   .use(itRoadmapRoutes)
   .use(assetDonationRoutes)
+  .use(contractGuaranteeRoutes)
   .use(mfaAdminRoutes)
   .use(userCredentialRoutes)
   .use(appModuleRoutes)
