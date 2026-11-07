@@ -364,6 +364,7 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     })
     // ── ตรวจจำนวนวันลาที่คร่อมวันหยุด ─────────────────────────────────────────
     // โอนข้อมูลจากโปรแกรมการลาเดิม — รันเบื้องหลัง ดูความคืบหน้า/รายงานจาก runs
+    // โอนข้อมูลโปรแกรมเดิม — เฉพาะ ADMIN (เข้มกว่า requireRoles ด้านบน ตรวจใน controller)
     .get('/legacy-import/options', getLegacyImportOptions, {
         detail: { tags: ['HR'], summary: 'ตัวเลือกการโอนข้อมูลจากโปรแกรมการลาเดิม' }
     })

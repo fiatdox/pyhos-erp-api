@@ -1,8 +1,9 @@
 import { core_kon } from '../db/db';
 import { legacyConfigured, runLegacyLeaveImport, runLegacyServiceDates, type LeaveImportOptions } from '../services/legacyImport';
 import { currentFiscalYear } from '../services/leaveRollover';
+import { guard } from './hrLeaveNotifyController';
 
-// ── งาน HR โอนข้อมูลจากโปรแกรมการลาเดิม (หน้า /hr/leave/legacy-import) ──────────────
+// ── โอนข้อมูลจากโปรแกรมการลาเดิม (หน้า /hr/leave/legacy-import — เฉพาะ ADMIN) ──────────
 //
 // กดแล้วรันเบื้องหลัง (โอนทุกคนใช้เวลาหลายนาที) — หน้าเว็บดึงความคืบหน้าจาก hr_legacy_import_runs
 // รันได้ทีละงาน · เซิร์ฟเวอร์ถูกรีสตาร์ตระหว่างรัน → งานที่ค้างถูกปิดเป็น FAILED ตอนเปิดดูรายการ
@@ -26,8 +27,9 @@ const closeStaleRuns = () => core_kon`
     UPDATE hr_legacy_import_runs SET status = 'FAILED', error = 'เซิร์ฟเวอร์ถูกรีสตาร์ตระหว่างทำงาน — สั่งใหม่ได้ (ใบที่โอนแล้วจะข้าม)', finished_at = now()
     WHERE status = 'RUNNING' AND id <> ${runningId ?? 0}`;
 
-export const getLegacyImportOptions = async ({ set }: any) => {
+export const getLegacyImportOptions = async ({ user, set }: any) => {
     try {
+        const denied = await guard(user, set); if (denied) return denied;
         const missions = await core_kon`SELECT mission_id AS id, name FROM missions ORDER BY mission_id`;
         return {
             success: true,
@@ -36,8 +38,9 @@ export const getLegacyImportOptions = async ({ set }: any) => {
     } catch (error: any) { return serverError(set, 'getLegacyImportOptions', error); }
 };
 
-export const listLegacyImportRuns = async ({ set }: any) => {
+export const listLegacyImportRuns = async ({ user, set }: any) => {
     try {
+        const denied = await guard(user, set); if (denied) return denied;
         await closeStaleRuns();
         const rows = await core_kon`
             SELECT r.id, r.kind, r.mode, r.params, r.status, r.progress, r.total, r.totals, r.error,
@@ -48,8 +51,9 @@ export const listLegacyImportRuns = async ({ set }: any) => {
     } catch (error: any) { return serverError(set, 'listLegacyImportRuns', error); }
 };
 
-export const getLegacyImportRun = async ({ params, set }: any) => {
+export const getLegacyImportRun = async ({ params, user, set }: any) => {
     try {
+        const denied = await guard(user, set); if (denied) return denied;
         const [row] = await core_kon`SELECT * FROM hr_legacy_import_runs WHERE id = ${Number(params?.id)}`;
         if (!row) return fail(set, 404, 'ไม่พบงานนี้');
         return { success: true, data: row };
@@ -58,6 +62,7 @@ export const getLegacyImportRun = async ({ params, set }: any) => {
 
 export const startLegacyImportRun = async ({ body, user, set }: any) => {
     try {
+        const denied = await guard(user, set); if (denied) return denied;
         if (!legacyConfigured()) return fail(set, 400, 'ยังไม่ได้ตั้งค่าการเชื่อมต่อฐานข้อมูลโปรแกรมเดิม (DB_LEAVE_*)');
         if (runningId != null) return fail(set, 409, `มีงานโอนข้อมูลกำลังทำอยู่ (งาน #${runningId}) รอให้เสร็จก่อน`);
         const kind = body?.kind === 'SERVICE_DATES' ? 'SERVICE_DATES' : 'LEAVE';
