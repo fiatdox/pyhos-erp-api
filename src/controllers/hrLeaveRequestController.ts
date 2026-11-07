@@ -1441,18 +1441,36 @@ export const getLeaveSummary = async ({ user, query, set }: any) => {
 //   chain  = ใบลาที่สายอนุมัติระบุรหัสของฉัน (หัวหน้า/รักษาการ หน่วยงาน กลุ่มงาน กลุ่มภารกิจ และ ผอ.)
 //            ตรงกับหน้าอนุมัติการลา — ผอ. จึงเห็นเฉพาะใบของหัวหน้ากลุ่มภารกิจ/รักษาการ ที่เสนอ ผอ. โดยตรง
 //   all    = ทั้งโรงพยาบาล (ADMIN / HR)
-//   <kind>:<id> = เลือกดูหน่วยใดก็ได้ในโรงพยาบาล (kind = mission / major / submajor)
-//            เฉพาะหัวหน้า/รักษาการทุกระดับ (รวมผู้ควบหลายหน่วย) ผอ./รักษาการ ผอ. ADMIN และ HR
+//   <kind>:<id> = เลือกดูหน่วย (kind = mission / major / submajor)
+//            หัวหน้า/รักษาการ (รวมผู้ควบหลายหน่วย) = เฉพาะหน่วยที่ดูแลและหน่วยย่อยข้างใต้ · ผอ./รักษาการ ผอ. ADMIN และ HR = ทุกหน่วย
 //            ใบที่ฉันไม่ได้อยู่ในสายอนุมัติ เห็นแค่ว่า "ลา" (ซ่อนประเภท/เหตุผล) เว้นแต่ ADMIN / HR
 // ไม่รวมใบที่ไม่อนุมัติ/ยกเลิกแล้ว
+// as_user_id (ADMIN เท่านั้น) = ดูแบบที่บุคลากรคนนั้นเห็น ใช้ตรวจการมองเห็น — ใช้เส้นทางเดียวกับเจ้าตัวทุกขั้น รวมการซ่อนข้อมูล
 const CALENDAR_STATUSES = ['PENDING', 'APPROVED', 'CANCEL_PENDING'];
 const CALENDAR_MAX_DAYS = 62;
 const UNIT_SCOPE = /^(mission|major|submajor):(\d+)$/;
 const UNIT_GROUP: Record<string, string> = { mission: 'กลุ่มภารกิจ', major: 'กลุ่มงาน', submajor: 'หน่วยงาน/ตึก' };
 
+/** หน่วยในสายของหัวหน้า: หน่วยที่ดูแล + หน่วยย่อยข้างใต้ (ภารกิจ → กลุ่มงาน → หน่วยงาน) */
+const unitsInLine = (all: any[], missions: any[], majors: any[], submajors: any[]) => {
+    const missionIds = new Set(missions.map((u: any) => Number(u.id)));
+    const majorIds = new Set(majors.map((u: any) => Number(u.id)));
+    const submajorIds = new Set(submajors.map((u: any) => Number(u.id)));
+    for (const u of all) if (u.kind === 'major' && missionIds.has(Number(u.parent_id))) majorIds.add(Number(u.id));
+    return all.filter(u => u.kind === 'mission' ? missionIds.has(Number(u.id))
+        : u.kind === 'major' ? majorIds.has(Number(u.id))
+        : submajorIds.has(Number(u.id)) || majorIds.has(Number(u.parent_id)));
+};
+
 export const getLeaveCalendar = async ({ user, query, set }: any) => {
     try {
-        const uid = Number(user?.id);
+        let uid = Number(user?.id);
+        if (query?.as_user_id != null && query.as_user_id !== '') {
+            const target = Number(query.as_user_id);
+            if (!Number.isInteger(target) || target < 1) return fail(set, 400, 'รหัสบุคลากรไม่ถูกต้อง');
+            if (target !== uid && !(await isAdmin(uid))) return fail(set, 403, 'ดูปฏิทินแบบบุคลากรคนอื่นได้เฉพาะผู้ดูแลระบบ');
+            uid = target;
+        }
         const ymd = /^\d{4}-\d{2}-\d{2}$/;
         const from = String(query?.from ?? '');
         const to = String(query?.to ?? '');
@@ -1480,13 +1498,14 @@ export const getLeaveCalendar = async ({ user, query, set }: any) => {
                 SELECT submajor_id AS id, name, (supervisor_id = ${uid}) AS is_primary FROM submajors
                 WHERE is_active = 'Y' AND (supervisor_id = ${uid} OR acting_supervisor_id = ${uid}) ORDER BY name`,
         ]);
+        if (!me) return fail(set, 404, 'ไม่พบบุคลากร');
         const roles = roleRows.map((r: any) => r.role_name);
         const directorRole = directorRows.find((r: any) => r.value != null && Number(r.value) === uid)?.name;
         const canSeeAll = roles.includes('ADMIN') || roles.includes('HR');
         const units = [...missions, ...majors, ...submajors];
-        // เลือกดูหน่วยอื่นได้ — หัวหน้า/รักษาการทุกระดับ ผอ. ADMIN HR
+        // เลือกดูหน่วยได้ — ผอ. ADMIN HR ทุกหน่วย · หัวหน้า/รักษาการ เฉพาะสายตัวเอง
         const canBrowse = canSeeAll || !!directorRole || units.length > 0;
-        const allUnits = canBrowse ? await core_kon`
+        const unitRows = canBrowse ? await core_kon`
             SELECT 'mission' AS kind, mission_id AS id, name, NULL::text AS parent, NULL::int AS parent_id FROM missions WHERE is_active = 'Y'
             UNION ALL
             SELECT 'major', mj.major_id, mj.name, mi.name, mj.mission_id FROM majors mj
@@ -1495,6 +1514,7 @@ export const getLeaveCalendar = async ({ user, query, set }: any) => {
             SELECT 'submajor', sm.submajor_id, sm.name, mj.name, sm.major_id FROM submajors sm
                 LEFT JOIN majors mj ON mj.major_id = sm.major_id WHERE sm.is_active = 'Y'
             ORDER BY 1, 3` : [];
+        const allUnits = canSeeAll || directorRole ? unitRows : unitsInLine(unitRows as any[], missions, majors, submajors);
 
         // ตัวเลือกเรียงจากกว้างไปแคบ — ค่าตั้งต้นคือขอบเขตที่กว้างที่สุดที่มีสิทธิ์
         const options: { key: string; label: string; group: string }[] = [];
@@ -1515,7 +1535,7 @@ export const getLeaveCalendar = async ({ user, query, set }: any) => {
         if (me?.major_id != null) options.push({ key: 'team', label: `เพื่อนร่วม${me.major_name ?? 'กลุ่มงาน'}`, group: 'เจ้าหน้าที่' });
         options.push({ key: 'me', label: 'การลาของฉัน', group: 'เจ้าหน้าที่' });
         if (canBrowse) {
-            // หน่วยที่ฉันเป็นหัวหน้า/รักษาการ ขึ้นก่อน (ผู้ควบหลายหน่วยเลือกดูทีละหน่วยได้) แล้วตามด้วยทุกหน่วยในโรงพยาบาล
+            // หน่วยที่ฉันเป็นหัวหน้า/รักษาการ ขึ้นก่อน (ผู้ควบหลายหน่วยเลือกดูทีละหน่วยได้) แล้วตามด้วยหน่วยอื่นที่มีสิทธิ์ดู
             const kindOf = (u: any) => missions.includes(u) ? 'mission' : majors.includes(u) ? 'major' : 'submajor';
             const mine = new Set(units.map((u: any) => `${kindOf(u)}:${u.id}`));
             for (const u of units) options.push({ key: `${kindOf(u)}:${u.id}`, label: u.name, group: 'หน่วยที่ฉันดูแล' });
@@ -1567,7 +1587,7 @@ export const getLeaveCalendar = async ({ user, query, set }: any) => {
             success: true,
             data: {
                 scope,
-                // ทุกหน่วยในโรงพยาบาลส่งแยกใน units ให้หน้าเว็บเลือกตามลำดับ กลุ่มภารกิจ → กลุ่มงาน → หน่วยงาน
+                // หน่วยที่มีสิทธิ์ดูส่งแยกใน units ให้หน้าเว็บเลือกตามลำดับ กลุ่มภารกิจ → กลุ่มงาน → หน่วยงาน
                 options: options.filter(o => !Object.values(UNIT_GROUP).includes(o.group)),
                 units: (allUnits as any[]).map(u => ({ kind: u.kind, id: Number(u.id), name: u.name, parent_id: u.parent_id == null ? null : Number(u.parent_id) })),
                 masked,

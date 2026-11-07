@@ -108,11 +108,11 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         }
     })
     .get('/leave-calendar', getLeaveCalendar, {
-        query: t.Object({ from: t.String(), to: t.String(), scope: t.Optional(t.String()) }),
+        query: t.Object({ from: t.String(), to: t.String(), scope: t.Optional(t.String()), as_user_id: t.Optional(t.String()) }),
         detail: {
             tags: ['HR'],
             summary: 'ปฏิทินการลาตามขอบเขตที่ผู้เรียกมีสิทธิ์',
-            description: 'scope: all (ADMIN/HR) · chain (ใบที่สายอนุมัติระบุรหัสของฉัน — หัวหน้า/รักษาการทุกระดับ และ ผอ. ซึ่งเห็นเฉพาะใบของหัวหน้ากลุ่มภารกิจ) · team (เพื่อนร่วมกลุ่มงาน — ซ่อนประเภทการลา) · mission:<id> / major:<id> / submajor:<id> (หัวหน้า/รักษาการ ผอ. ADMIN HR เลือกดูหน่วยอื่น — ใบนอกสายอนุมัติซ่อนประเภทการลา ยกเว้น ADMIN/HR) · me — ตอบ options ให้หน้าเว็บทำ select ช่วงไม่เกิน 62 วัน',
+            description: 'scope: all (ADMIN/HR) · chain (ใบที่สายอนุมัติระบุรหัสของฉัน — หัวหน้า/รักษาการทุกระดับ และ ผอ. ซึ่งเห็นเฉพาะใบของหัวหน้ากลุ่มภารกิจ) · team (เพื่อนร่วมกลุ่มงาน — ซ่อนประเภทการลา) · mission:<id> / major:<id> / submajor:<id> (ผอ. ADMIN HR เลือกได้ทุกหน่วย · หัวหน้า/รักษาการ เฉพาะหน่วยที่ดูแลและหน่วยย่อยข้างใต้ — ใบนอกสายอนุมัติซ่อนประเภทการลา ยกเว้น ADMIN/HR) · me — ตอบ options ให้หน้าเว็บทำ select ช่วงไม่เกิน 62 วัน · as_user_id (ADMIN) = ดูแบบที่บุคลากรคนนั้นเห็น',
         }
     })
     .get('/leave-requests/quota', getLeaveQuota, {
