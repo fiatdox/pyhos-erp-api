@@ -9,7 +9,10 @@ import {
     deleteActivityLog,
     getDailySchedule,
     getActivityDashboard,
+    getStaffLinks,
+    setStaffUser,
 } from '../controllers/itActivityController';
+import { requireRoles } from '../middlewares/roleGuard';
 
 const LogBody = t.Object({
     log_date:       t.String(),
@@ -102,4 +105,19 @@ export const itActivityRoutes = new Elysia({ prefix: '/api/v1/it/activity' })
     .delete('/logs/:id', deleteActivityLog, {
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['IT Activity'], summary: 'ลบกิจกรรม (hard delete)' }
+    })
+
+    // ── เฉพาะ ADMIN (มีผลกับ route ที่ประกาศหลังบรรทัดนี้เท่านั้น — ต้องอยู่ท้ายสุด) ──
+    .use(requireRoles('ADMIN'))
+
+    // 9) รายชื่อเจ้าหน้าที่ + บัญชีที่ผูก
+    .get('/staff-links', getStaffLinks, {
+        detail: { tags: ['IT Activity'], summary: 'ADMIN: รายชื่อเจ้าหน้าที่กับบัญชีผู้ใช้ที่ผูก (ใช้บันทึกกิจกรรมอัตโนมัติจากระบบแจ้งซ่อม)' }
+    })
+
+    // 10) ผูก/ยกเลิกผูกบัญชีผู้ใช้
+    .put('/staff/:id/user', setStaffUser, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({ user_id: t.Union([t.Integer({ minimum: 1 }), t.Null()]) }),
+        detail: { tags: ['IT Activity'], summary: 'ADMIN: ผูกเจ้าหน้าที่กับบัญชีผู้ใช้ (null = ยกเลิก)' }
     });

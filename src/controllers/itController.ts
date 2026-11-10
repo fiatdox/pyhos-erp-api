@@ -4,6 +4,11 @@ import { existsSync } from 'fs';
 import { core_kon, inventoryPool } from '../db/db';
 import { mophItMatenance, mophReceiveAssignment, mophRepairAssessment, mophRejectAssignment, mophRequestExtension, mophHeaderApprove, mophMissionApprove, mophRepairPr, mophRepairProgress, mophRepairCompleted } from '../utils/mophNotify';
 import { sendRepairRejectedAlert, sendRepairReceivedAlert, sendRepairExtensionAlert, sendHeaderApproveAlert, sendMissionApproveAlert, sendRepairPrAlert, sendRepairProgressAlert, sendRepairCompletedAlert } from '../utils/mophAlert';
+import { logRepairActivity } from '../services/repairActivityLog';
+
+/** หอผู้ป่วย/หน่วยงานของผู้แจ้งซ่อม (alias r = it_repair_requests) — หน่วยงานย่อย (submajor) ถ้าไม่มีใช้กลุ่มงาน · ใช้แสดงในแจ้งเตือนหมอพร้อม */
+const WARD_SQL = () => core_kon`(SELECT NULLIF(BTRIM(COALESCE(ws.name, wm.name)), '') FROM users wu
+    LEFT JOIN submajors ws ON ws.submajor_id = wu.submajor_id LEFT JOIN majors wm ON wm.major_id = wu.major_id WHERE wu.id = r.created_by)`;
 
 // ดึงรายการสถานะกระบวนการ IT ทั้งหมด (เฉพาะที่ active)
 export const getProcessStatuses = async ({ set }: any) => {
@@ -555,6 +560,8 @@ export const receiveAssignment = async ({ params, body, user, set }: any) => {
         }
 
         const [notifyInfo] = await core_kon`
+        await logRepairActivity({ requestId: params.id, trackId: result.track?.it_repair_request_track_id, userId: actionBy, event: 'receive' });
+
             SELECT r.equipment_number, r.equipment_name, r.location, r.problem_description, r.created_at,
                    et.name AS equipment_type_name,
                    pc.name AS problem_category_name,
@@ -672,6 +679,8 @@ export const rejectAssignment = async ({ params, body, user, set }: any) => {
         // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง
         const [reqInfo] = await core_kon`
             SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
+        await logRepairActivity({ requestId: params.id, trackId: result.track?.it_repair_request_track_id, userId: actionBy, event: 'reject', note: rejectReason });
+
                    et.name AS equipment_type_name,
                    pc.name AS problem_category_name,
                    pl.name AS priority_name,
@@ -825,6 +834,11 @@ export const requestExtension = async ({ params, body, user, set }: any) => {
             SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description,
                    r.estimated_completion_date, r.created_at,
                    et.name AS equipment_type_name,
+        await logRepairActivity({
+            requestId: params.id, trackId: result.track?.it_repair_request_track_id, userId: actionBy, event: 'extend',
+            note: `กำหนดเสร็จใหม่ ${newCompletionDate}: ${extensionReason}`,
+        });
+
                    pc.name AS problem_category_name,
                    CONCAT(tu.pname, tu.fname, ' ', tu.lname) AS technician_name
             FROM it_repair_requests r
@@ -918,6 +932,7 @@ export const approveByHeader = async ({ params, body, user, set }: any) => {
                 SET header_approve = ${headerApprove},
                     header_comment = ${headerComment},
                     header_approve_date = NOW(),
+    let trackId: number | null = null;
                     process_status_id = ${NEXT_STATUS_ID}
                 WHERE it_repair_request_id = ${params.id}
                 RETURNING it_repair_request_id, header_approve, header_comment, header_approve_date, process_status_id
@@ -932,7 +947,7 @@ export const approveByHeader = async ({ params, body, user, set }: any) => {
                 ? `หัวหน้า IT อนุมัติ${headerComment ? `: ${headerComment}` : ''} (ส่งให้หัวหน้ากลุ่มภารกิจพิจารณา)`
                 : `หัวหน้า IT ไม่อนุมัติ: ${headerComment} (ส่งให้หัวหน้ากลุ่มภารกิจพิจารณา)`;
 
-            await sql`
+            const [track] = await sql`
                 INSERT INTO it_repair_requests_track (
                     it_repair_request_id, process_status_id, assigned_to, note, created_by
                 ) VALUES (
@@ -945,7 +960,9 @@ export const approveByHeader = async ({ params, body, user, set }: any) => {
 
         if (!result) {
             set.status = 404;
+                RETURNING it_repair_request_track_id
             return { success: false, message: 'ไม่พบคำร้องซ่อม' };
+            trackId = track.it_repair_request_track_id;
         }
 
         // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง
@@ -955,6 +972,11 @@ export const approveByHeader = async ({ params, body, user, set }: any) => {
                    pc.name AS problem_category_name,
                    CONCAT(au.pname, au.fname, ' ', au.lname) AS technician_name,
                    CONCAT(hu.pname, hu.fname, ' ', hu.lname) AS approver_name
+        await logRepairActivity({
+            requestId: params.id, trackId, userId: actionBy, event: 'header_approve',
+            note: headerApprove === 1 ? `อนุมัติ${headerComment ? `: ${headerComment}` : ''}` : `ไม่อนุมัติ: ${headerComment}`,
+        });
+
             FROM it_repair_requests r
             LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
             LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
@@ -1048,6 +1070,7 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
                 FROM it_repair_requests r
                 LEFT JOIN it_repair_assessments ia ON ia.repair_assessment_id = r.repair_assessment_id
                 WHERE r.it_repair_request_id = ${params.id}
+    let trackId: number | null = null;
             `;
 
             if (!req) {
@@ -1078,7 +1101,7 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
                 ? `หัวหน้ากลุ่มภารกิจอนุมัติ (${req.assessment_name ?? '-'})${missionComment ? `: ${missionComment}` : ''}`
                 : `หัวหน้ากลุ่มภารกิจไม่อนุมัติ: ${missionComment}`;
 
-            await sql`
+            const [track] = await sql`
                 INSERT INTO it_repair_requests_track (
                     it_repair_request_id, process_status_id, assigned_to, note, created_by
                 ) VALUES (
@@ -1086,14 +1109,16 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
                 )
             `;
 
-            return { request: updated[0] };
+            return { request: updated[0], assessmentName: req.assessment_name as string | null };
         });
 
         if (result.notFound) {
             set.status = 404;
             return { success: false, message: 'ไม่พบคำร้องซ่อม' };
         }
+                RETURNING it_repair_request_track_id
         if (result.noApproveProcess) {
+            trackId = track.it_repair_request_track_id;
             set.status = 400;
             return { success: false, message: 'คำร้องนี้ไม่มี approve_process_id (ผลประเมินของช่างไม่รองรับขั้นอนุมัติจัดซื้อ)' };
         }
@@ -1107,6 +1132,13 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
                    ps.name AS next_status_name,
                    CONCAT(au.pname, au.fname, ' ', au.lname) AS technician_name,
                    CONCAT(mu.pname, mu.fname, ' ', mu.lname) AS approver_name
+        await logRepairActivity({
+            requestId: params.id, trackId, userId: actionBy, event: 'mission_approve',
+            note: missionApprove === 1
+                ? `อนุมัติ (${result.assessmentName ?? '-'})${missionComment ? `: ${missionComment}` : ''}`
+                : `ไม่อนุมัติ: ${missionComment}`,
+        });
+
             FROM it_repair_requests r
             LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
             LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
@@ -1252,7 +1284,7 @@ export const updateRepairAssessment = async ({ params, body, user, set }: any) =
             return { success: false, message: 'ไม่พบคำร้องซ่อม' };
         }
 
-        await core_kon`
+        const [track] = await core_kon`
             INSERT INTO it_repair_requests_track (
                 it_repair_request_id, process_status_id, assigned_to, note, created_by
             ) VALUES (
@@ -1269,8 +1301,14 @@ export const updateRepairAssessment = async ({ params, body, user, set }: any) =
             LEFT JOIN it_repair_assessments ia ON ia.repair_assessment_id = r.repair_assessment_id
             LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
             LEFT JOIN users u ON u.id = ${actionBy}
+            RETURNING it_repair_request_track_id
             WHERE r.it_repair_request_id = ${params.id}
         `;
+        await logRepairActivity({
+            requestId: params.id, trackId: track?.it_repair_request_track_id, userId: actionBy, event: 'assess',
+            note: assessment_detail,
+        });
+
 
         if (notifyInfo) {
             mophRepairAssessment({
@@ -1585,7 +1623,7 @@ export const recordRepairPr = async ({ params, body, user, set }: any) => {
             const docNames = docRows.map((d: any) => d.name_th);
             const note = `บันทึกใบ PR เลขที่ ${prNumber}${docNames.length > 0 ? ` (เอกสาร: ${docNames.join(', ')})` : ''}`;
 
-            await sql`
+            const [track] = await sql`
                 INSERT INTO it_repair_requests_track (
                     it_repair_request_id, process_status_id, assigned_to, note, created_by
                 ) VALUES (
@@ -1593,7 +1631,7 @@ export const recordRepairPr = async ({ params, body, user, set }: any) => {
                 )
             `;
 
-            return { pr, docNames };
+            return { pr, docNames, note, trackId: track.it_repair_request_track_id as number };
         });
 
         if (result.notFound) {
@@ -1602,6 +1640,7 @@ export const recordRepairPr = async ({ params, body, user, set }: any) => {
         }
         if (result.conflict) {
             set.status = 409;
+                RETURNING it_repair_request_track_id
             return { success: false, message: 'บันทึกใบ PR ของคำร้องนี้ไปแล้ว' };
         }
 
@@ -1616,6 +1655,8 @@ export const recordRepairPr = async ({ params, body, user, set }: any) => {
             LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
             LEFT JOIN users ru ON ru.id = r.created_by
             LEFT JOIN users cu ON cu.id = ${actionBy}
+        await logRepairActivity({ requestId: params.id, trackId: result.trackId, userId: actionBy, event: 'pr', note: result.note });
+
             WHERE r.it_repair_request_id = ${params.id}
         `;
 
@@ -1808,7 +1849,7 @@ export const recordRepairProgress = async ({ params, body, user, set }: any) => 
             const stepNames = stepRows.map((s: any) => s.name_th);
             const trackNote = `อัพเดทความคืบหน้า${stepNames.length > 0 ? ` (เสร็จแล้ว: ${stepNames.join(', ')})` : ''}${note ? ` — ${note}` : ''}`;
 
-            await sql`
+            const [track] = await sql`
                 INSERT INTO it_repair_requests_track (
                     it_repair_request_id, process_status_id, assigned_to, note, created_by
                 ) VALUES (
@@ -1816,7 +1857,7 @@ export const recordRepairProgress = async ({ params, body, user, set }: any) => 
                 )
             `;
 
-            return { progress, stepNames, processStatusId: effectiveStatusId };
+            return { progress, stepNames, processStatusId: effectiveStatusId, trackId: track.it_repair_request_track_id as number };
         });
 
         if (result.notFound) {
@@ -1827,6 +1868,7 @@ export const recordRepairProgress = async ({ params, body, user, set }: any) => 
         if (result.invalidStatus) {
             set.status = 400;
             return { success: false, message: 'สถานะปลายทางที่เลือกไม่ถูกต้อง' };
+                RETURNING it_repair_request_track_id
         }
 
         // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง
@@ -1842,6 +1884,11 @@ export const recordRepairProgress = async ({ params, body, user, set }: any) => 
         `;
 
         if (reqInfo) {
+        await logRepairActivity({
+            requestId: params.id, trackId: result.trackId, userId: actionBy, event: 'progress',
+            note: [result.stepNames?.length ? `เสร็จแล้ว: ${result.stepNames.join(', ')}` : null, note].filter(Boolean).join(' — '),
+        });
+
             const requestedAt = reqInfo.created_at ? new Date(reqInfo.created_at).toISOString() : undefined;
             const completedStepNames: string[] = result.stepNames ?? [];
 
@@ -1930,9 +1977,10 @@ export const completeRepair = async ({ params, body, user, set }: any) => {
             if (updated.length === 0) {
                 return null;
             }
+    let trackId: number | null = null;
 
             const trackNote = `ปิดงานซ่อม (รับอะไหล่/เสร็จสิ้น)${note ? ` — ${note}` : ''}`;
-            await sql`
+            const [track] = await sql`
                 INSERT INTO it_repair_requests_track (
                     it_repair_request_id, process_status_id, assigned_to, note, created_by
                 ) VALUES (
@@ -1953,7 +2001,9 @@ export const completeRepair = async ({ params, body, user, set }: any) => {
             SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
                    et.name AS equipment_type_name,
                    CONCAT(au.pname, au.fname, ' ', au.lname) AS technician_name
+                RETURNING it_repair_request_track_id
             FROM it_repair_requests r
+            trackId = track.it_repair_request_track_id;
             LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
             LEFT JOIN users ru ON ru.id = r.created_by
             LEFT JOIN users au ON au.id = r.assigned_to
@@ -1963,6 +2013,9 @@ export const completeRepair = async ({ params, body, user, set }: any) => {
         if (reqInfo) {
             const requestedAt = reqInfo.created_at ? new Date(reqInfo.created_at).toISOString() : undefined;
             const completedAtIso = completedAt.toISOString();
+        // ลงกิจกรรม ณ เวลาที่ซ่อมเสร็จจริงที่กรอกในโมดัล (ไม่ใช่เวลาที่กดบันทึก)
+        await logRepairActivity({ requestId: params.id, trackId, userId: actionBy, event: 'complete', note, at: completedAt });
+
 
             // ทางที่ 1: แจ้งเข้าหน่วยงาน IT ผ่าน MOPH Notify (กลุ่ม)
             mophRepairCompleted({

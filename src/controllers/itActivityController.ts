@@ -328,6 +328,56 @@ export const deleteActivityLog = async ({ params, set }: any) => {
     }
 };
 
+// 9) GET /staff-links (ADMIN) — รายชื่อเจ้าหน้าที่ + บัญชีผู้ใช้ที่ผูกไว้ (ใช้หาผู้กดปุ่มในระบบแจ้งซ่อม)
+export const getStaffLinks = async ({ set }: any) => {
+    try {
+        const rows = await core_kon`
+            SELECT s.staff_id, s.staff_code, s.full_name_th, s.role_th, s.is_active, s.user_id,
+                   NULLIF(trim(concat(u.pname, u.fname, ' ', u.lname)), '') AS user_name
+            FROM it_activity_staff s
+            LEFT JOIN users u ON u.id = s.user_id
+            ORDER BY s.sort_order, s.staff_id
+        `;
+        return { success: true, data: rows };
+    } catch (error: any) {
+        console.error('[getStaffLinks]', error.message);
+        set.status = 500;
+        return { success: false, error: { code: 'INTERNAL_ERROR', message: 'โหลดรายชื่อไม่สำเร็จ' } };
+    }
+};
+
+// 10) PUT /staff/:id/user (ADMIN) — ผูก/ยกเลิกผูกบัญชีผู้ใช้ (user_id = null คือยกเลิก)
+export const setStaffUser = async ({ params, body, set }: any) => {
+    try {
+        const staffId = Number(params.id);
+        const userId: number | null = body?.user_id ?? null;
+        if (userId != null) {
+            const [u] = await core_kon`SELECT id FROM users WHERE id = ${userId}`;
+            if (!u) {
+                set.status = 404;
+                return { success: false, error: { code: 'NOT_FOUND', message: 'ไม่พบบัญชีผู้ใช้', field: 'user_id' } };
+            }
+        }
+        const [row] = await core_kon`
+            UPDATE it_activity_staff SET user_id = ${userId} WHERE staff_id = ${staffId}
+            RETURNING staff_id, user_id
+        `;
+        if (!row) {
+            set.status = 404;
+            return { success: false, error: { code: 'NOT_FOUND', message: 'ไม่พบเจ้าหน้าที่' } };
+        }
+        return { success: true, data: row };
+    } catch (error: any) {
+        if (error.code === '23505') {
+            set.status = 409;
+            return { success: false, error: { code: 'CONFLICT', message: 'บัญชีนี้ผูกกับเจ้าหน้าที่คนอื่นอยู่แล้ว', field: 'user_id' } };
+        }
+        console.error('[setStaffUser]', error.message);
+        set.status = 500;
+        return { success: false, error: { code: 'INTERNAL_ERROR', message: 'บันทึกไม่สำเร็จ' } };
+    }
+};
+
 // 7) GET /daily
 export const getDailySchedule = async ({ query, set }: any) => {
     try {
