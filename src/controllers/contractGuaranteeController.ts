@@ -7,7 +7,8 @@ import {
 //   พัสดุ / การเงิน : ดูจาก users.major_id หรือเป็นหัวหน้า/รักษาการกลุ่มงาน ไม่ต้องแจก role ทีละคน
 //   กรรมการ ผู้ควบคุมงาน ผู้ครอบครองพัสดุ ผู้อนุมัติ : ดูจาก proc_contract_staff รายสัญญา
 //   ผู้บริหาร (ผอ. / หัวหน้ากลุ่มภารกิจ และรักษาการ) : ดูวันหมดประกันได้ ไม่เห็นยอดเงิน
-//   ADMIN : ดูได้ทุกหน้า แก้ไขได้เฉพาะหน้าตั้งค่า (ctr_rules) งานของหน่วยงานแก้ไม่ได้
+//   ADMIN : ดูได้ทุกหน้า แก้หน้าตั้งค่าได้ เพิ่ม/แก้ไข/ลบสัญญาและหลักประกันได้
+//           ขั้นตอนตามหน้าที่ (ตรวจรับ เสนอคืน อนุมัติคืน จ่ายคืน) ยังเป็นของผู้มีหน้าที่ ADMIN ทำแทนไม่ได้
 
 class Bad extends Error {
     constructor(public status: number, message: string, public field?: string) { super(message); }
@@ -44,6 +45,8 @@ interface Access {
     procurement: boolean;
     finance: boolean;
     canEditRules: boolean;
+    editContracts: boolean;   // เพิ่ม/แก้ไขสัญญา ผู้รับผิดชอบ เอกสาร = พัสดุ หรือ ADMIN
+    editGuarantees: boolean;  // เพิ่ม/แก้ไขหลักประกัน = การเงิน หรือ ADMIN
     seeAll: boolean;
     duties: string[];
 }
@@ -64,12 +67,15 @@ const accessOf = async (uid: number): Promise<Access> => {
     const isDirector = dirs.some((d: any) => Number(d.value) === uid);
     const major = u?.major_id == null ? null : Number(u.major_id);
     const headOf = (id?: number) => heads.some((h: any) => Number(h.major_id) === id);
-    // ADMIN ดูอย่างเดียว แม้จะสังกัดพัสดุหรือการเงินก็ตาม
+    // ADMIN ไม่นับเป็นพัสดุ/การเงิน แม้จะสังกัดหน่วยนั้น จึงไม่ได้งานในกล่องงานและทำขั้นตอนตามหน้าที่ไม่ได้
+    // สิทธิ์แก้ข้อมูลของ ADMIN ให้ผ่าน editContracts / editGuarantees แทน
     const procurement = !isAdmin && (major === rules.proc_major_id || headOf(rules.proc_major_id));
     const finance = !isAdmin && (major === rules.fin_major_id || headOf(rules.fin_major_id) || roleNames.includes('FINANCE'));
     return {
         uid, isAdmin, isDirector, isExecutive: isDirector || missionHead.length > 0, procurement, finance,
         canEditRules: isAdmin,
+        editContracts: isAdmin || procurement,
+        editGuarantees: isAdmin || finance,
         seeAll: isAdmin || procurement || finance,
         duties: duties.map((d: any) => d.duty),
     };
@@ -222,7 +228,32 @@ export const getContractOverview = wrap(async ({ user }) => {
                   JOIN fin_guarantees g ON g.contract_id = c.id JOIN fin_guarantee_payouts p ON p.guarantee_id = g.id
                   WHERE r.status = 'approved' GROUP BY r.id, r.due_date) x`,
     ]);
-    return { success: true, data: { tasks, rules, summary: { contracts, by_duty: byDuty, money, kpi } } };
+    // ข้อมูลกราฟหน้ารวม: สัญญาอยู่ขั้นไหน · หลักประกันที่ต้องคืนตามเดือนหมดประกัน · หลักประกันแยกประเภท
+    const [stages, expiry, byType] = await Promise.all([
+        core_kon`
+            SELECT stage, count(*)::int AS n FROM (
+                SELECT CASE WHEN c.status = 'returned' THEN 'returned'
+                            WHEN EXISTS (SELECT 1 FROM proc_contract_returns r WHERE r.contract_id = c.id AND r.status = 'approved') THEN 'approved'
+                            WHEN EXISTS (SELECT 1 FROM proc_contract_returns r WHERE r.contract_id = c.id AND r.status = 'pending') THEN 'pending'
+                            WHEN c.warranty_end_date IS NULL THEN 'no_t'
+                            WHEN c.warranty_end_date > ${today} THEN 'warranty'
+                            ELSE 'expired' END AS stage
+                FROM proc_contracts c WHERE c.status <> 'cancelled') x
+            GROUP BY stage`,
+        core_kon`
+            SELECT CASE WHEN c.warranty_end_date <= ${today} THEN 'past' ELSE to_char(c.warranty_end_date, 'YYYY-MM') END AS month,
+                   count(*)::int AS contracts, COALESCE(sum(h.held), 0)::float8 AS amount
+            FROM proc_contracts c
+            LEFT JOIN LATERAL (SELECT sum(g.amount) AS held FROM fin_guarantees g WHERE g.contract_id = c.id AND g.status = 'held') h ON TRUE
+            WHERE c.status = 'active' AND c.warranty_end_date IS NOT NULL
+              AND c.warranty_end_date < (date_trunc('month', ${today}::date) + interval '12 months')
+            GROUP BY 1 ORDER BY 1`,
+        core_kon`
+            SELECT g.guarantee_type, count(*)::int AS n, COALESCE(sum(g.amount), 0)::float8 AS amount
+            FROM fin_guarantees g JOIN proc_contracts c ON c.id = g.contract_id
+            WHERE g.status = 'held' GROUP BY 1`,
+    ]);
+    return { success: true, data: { tasks, rules, summary: { contracts, by_duty: byDuty, money, kpi, charts: { stages, expiry, by_type: byType } } } };
 });
 
 export const getContractMeta = wrap(async () => {
@@ -325,7 +356,8 @@ const vendorValues = async (b: any, id = 0) => {
 
 export const createContractVendor = wrap(async ({ user, body }) => {
     const uid = Number(user.id);
-    need((await accessOf(uid)).procurement);
+    // ฟอร์มเพิ่มสัญญามีปุ่มเพิ่มผู้รับจ้าง ผู้ที่เพิ่มสัญญาได้จึงต้องเพิ่มผู้รับจ้างได้ด้วย
+    need((await accessOf(uid)).editContracts);
     const v = await vendorValues(body);
     const row = await core_kon.begin(async (sql: Sql) => {
         const [r] = await sql`INSERT INTO proc_vendors ${sql({ ...v, created_by: uid })} RETURNING id, name`;
@@ -630,7 +662,7 @@ const contractValues = async (b: any) => {
 
 export const createContract = wrap(async ({ user, body }) => {
     const uid = Number(user.id);
-    need((await accessOf(uid)).procurement);
+    need((await accessOf(uid)).editContracts);
     const v = await contractValues(body);
     const rules = await loadRules();
     const id = await core_kon.begin(async (sql: Sql) => {
@@ -644,7 +676,7 @@ export const createContract = wrap(async ({ user, body }) => {
 
 export const updateContract = wrap(async ({ user, params, body }) => {
     const uid = Number(user.id), id = Number(params.id);
-    need((await accessOf(uid)).procurement);
+    need((await accessOf(uid)).editContracts);
     const v = await contractValues(body);
     const rules = await loadRules();
     await core_kon.begin(async (sql: Sql) => {
@@ -660,7 +692,7 @@ export const updateContract = wrap(async ({ user, params, body }) => {
 
 export const cancelContract = wrap(async ({ user, params, body }) => {
     const uid = Number(user.id), id = Number(params.id);
-    need((await accessOf(uid)).procurement);
+    need((await accessOf(uid)).editContracts);
     const reason = reqText(body.reason, 'reason', 'เหตุผล');
     await core_kon.begin(async (sql: Sql) => {
         await activeContract(sql, id);
@@ -669,6 +701,43 @@ export const cancelContract = wrap(async ({ user, params, body }) => {
         await sql`UPDATE proc_contracts SET status = 'cancelled', cancel_reason = ${reason}, updated_by = ${uid}, updated_at = NOW() WHERE id = ${id}`;
         await sql`UPDATE ctr_tasks SET status = 'cancelled' WHERE contract_id = ${id} AND status = 'open'`;
         await audit(sql, { actor: uid, action: 'cancel', entity: 'proc_contracts', entity_id: id, contract_id: id, after: { reason } });
+    });
+    return { success: true };
+});
+
+// เหตุที่ลบสัญญาไม่ได้ · null = ลบได้
+// หลักประกันและเจ้าหนี้เป็นเงินจริง ต้องลบ/ยกเลิกทางหน้าการเงินก่อน ระบบไม่ลบตามไปเอง
+const contractDeleteBlock = async (sql: Sql, id: number): Promise<string | null> => {
+    const [r] = await sql`
+        SELECT (SELECT count(*)::int FROM fin_guarantees WHERE contract_id = ${id}) AS guarantees,
+               (SELECT count(*)::int FROM fin_payables WHERE contract_id = ${id}) AS payables`;
+    if (r.guarantees > 0) return `มีหลักประกัน ${r.guarantees} รายการ ต้องลบหลักประกันก่อน (หลักประกันที่คืนแล้วลบไม่ได้)`;
+    if (r.payables > 0) return `มีเจ้าหนี้ผูกกับสัญญานี้ ${r.payables} รายการ`;
+    return null;
+};
+
+// ลบถาวร ใช้กับสัญญาที่บันทึกผิด เฉพาะ ADMIN · ประวัติใน ctr_audit_log ยังอยู่
+export const deleteContract = wrap(async ({ user, params, body }) => {
+    const uid = Number(user.id), id = Number(params.id);
+    need((await accessOf(uid)).isAdmin, 'เฉพาะผู้ดูแลระบบ');
+    const reason = reqText(body?.reason, 'reason', 'เหตุผลที่ลบ');
+    await core_kon.begin(async (sql: Sql) => {
+        const [before] = await sql`SELECT * FROM proc_contracts WHERE id = ${id} FOR UPDATE`;
+        if (!before) throw new Bad(404, 'ไม่พบสัญญา');
+        const block = await contractDeleteBlock(sql, id);
+        if (block) throw new Bad(409, `ลบไม่ได้: ${block}`);
+        // เก็บสำเนาข้อมูลลูกไว้ใน audit เผื่อต้องตรวจย้อนหลังว่าลบอะไรไป
+        const children = {
+            staff: [...await sql`DELETE FROM proc_contract_staff WHERE contract_id = ${id} RETURNING duty, user_id, backup_user_id`],
+            amendments: [...await sql`DELETE FROM proc_contract_amendments WHERE contract_id = ${id} RETURNING amendment_no, amendment_date::text, change_type, detail`],
+            documents: [...await sql`DELETE FROM proc_contract_documents WHERE contract_id = ${id} RETURNING doc_type, title, location`],
+            inspections: [...await sql`DELETE FROM proc_contract_inspections WHERE contract_id = ${id} RETURNING kind, inspected_date::text, result`],
+            defects: [...await sql`DELETE FROM proc_contract_defects WHERE contract_id = ${id} RETURNING found_date::text, detail, fixed_date::text`],
+            returns: [...await sql`DELETE FROM proc_contract_returns WHERE contract_id = ${id} RETURNING released_date::text, status`],
+            tasks: (await sql`DELETE FROM ctr_tasks WHERE contract_id = ${id} RETURNING id`).length,
+        };
+        await sql`DELETE FROM proc_contracts WHERE id = ${id}`;
+        await audit(sql, { actor: uid, action: 'delete', entity: 'proc_contracts', entity_id: id, contract_id: id, before: { ...before, ...children }, after: { reason } });
     });
     return { success: true };
 });
@@ -708,6 +777,7 @@ export const getContractById = wrap(async ({ user, params }) => {
     const today = todayBkk();
     const active = c.status === 'active';
     const liveReturn = (returns as any[]).find(r => r.status === 'pending' || r.status === 'approved') ?? null;
+    const deleteBlock = a.isAdmin ? await contractDeleteBlock(core_kon, id) : null;
     return {
         success: true,
         data: {
@@ -720,8 +790,12 @@ export const getContractById = wrap(async ({ user, params }) => {
             guarantees: (guarantees as any[]).map(g => ({ ...g, expiring: g.status === 'held' && guaranteeExpiresTooSoon(g.expiry_date, c.warranty_end_date, rules) })),
             audit: auditRows,
             can: {
-                edit: active && a.procurement,
-                finance: active && a.finance,
+                edit: active && a.editContracts,
+                // ขั้นตอนของพัสดุ (เสนอคืน ปิดงาน ติดตามชำรุด) ADMIN ทำแทนไม่ได้
+                procure: active && a.procurement,
+                finance: active && a.editGuarantees,
+                delete: a.isAdmin && !deleteBlock,
+                delete_block: a.isAdmin ? deleteBlock : null,
                 inspect: active && !a.isAdmin && myDuties.some(d => FIELD_DUTIES.includes(d)),
                 report_defect: active && (a.procurement || (!a.isAdmin && myDuties.some(d => FIELD_DUTIES.includes(d)))),
                 decide: active && !a.isAdmin && liveReturn?.status === 'pending' && (a.isDirector || myDuties.includes('approver')),
@@ -734,7 +808,7 @@ export const getContractById = wrap(async ({ user, params }) => {
 // ═══════════════ แก้ไขสัญญา ผู้รับผิดชอบ เอกสาร ═══════════════
 export const createAmendment = wrap(async ({ user, params, body }) => {
     const uid = Number(user.id), id = Number(params.id);
-    need((await accessOf(uid)).procurement);
+    need((await accessOf(uid)).editContracts);
     const v = {
         amendment_no: reqText(body.amendment_no, 'amendment_no', 'เลขที่บันทึกแก้ไข'),
         amendment_date: reqDate(body.amendment_date, 'amendment_date'),
@@ -771,7 +845,7 @@ export const createAmendment = wrap(async ({ user, params, body }) => {
 
 export const replaceContractStaff = wrap(async ({ user, params, body }) => {
     const uid = Number(user.id), id = Number(params.id);
-    need((await accessOf(uid)).procurement);
+    need((await accessOf(uid)).editContracts);
     const rows = body.staff.map((s: any) => ({
         duty: String(s.duty), user_id: Number(s.user_id), backup_user_id: s.backup_user_id == null ? null : Number(s.backup_user_id),
     }));
@@ -813,7 +887,7 @@ const documentValues = (b: any) => ({
 
 export const createContractDocument = wrap(async ({ user, params, body }) => {
     const uid = Number(user.id), id = Number(params.id);
-    need((await accessOf(uid)).procurement);
+    need((await accessOf(uid)).editContracts);
     const v = documentValues(body);
     check(Number.isInteger(v.holder_user_id) && v.holder_user_id > 0, 'กรุณาเลือกผู้ถือต้นฉบับ', 'holder_user_id');
     await core_kon.begin(async (sql: Sql) => {
@@ -826,7 +900,7 @@ export const createContractDocument = wrap(async ({ user, params, body }) => {
 
 export const updateContractDocument = wrap(async ({ user, params, body }) => {
     const uid = Number(user.id), docId = Number(params.id);
-    need((await accessOf(uid)).procurement);
+    need((await accessOf(uid)).editContracts);
     const v = documentValues(body);
     check(Number.isInteger(v.holder_user_id) && v.holder_user_id > 0, 'กรุณาเลือกผู้ถือต้นฉบับ', 'holder_user_id');
     await core_kon.begin(async (sql: Sql) => {
@@ -1009,6 +1083,8 @@ export const getGuarantees = wrap(async ({ user, query }) => {
             ...g,
             expiring: g.status === 'held' && guaranteeExpiresTooSoon(g.expiry_date, g.warranty_end_date, rules),
             can_pay: a.finance && g.status === 'held' && g.return_status === 'approved',
+            can_edit: a.editGuarantees && g.status === 'held',
+            can_delete: a.isAdmin && g.status === 'held' && !g.return_status,
             due_state: g.status === 'held' && g.return_due_date ? dueState(g.return_due_date, rules) : null,
         })),
     };
@@ -1032,7 +1108,7 @@ const guaranteeValues = (b: any) => {
 
 export const createGuarantee = wrap(async ({ user, params, body }) => {
     const uid = Number(user.id), id = Number(params.id);
-    need((await accessOf(uid)).finance);
+    need((await accessOf(uid)).editGuarantees);
     const v = guaranteeValues(body);
     const rules = await loadRules();
     const warning = await core_kon.begin(async (sql: Sql) => {
@@ -1047,7 +1123,7 @@ export const createGuarantee = wrap(async ({ user, params, body }) => {
 
 export const updateGuarantee = wrap(async ({ user, params, body }) => {
     const uid = Number(user.id), gid = Number(params.id);
-    need((await accessOf(uid)).finance);
+    need((await accessOf(uid)).editGuarantees);
     const v = guaranteeValues(body);
     await core_kon.begin(async (sql: Sql) => {
         const [before] = await sql`SELECT contract_id, guarantee_type, purpose, amount, bank_name, doc_no, expiry_date::text, storage_location, status FROM fin_guarantees WHERE id = ${gid} FOR UPDATE`;
@@ -1055,6 +1131,29 @@ export const updateGuarantee = wrap(async ({ user, params, body }) => {
         if (before.status !== 'held') throw new Bad(409, 'หลักประกันนี้คืนแล้ว แก้ไขไม่ได้');
         await sql`UPDATE fin_guarantees SET ${sql({ ...v, updated_by: uid })}, updated_at = NOW() WHERE id = ${gid}`;
         await audit(sql, { actor: uid, action: 'update', entity: 'fin_guarantees', entity_id: gid, contract_id: before.contract_id, before, after: v });
+    });
+    return { success: true };
+});
+
+// ลบหลักประกันที่บันทึกผิด เฉพาะ ADMIN · ที่คืน/วางทรัพย์/ส่งคลังแล้วลบไม่ได้ เพราะมีหลักฐานการจ่าย
+export const deleteGuarantee = wrap(async ({ user, params, body }) => {
+    const uid = Number(user.id), gid = Number(params.id);
+    need((await accessOf(uid)).isAdmin, 'เฉพาะผู้ดูแลระบบ');
+    const reason = reqText(body?.reason, 'reason', 'เหตุผลที่ลบ');
+    await core_kon.begin(async (sql: Sql) => {
+        const [before] = await sql`SELECT contract_id, guarantee_type, purpose, amount, bank_name, doc_no, expiry_date::text, storage_location, status FROM fin_guarantees WHERE id = ${gid} FOR UPDATE`;
+        if (!before) throw new Bad(404, 'ไม่พบหลักประกัน');
+        if (before.status !== 'held') throw new Bad(409, 'หลักประกันนี้คืนแล้ว ลบไม่ได้');
+        // เรื่องเสนอคืนอ้างหลักประกันชุดนี้อยู่ ลบแล้วการเงินจะจ่ายคืนไม่ครบหรือปิดสัญญาไม่ได้
+        if (await hasLiveReturn(sql, before.contract_id)) throw new Bad(409, 'สัญญานี้มีเรื่องเสนอคืนค้างอยู่ ต้องให้ผู้อนุมัติส่งกลับก่อนจึงลบหลักประกันได้');
+        await sql`DELETE FROM fin_guarantees WHERE id = ${gid}`;
+        // ไม่เหลือหลักประกันแล้ว ให้งาน "บันทึกหลักประกัน" กลับมาเปิด การเงินจะได้เห็นว่ายังต้องลง
+        const left = await sql`SELECT 1 FROM fin_guarantees WHERE contract_id = ${before.contract_id} LIMIT 1`;
+        if (left.length === 0) {
+            await sql`UPDATE ctr_tasks SET status = 'open', done_by = NULL, done_at = NULL
+                      WHERE contract_id = ${before.contract_id} AND code = 'REGISTER_GUARANTEE' AND status = 'done'`;
+        }
+        await audit(sql, { actor: uid, action: 'delete', entity: 'fin_guarantees', entity_id: gid, contract_id: before.contract_id, before, after: { reason } });
     });
     return { success: true };
 });

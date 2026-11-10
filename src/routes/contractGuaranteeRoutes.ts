@@ -2,7 +2,7 @@ import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import {
     cancelContract, cancelPayable, completeTask, createAmendment, createContract, createContractDocument, createContractVendor,
-    createDefect, createGuarantee, createInspection, createPayable, createPayablePayment, decideReturn, getContractById, getContractMe, getContractMeta,
+    createDefect, createGuarantee, deleteContract, deleteGuarantee, createInspection, createPayable, createPayablePayment, decideReturn, getContractById, getContractMe, getContractMeta,
     getContractOverview, getContractReturns, getContractRules, getContracts, getContractUserOptions, getContractVendors,
     getGuarantees, getPayablePayments, getPayables, getVendorById, getWarrantyBoard, payoutGuarantee, proposeReturn, replaceContractStaff, updateContract, updateContractDocument,
     updateContractRule, updateContractVendor, updateDefect, updateGuarantee, updatePayable, voidPayablePayment,
@@ -42,6 +42,7 @@ export const contractGuaranteeRoutes = new Elysia({ prefix: '/api/v1/contracts' 
     .get('/list/:id', getContractById, { ...idParam, detail })
     .put('/list/:id', updateContract, { ...idParam, body: anyBody, detail })
     .post('/list/:id/cancel', cancelContract, { ...idParam, body: anyBody, detail })
+    .post('/list/:id/delete', deleteContract, { ...idParam, body: anyBody, detail: { ...detail, description: 'เฉพาะ ADMIN · ลบถาวร ต้องไม่มีหลักประกันและเจ้าหนี้ผูกอยู่ · ต้องระบุ reason' } })
     .post('/list/:id/amendments', createAmendment, { ...idParam, body: anyBody, detail: { ...detail, description: 'ตั้งวันหมดประกันใหม่ได้ และเตือนหลักประกันที่ไม่คุ้มระยะเวลาใหม่' } })
     .put('/list/:id/staff', replaceContractStaff, {
         ...idParam,
@@ -60,6 +61,7 @@ export const contractGuaranteeRoutes = new Elysia({ prefix: '/api/v1/contracts' 
     .get('/guarantees', getGuarantees, { query: t.Object({ search: t.Optional(t.String()) }), detail })
     .post('/list/:id/guarantees', createGuarantee, { ...idParam, body: anyBody, detail })
     .put('/guarantees/:id', updateGuarantee, { ...idParam, body: anyBody, detail })
+    .post('/guarantees/:id/delete', deleteGuarantee, { ...idParam, body: anyBody, detail: { ...detail, description: 'เฉพาะ ADMIN · ลบได้เฉพาะที่ยังถือไว้และไม่มีเรื่องเสนอคืนค้าง · ต้องระบุ reason' } })
     .post('/guarantees/:id/payout', payoutGuarantee, { ...idParam, body: anyBody, detail: { ...detail, description: 'ต้องได้รับอนุมัติคืนแล้ว · คืนครบทุกรายการแล้วปิดสัญญาอัตโนมัติ' } })
 
     .post('/tasks/:id/done', completeTask, { ...idParam, detail: { ...detail, description: 'ปิดเองได้เฉพาะงานที่ระบบไม่มีเหตุการณ์ให้จับ' } });
