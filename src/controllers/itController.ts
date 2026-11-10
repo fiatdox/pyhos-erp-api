@@ -241,6 +241,7 @@ export const createRepairRequest = async ({ body, user, set }: any) => {
             equipmentNumber: equipment_number,
             equipmentName: equipment_name,
             location,
+            ward: userInfo?.submajor_name?.trim() || userInfo?.major_name?.trim() || undefined,
             problemDescription: problem_description,
             priorityName: priorityRows[0]?.name as string | undefined,
             equipmentTypeName: equipmentTypeRows[0]?.name as string | undefined,
@@ -559,10 +560,10 @@ export const receiveAssignment = async ({ params, body, user, set }: any) => {
             return { success: false, message: 'ไม่พบคำร้องซ่อม' };
         }
 
-        const [notifyInfo] = await core_kon`
         await logRepairActivity({ requestId: params.id, trackId: result.track?.it_repair_request_track_id, userId: actionBy, event: 'receive' });
 
-            SELECT r.equipment_number, r.equipment_name, r.location, r.problem_description, r.created_at,
+        const [notifyInfo] = await core_kon`
+            SELECT r.equipment_number, r.equipment_name, r.location, ${WARD_SQL()} AS ward, r.problem_description, r.created_at,
                    et.name AS equipment_type_name,
                    pc.name AS problem_category_name,
                    pl.name AS priority_name,
@@ -594,6 +595,7 @@ export const receiveAssignment = async ({ params, body, user, set }: any) => {
                 equipmentNumber: notifyInfo.equipment_number,
                 equipmentName: notifyInfo.equipment_name,
                 location: notifyInfo.location,
+                ward: notifyInfo.ward ?? undefined,
                 problemDescription: notifyInfo.problem_description,
                 equipmentTypeName: notifyInfo.equipment_type_name ?? undefined,
                 problemCategoryName: notifyInfo.problem_category_name ?? undefined,
@@ -611,6 +613,7 @@ export const receiveAssignment = async ({ params, body, user, set }: any) => {
                     equipmentName: notifyInfo.equipment_name ?? undefined,
                     equipmentNumber: notifyInfo.equipment_number ?? undefined,
                     location: notifyInfo.location ?? undefined,
+                    ward: notifyInfo.ward ?? undefined,
                     problemDescription: notifyInfo.problem_description ?? undefined,
                     equipmentTypeName: notifyInfo.equipment_type_name ?? undefined,
                     problemCategoryName: notifyInfo.problem_category_name ?? undefined,
@@ -676,11 +679,11 @@ export const rejectAssignment = async ({ params, body, user, set }: any) => {
             return { success: false, message: 'ไม่พบคำร้องซ่อม' };
         }
 
-        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง
-        const [reqInfo] = await core_kon`
-            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
         await logRepairActivity({ requestId: params.id, trackId: result.track?.it_repair_request_track_id, userId: actionBy, event: 'reject', note: rejectReason });
 
+        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง
+        const [reqInfo] = await core_kon`
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, ${WARD_SQL()} AS ward, r.problem_description, r.created_at,
                    et.name AS equipment_type_name,
                    pc.name AS problem_category_name,
                    pl.name AS priority_name,
@@ -702,6 +705,7 @@ export const rejectAssignment = async ({ params, body, user, set }: any) => {
                     equipmentName: reqInfo.equipment_name ?? undefined,
                     equipmentNumber: reqInfo.equipment_number ?? undefined,
                     location: reqInfo.location ?? undefined,
+                    ward: reqInfo.ward ?? undefined,
                     problemDescription: reqInfo.problem_description ?? undefined,
                     equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                     problemCategoryName: reqInfo.problem_category_name ?? undefined,
@@ -718,6 +722,7 @@ export const rejectAssignment = async ({ params, body, user, set }: any) => {
                 equipmentNumber: reqInfo.equipment_number,
                 equipmentName: reqInfo.equipment_name,
                 location: reqInfo.location ?? undefined,
+                ward: reqInfo.ward ?? undefined,
                 problemDescription: reqInfo.problem_description ?? undefined,
                 equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                 problemCategoryName: reqInfo.problem_category_name ?? undefined,
@@ -829,16 +834,16 @@ export const requestExtension = async ({ params, body, user, set }: any) => {
             return { success: false, message: 'ไม่พบคำร้องซ่อม' };
         }
 
-        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง (estimated_completion_date คือกำหนดเดิมที่ยังไม่แก้)
-        const [reqInfo] = await core_kon`
-            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description,
-                   r.estimated_completion_date, r.created_at,
-                   et.name AS equipment_type_name,
         await logRepairActivity({
             requestId: params.id, trackId: result.track?.it_repair_request_track_id, userId: actionBy, event: 'extend',
             note: `กำหนดเสร็จใหม่ ${newCompletionDate}: ${extensionReason}`,
         });
 
+        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง (estimated_completion_date คือกำหนดเดิมที่ยังไม่แก้)
+        const [reqInfo] = await core_kon`
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, ${WARD_SQL()} AS ward, r.problem_description,
+                   r.estimated_completion_date, r.created_at,
+                   et.name AS equipment_type_name,
                    pc.name AS problem_category_name,
                    CONCAT(tu.pname, tu.fname, ' ', tu.lname) AS technician_name
             FROM it_repair_requests r
@@ -861,6 +866,7 @@ export const requestExtension = async ({ params, body, user, set }: any) => {
                 equipmentNumber: reqInfo.equipment_number,
                 equipmentName: reqInfo.equipment_name,
                 location: reqInfo.location ?? undefined,
+                ward: reqInfo.ward ?? undefined,
                 problemDescription: reqInfo.problem_description ?? undefined,
                 equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                 problemCategoryName: reqInfo.problem_category_name ?? undefined,
@@ -879,6 +885,7 @@ export const requestExtension = async ({ params, body, user, set }: any) => {
                     equipmentName: reqInfo.equipment_name ?? undefined,
                     equipmentNumber: reqInfo.equipment_number ?? undefined,
                     location: reqInfo.location ?? undefined,
+                    ward: reqInfo.ward ?? undefined,
                     problemDescription: reqInfo.problem_description ?? undefined,
                     equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                     problemCategoryName: reqInfo.problem_category_name ?? undefined,
@@ -925,6 +932,7 @@ export const approveByHeader = async ({ params, body, user, set }: any) => {
     // ทั้งอนุมัติ/ไม่อนุมัติ → เลื่อนไป process_status_id = 9 (รออนุมัติจากหัวหน้ากลุ่มภารกิจ)
     const NEXT_STATUS_ID = 9;
 
+    let trackId: number | null = null;
     try {
         const result = await core_kon.begin(async (sql) => {
             const updated = await sql`
@@ -932,7 +940,6 @@ export const approveByHeader = async ({ params, body, user, set }: any) => {
                 SET header_approve = ${headerApprove},
                     header_comment = ${headerComment},
                     header_approve_date = NOW(),
-    let trackId: number | null = null;
                     process_status_id = ${NEXT_STATUS_ID}
                 WHERE it_repair_request_id = ${params.id}
                 RETURNING it_repair_request_id, header_approve, header_comment, header_approve_date, process_status_id
@@ -953,30 +960,30 @@ export const approveByHeader = async ({ params, body, user, set }: any) => {
                 ) VALUES (
                     ${params.id}, ${NEXT_STATUS_ID}, ${actionBy}, ${note}, ${actionBy}
                 )
+                RETURNING it_repair_request_track_id
             `;
+            trackId = track.it_repair_request_track_id;
 
             return updated;
         });
 
         if (!result) {
             set.status = 404;
-                RETURNING it_repair_request_track_id
             return { success: false, message: 'ไม่พบคำร้องซ่อม' };
-            trackId = track.it_repair_request_track_id;
         }
 
-        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง
-        const [reqInfo] = await core_kon`
-            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
-                   et.name AS equipment_type_name,
-                   pc.name AS problem_category_name,
-                   CONCAT(au.pname, au.fname, ' ', au.lname) AS technician_name,
-                   CONCAT(hu.pname, hu.fname, ' ', hu.lname) AS approver_name
         await logRepairActivity({
             requestId: params.id, trackId, userId: actionBy, event: 'header_approve',
             note: headerApprove === 1 ? `อนุมัติ${headerComment ? `: ${headerComment}` : ''}` : `ไม่อนุมัติ: ${headerComment}`,
         });
 
+        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง
+        const [reqInfo] = await core_kon`
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, ${WARD_SQL()} AS ward, r.problem_description, r.created_at,
+                   et.name AS equipment_type_name,
+                   pc.name AS problem_category_name,
+                   CONCAT(au.pname, au.fname, ' ', au.lname) AS technician_name,
+                   CONCAT(hu.pname, hu.fname, ' ', hu.lname) AS approver_name
             FROM it_repair_requests r
             LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
             LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
@@ -995,6 +1002,7 @@ export const approveByHeader = async ({ params, body, user, set }: any) => {
                 equipmentNumber: reqInfo.equipment_number,
                 equipmentName: reqInfo.equipment_name,
                 location: reqInfo.location ?? undefined,
+                ward: reqInfo.ward ?? undefined,
                 problemDescription: reqInfo.problem_description ?? undefined,
                 equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                 problemCategoryName: reqInfo.problem_category_name ?? undefined,
@@ -1012,6 +1020,7 @@ export const approveByHeader = async ({ params, body, user, set }: any) => {
                     equipmentName: reqInfo.equipment_name ?? undefined,
                     equipmentNumber: reqInfo.equipment_number ?? undefined,
                     location: reqInfo.location ?? undefined,
+                    ward: reqInfo.ward ?? undefined,
                     problemDescription: reqInfo.problem_description ?? undefined,
                     equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                     problemCategoryName: reqInfo.problem_category_name ?? undefined,
@@ -1061,6 +1070,7 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
         return { success: false, message: 'กรุณาระบุเหตุผล (mission_comment) เมื่อไม่อนุมัติ' };
     }
 
+    let trackId: number | null = null;
     try {
         const result = await core_kon.begin(async (sql) => {
             // หาคำร้อง + approve_process_id ของ assessment ที่ช่างเลือก
@@ -1070,7 +1080,6 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
                 FROM it_repair_requests r
                 LEFT JOIN it_repair_assessments ia ON ia.repair_assessment_id = r.repair_assessment_id
                 WHERE r.it_repair_request_id = ${params.id}
-    let trackId: number | null = null;
             `;
 
             if (!req) {
@@ -1107,7 +1116,9 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
                 ) VALUES (
                     ${params.id}, ${nextStatus}, ${actionBy}, ${note}, ${actionBy}
                 )
+                RETURNING it_repair_request_track_id
             `;
+            trackId = track.it_repair_request_track_id;
 
             return { request: updated[0], assessmentName: req.assessment_name as string | null };
         });
@@ -1116,22 +1127,11 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
             set.status = 404;
             return { success: false, message: 'ไม่พบคำร้องซ่อม' };
         }
-                RETURNING it_repair_request_track_id
         if (result.noApproveProcess) {
-            trackId = track.it_repair_request_track_id;
             set.status = 400;
             return { success: false, message: 'คำร้องนี้ไม่มี approve_process_id (ผลประเมินของช่างไม่รองรับขั้นอนุมัติจัดซื้อ)' };
         }
 
-        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง (ps = สถานะถัดไปที่เพิ่งอัปเดต, ia = ผลประเมินช่าง)
-        const [reqInfo] = await core_kon`
-            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
-                   et.name AS equipment_type_name,
-                   pc.name AS problem_category_name,
-                   ia.assessment_name,
-                   ps.name AS next_status_name,
-                   CONCAT(au.pname, au.fname, ' ', au.lname) AS technician_name,
-                   CONCAT(mu.pname, mu.fname, ' ', mu.lname) AS approver_name
         await logRepairActivity({
             requestId: params.id, trackId, userId: actionBy, event: 'mission_approve',
             note: missionApprove === 1
@@ -1139,6 +1139,15 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
                 : `ไม่อนุมัติ: ${missionComment}`,
         });
 
+        // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง (ps = สถานะถัดไปที่เพิ่งอัปเดต, ia = ผลประเมินช่าง)
+        const [reqInfo] = await core_kon`
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, ${WARD_SQL()} AS ward, r.problem_description, r.created_at,
+                   et.name AS equipment_type_name,
+                   pc.name AS problem_category_name,
+                   ia.assessment_name,
+                   ps.name AS next_status_name,
+                   CONCAT(au.pname, au.fname, ' ', au.lname) AS technician_name,
+                   CONCAT(mu.pname, mu.fname, ' ', mu.lname) AS approver_name
             FROM it_repair_requests r
             LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
             LEFT JOIN it_problem_category pc ON pc.it_problem_category_id = r.problem_category_id
@@ -1159,6 +1168,7 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
                 equipmentNumber: reqInfo.equipment_number,
                 equipmentName: reqInfo.equipment_name,
                 location: reqInfo.location ?? undefined,
+                ward: reqInfo.ward ?? undefined,
                 problemDescription: reqInfo.problem_description ?? undefined,
                 equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                 problemCategoryName: reqInfo.problem_category_name ?? undefined,
@@ -1178,6 +1188,7 @@ export const approveByMission = async ({ params, body, user, set }: any) => {
                     equipmentName: reqInfo.equipment_name ?? undefined,
                     equipmentNumber: reqInfo.equipment_number ?? undefined,
                     location: reqInfo.location ?? undefined,
+                    ward: reqInfo.ward ?? undefined,
                     problemDescription: reqInfo.problem_description ?? undefined,
                     equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                     problemCategoryName: reqInfo.problem_category_name ?? undefined,
@@ -1290,7 +1301,13 @@ export const updateRepairAssessment = async ({ params, body, user, set }: any) =
             ) VALUES (
                 ${params.id}, ${assessment.process_status_id}, ${actionBy}, ${assessment_detail}, ${actionBy}
             )
+            RETURNING it_repair_request_track_id
         `;
+
+        await logRepairActivity({
+            requestId: params.id, trackId: track?.it_repair_request_track_id, userId: actionBy, event: 'assess',
+            note: assessment_detail,
+        });
 
         const [notifyInfo] = await core_kon`
             SELECT r.equipment_number, r.equipment_name,
@@ -1301,14 +1318,8 @@ export const updateRepairAssessment = async ({ params, body, user, set }: any) =
             LEFT JOIN it_repair_assessments ia ON ia.repair_assessment_id = r.repair_assessment_id
             LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
             LEFT JOIN users u ON u.id = ${actionBy}
-            RETURNING it_repair_request_track_id
             WHERE r.it_repair_request_id = ${params.id}
         `;
-        await logRepairActivity({
-            requestId: params.id, trackId: track?.it_repair_request_track_id, userId: actionBy, event: 'assess',
-            note: assessment_detail,
-        });
-
 
         if (notifyInfo) {
             mophRepairAssessment({
@@ -1629,6 +1640,7 @@ export const recordRepairPr = async ({ params, body, user, set }: any) => {
                 ) VALUES (
                     ${params.id}, ${NEXT_STATUS_ID}, ${actionBy}, ${note}, ${actionBy}
                 )
+                RETURNING it_repair_request_track_id
             `;
 
             return { pr, docNames, note, trackId: track.it_repair_request_track_id as number };
@@ -1640,13 +1652,14 @@ export const recordRepairPr = async ({ params, body, user, set }: any) => {
         }
         if (result.conflict) {
             set.status = 409;
-                RETURNING it_repair_request_track_id
             return { success: false, message: 'บันทึกใบ PR ของคำร้องนี้ไปแล้ว' };
         }
 
+        await logRepairActivity({ requestId: params.id, trackId: result.trackId, userId: actionBy, event: 'pr', note: result.note });
+
         // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง (ps = สถานะถัดไปที่เพิ่งอัปเดต)
         const [reqInfo] = await core_kon`
-            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, ${WARD_SQL()} AS ward, r.problem_description, r.created_at,
                    et.name AS equipment_type_name,
                    ps.name AS next_status_name,
                    CONCAT(cu.pname, cu.fname, ' ', cu.lname) AS recorded_by_name
@@ -1655,8 +1668,6 @@ export const recordRepairPr = async ({ params, body, user, set }: any) => {
             LEFT JOIN it_process_statuses ps ON ps.id = r.process_status_id
             LEFT JOIN users ru ON ru.id = r.created_by
             LEFT JOIN users cu ON cu.id = ${actionBy}
-        await logRepairActivity({ requestId: params.id, trackId: result.trackId, userId: actionBy, event: 'pr', note: result.note });
-
             WHERE r.it_repair_request_id = ${params.id}
         `;
 
@@ -1670,6 +1681,7 @@ export const recordRepairPr = async ({ params, body, user, set }: any) => {
                 equipmentNumber: reqInfo.equipment_number,
                 equipmentName: reqInfo.equipment_name,
                 location: reqInfo.location ?? undefined,
+                ward: reqInfo.ward ?? undefined,
                 problemDescription: reqInfo.problem_description ?? undefined,
                 equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                 prNumber,
@@ -1687,6 +1699,7 @@ export const recordRepairPr = async ({ params, body, user, set }: any) => {
                     equipmentName: reqInfo.equipment_name ?? undefined,
                     equipmentNumber: reqInfo.equipment_number ?? undefined,
                     location: reqInfo.location ?? undefined,
+                    ward: reqInfo.ward ?? undefined,
                     problemDescription: reqInfo.problem_description ?? undefined,
                     equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                     prNumber,
@@ -1855,6 +1868,7 @@ export const recordRepairProgress = async ({ params, body, user, set }: any) => 
                 ) VALUES (
                     ${params.id}, ${effectiveStatusId}, ${actionBy}, ${trackNote}, ${actionBy}
                 )
+                RETURNING it_repair_request_track_id
             `;
 
             return { progress, stepNames, processStatusId: effectiveStatusId, trackId: track.it_repair_request_track_id as number };
@@ -1868,12 +1882,16 @@ export const recordRepairProgress = async ({ params, body, user, set }: any) => 
         if (result.invalidStatus) {
             set.status = 400;
             return { success: false, message: 'สถานะปลายทางที่เลือกไม่ถูกต้อง' };
-                RETURNING it_repair_request_track_id
         }
+
+        await logRepairActivity({
+            requestId: params.id, trackId: result.trackId, userId: actionBy, event: 'progress',
+            note: [result.stepNames?.length ? `เสร็จแล้ว: ${result.stepNames.join(', ')}` : null, note].filter(Boolean).join(' — '),
+        });
 
         // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง
         const [reqInfo] = await core_kon`
-            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, ${WARD_SQL()} AS ward, r.problem_description, r.created_at,
                    et.name AS equipment_type_name,
                    CONCAT(tu.pname, tu.fname, ' ', tu.lname) AS technician_name
             FROM it_repair_requests r
@@ -1884,11 +1902,6 @@ export const recordRepairProgress = async ({ params, body, user, set }: any) => 
         `;
 
         if (reqInfo) {
-        await logRepairActivity({
-            requestId: params.id, trackId: result.trackId, userId: actionBy, event: 'progress',
-            note: [result.stepNames?.length ? `เสร็จแล้ว: ${result.stepNames.join(', ')}` : null, note].filter(Boolean).join(' — '),
-        });
-
             const requestedAt = reqInfo.created_at ? new Date(reqInfo.created_at).toISOString() : undefined;
             const completedStepNames: string[] = result.stepNames ?? [];
 
@@ -1898,6 +1911,7 @@ export const recordRepairProgress = async ({ params, body, user, set }: any) => 
                 equipmentNumber: reqInfo.equipment_number,
                 equipmentName: reqInfo.equipment_name,
                 location: reqInfo.location ?? undefined,
+                ward: reqInfo.ward ?? undefined,
                 problemDescription: reqInfo.problem_description ?? undefined,
                 equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                 completedStepNames,
@@ -1913,6 +1927,7 @@ export const recordRepairProgress = async ({ params, body, user, set }: any) => 
                     equipmentName: reqInfo.equipment_name ?? undefined,
                     equipmentNumber: reqInfo.equipment_number ?? undefined,
                     location: reqInfo.location ?? undefined,
+                    ward: reqInfo.ward ?? undefined,
                     problemDescription: reqInfo.problem_description ?? undefined,
                     equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                     completedStepNames,
@@ -1962,6 +1977,7 @@ export const completeRepair = async ({ params, body, user, set }: any) => {
     // สถานะปลายทางเมื่อปิดงาน = 5 (ซ่อมเสร็จแล้ว)
     const DONE_STATUS_ID = 5;
 
+    let trackId: number | null = null;
     try {
         const result = await core_kon.begin(async (sql) => {
             const updated = await sql`
@@ -1977,7 +1993,6 @@ export const completeRepair = async ({ params, body, user, set }: any) => {
             if (updated.length === 0) {
                 return null;
             }
-    let trackId: number | null = null;
 
             const trackNote = `ปิดงานซ่อม (รับอะไหล่/เสร็จสิ้น)${note ? ` — ${note}` : ''}`;
             const [track] = await sql`
@@ -1986,7 +2001,9 @@ export const completeRepair = async ({ params, body, user, set }: any) => {
                 ) VALUES (
                     ${params.id}, ${DONE_STATUS_ID}, ${actionBy}, ${trackNote}, ${actionBy}
                 )
+                RETURNING it_repair_request_track_id
             `;
+            trackId = track.it_repair_request_track_id;
 
             return updated[0];
         });
@@ -1996,14 +2013,15 @@ export const completeRepair = async ({ params, body, user, set }: any) => {
             return { success: false, message: 'ไม่พบคำร้องซ่อม' };
         }
 
+        // ลงกิจกรรม ณ เวลาที่ซ่อมเสร็จจริงที่กรอกในโมดัล (ไม่ใช่เวลาที่กดบันทึก)
+        await logRepairActivity({ requestId: params.id, trackId, userId: actionBy, event: 'complete', note, at: completedAt });
+
         // ดึงข้อมูลคำร้องสำหรับแจ้งเตือน 2 ทาง (ผู้แจ้ง = created_by, ช่าง = assigned_to)
         const [reqInfo] = await core_kon`
-            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, r.problem_description, r.created_at,
+            SELECT ru.id_card, r.equipment_name, r.equipment_number, r.location, ${WARD_SQL()} AS ward, r.problem_description, r.created_at,
                    et.name AS equipment_type_name,
                    CONCAT(au.pname, au.fname, ' ', au.lname) AS technician_name
-                RETURNING it_repair_request_track_id
             FROM it_repair_requests r
-            trackId = track.it_repair_request_track_id;
             LEFT JOIN it_equipment_types et ON et.id = r.it_equipment_type_id
             LEFT JOIN users ru ON ru.id = r.created_by
             LEFT JOIN users au ON au.id = r.assigned_to
@@ -2013,9 +2031,6 @@ export const completeRepair = async ({ params, body, user, set }: any) => {
         if (reqInfo) {
             const requestedAt = reqInfo.created_at ? new Date(reqInfo.created_at).toISOString() : undefined;
             const completedAtIso = completedAt.toISOString();
-        // ลงกิจกรรม ณ เวลาที่ซ่อมเสร็จจริงที่กรอกในโมดัล (ไม่ใช่เวลาที่กดบันทึก)
-        await logRepairActivity({ requestId: params.id, trackId, userId: actionBy, event: 'complete', note, at: completedAt });
-
 
             // ทางที่ 1: แจ้งเข้าหน่วยงาน IT ผ่าน MOPH Notify (กลุ่ม)
             mophRepairCompleted({
@@ -2023,6 +2038,7 @@ export const completeRepair = async ({ params, body, user, set }: any) => {
                 equipmentNumber: reqInfo.equipment_number,
                 equipmentName: reqInfo.equipment_name,
                 location: reqInfo.location ?? undefined,
+                ward: reqInfo.ward ?? undefined,
                 problemDescription: reqInfo.problem_description ?? undefined,
                 equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                 technicianName: reqInfo.technician_name ?? undefined,
@@ -2038,6 +2054,7 @@ export const completeRepair = async ({ params, body, user, set }: any) => {
                     equipmentName: reqInfo.equipment_name ?? undefined,
                     equipmentNumber: reqInfo.equipment_number ?? undefined,
                     location: reqInfo.location ?? undefined,
+                    ward: reqInfo.ward ?? undefined,
                     problemDescription: reqInfo.problem_description ?? undefined,
                     equipmentTypeName: reqInfo.equipment_type_name ?? undefined,
                     technicianName: reqInfo.technician_name ?? undefined,

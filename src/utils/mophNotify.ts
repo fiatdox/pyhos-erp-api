@@ -13,6 +13,7 @@ export interface ItMaintenanceData {
     equipmentNumber: string;
     equipmentName: string;
     location: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription: string;
     priorityName?: string;
     equipmentTypeName?: string;
@@ -26,7 +27,7 @@ function buildItMaintenanceTemplate(data: ItMaintenanceData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentNumber, equipmentName,
-        location, problemDescription,
+        location, ward, problemDescription,
         priorityName, equipmentTypeName, problemCategoryName,
         imageCount = 0,
         reporterName, reporterUnit,
@@ -40,6 +41,7 @@ function buildItMaintenanceTemplate(data: ItMaintenanceData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
         { label: 'สถานที่', value: location },
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
         { label: 'อาการ', value: problemDescription },
         ...(imageCount > 0 ? [{ label: 'รูปแนบ', value: `📎 ${imageCount} รูป` }] : []),
@@ -129,6 +131,7 @@ export interface ReceiveAssignmentData {
     equipmentNumber: string;
     equipmentName: string;
     location: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription: string;
     equipmentTypeName?: string;
     problemCategoryName?: string;
@@ -144,7 +147,7 @@ function buildReceiveAssignmentTemplate(data: ReceiveAssignmentData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentNumber, equipmentName,
-        location, problemDescription,
+        location, ward, problemDescription,
         equipmentTypeName, problemCategoryName, priorityName,
         technicianPriorityName,
         technicianName, assignDatetime,
@@ -176,6 +179,7 @@ function buildReceiveAssignmentTemplate(data: ReceiveAssignmentData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
         { label: 'สถานที่', value: location },
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
         { label: 'อาการ', value: problemDescription },
     ];
@@ -249,6 +253,7 @@ export interface RejectAssignmentData {
     equipmentNumber: string;
     equipmentName: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     problemCategoryName?: string;
@@ -262,7 +267,7 @@ function buildRejectAssignmentTemplate(data: RejectAssignmentData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentNumber, equipmentName,
-        location, problemDescription,
+        location, ward, problemDescription,
         equipmentTypeName, problemCategoryName, priorityName,
         technicianName, rejectReason, requestedAt,
     } = data;
@@ -286,6 +291,7 @@ function buildRejectAssignmentTemplate(data: RejectAssignmentData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(technicianName ? [{ label: 'ผู้ปฏิเสธ', value: technicianName }] : []),
@@ -456,6 +462,7 @@ export interface RequestExtensionData {
     equipmentNumber: string;
     equipmentName: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     problemCategoryName?: string;
@@ -471,7 +478,7 @@ function buildRequestExtensionTemplate(data: RequestExtensionData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentNumber, equipmentName,
-        location, problemDescription,
+        location, ward, problemDescription,
         equipmentTypeName, problemCategoryName,
         technicianName, requestedAt, previousCompletionDate, newCompletionDate,
         extensionDays, extensionReason,
@@ -495,6 +502,7 @@ function buildRequestExtensionTemplate(data: RequestExtensionData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(technicianName ? [{ label: 'ช่างผู้ขอเลื่อน', value: technicianName }] : []),
@@ -577,6 +585,7 @@ export interface HeaderApproveData {
     equipmentNumber: string;
     equipmentName: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     problemCategoryName?: string;
@@ -591,7 +600,7 @@ function buildHeaderApproveTemplate(data: HeaderApproveData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentNumber, equipmentName,
-        location, problemDescription,
+        location, ward, problemDescription,
         equipmentTypeName, problemCategoryName,
         technicianName, approverName, requestedAt,
         headerApprove, headerComment,
@@ -619,6 +628,7 @@ function buildHeaderApproveTemplate(data: HeaderApproveData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(technicianName ? [{ label: 'ช่างผู้รับงาน', value: technicianName }] : []),
@@ -692,6 +702,7 @@ export interface MissionApproveData {
     equipmentNumber: string;
     equipmentName: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     problemCategoryName?: string;
@@ -708,7 +719,7 @@ function buildMissionApproveTemplate(data: MissionApproveData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentNumber, equipmentName,
-        location, problemDescription,
+        location, ward, problemDescription,
         equipmentTypeName, problemCategoryName,
         technicianName, approverName, assessmentName, nextStatusName, requestedAt,
         missionApprove, missionComment,
@@ -738,6 +749,7 @@ function buildMissionApproveTemplate(data: MissionApproveData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(technicianName ? [{ label: 'ช่างผู้รับงาน', value: technicianName }] : []),
@@ -1014,6 +1026,7 @@ export interface RepairPrData {
     equipmentNumber: string;
     equipmentName: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     prNumber: string;
@@ -1028,7 +1041,7 @@ function buildRepairPrTemplate(data: RepairPrData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentNumber, equipmentName,
-        location, problemDescription, equipmentTypeName,
+        location, ward, problemDescription, equipmentTypeName,
         prNumber, prDetail, documentNames,
         recordedByName, nextStatusName, requestedAt,
     } = data;
@@ -1052,6 +1065,7 @@ function buildRepairPrTemplate(data: RepairPrData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(recordedByName ? [{ label: 'ผู้บันทึก', value: recordedByName }] : []),
         ...(nextStatusName ? [{ label: 'ขั้นตอนถัดไป', value: nextStatusName, color: '#22c55e' }] : []),
@@ -1138,6 +1152,7 @@ export interface RepairProgressData {
     equipmentNumber: string;
     equipmentName: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     completedStepNames?: string[];
@@ -1150,7 +1165,7 @@ function buildRepairProgressTemplate(data: RepairProgressData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentNumber, equipmentName,
-        location, problemDescription, equipmentTypeName,
+        location, ward, problemDescription, equipmentTypeName,
         completedStepNames, note, technicianName, requestedAt,
     } = data;
 
@@ -1173,6 +1188,7 @@ function buildRepairProgressTemplate(data: RepairProgressData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(technicianName ? [{ label: 'ช่างผู้อัพเดท', value: technicianName }] : []),
     ];
@@ -1256,6 +1272,7 @@ export interface RepairCompletedData {
     equipmentNumber: string;
     equipmentName: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     technicianName?: string;
@@ -1268,7 +1285,7 @@ function buildRepairCompletedTemplate(data: RepairCompletedData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentNumber, equipmentName,
-        location, problemDescription, equipmentTypeName,
+        location, ward, problemDescription, equipmentTypeName,
         technicianName, completedAt, note, requestedAt,
     } = data;
 
@@ -1291,6 +1308,7 @@ function buildRepairCompletedTemplate(data: RepairCompletedData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: `${equipmentName} (${equipmentNumber})` },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(technicianName ? [{ label: 'ช่างผู้ซ่อม', value: technicianName }] : []),
     ];

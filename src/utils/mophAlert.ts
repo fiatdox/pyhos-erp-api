@@ -115,6 +115,7 @@ export interface RepairRejectedData {
     equipmentName?: string;
     equipmentNumber?: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     problemCategoryName?: string;
@@ -128,7 +129,7 @@ function buildRepairRejectedTemplate(data: RepairRejectedData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentName, equipmentNumber,
-        location, problemDescription,
+        location, ward, problemDescription,
         equipmentTypeName, problemCategoryName, priorityName,
         technicianName, rejectReason, requestedAt,
     } = data;
@@ -147,6 +148,7 @@ function buildRepairRejectedTemplate(data: RepairRejectedData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: equipmentText },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(technicianName ? [{ label: 'ผู้ปฏิเสธ', value: technicianName }] : []),
@@ -227,6 +229,7 @@ export interface RepairReceivedData {
     equipmentName?: string;
     equipmentNumber?: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     problemCategoryName?: string;
@@ -242,7 +245,7 @@ function buildRepairReceivedTemplate(data: RepairReceivedData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentName, equipmentNumber,
-        location, problemDescription,
+        location, ward, problemDescription,
         equipmentTypeName, problemCategoryName, priorityName,
         technicianName, technicianPriorityName,
         estimatedDays, estimatedCompletionDate, requestedAt,
@@ -279,6 +282,7 @@ function buildRepairReceivedTemplate(data: RepairReceivedData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: equipmentText },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
     ];
@@ -357,6 +361,7 @@ export interface RepairExtensionData {
     equipmentName?: string;
     equipmentNumber?: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     problemCategoryName?: string;
@@ -372,7 +377,7 @@ function buildRepairExtensionTemplate(data: RepairExtensionData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentName, equipmentNumber,
-        location, problemDescription,
+        location, ward, problemDescription,
         equipmentTypeName, problemCategoryName,
         technicianName, requestedAt, previousCompletionDate, newCompletionDate,
         extensionDays, extensionReason,
@@ -401,6 +406,7 @@ function buildRepairExtensionTemplate(data: RepairExtensionData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: equipmentText },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(technicianName ? [{ label: 'ช่างผู้ขอเลื่อน', value: technicianName }] : []),
@@ -483,6 +489,7 @@ export interface HeaderApproveAlertData {
     equipmentName?: string;
     equipmentNumber?: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     problemCategoryName?: string;
@@ -497,7 +504,7 @@ function buildHeaderApproveTemplate(data: HeaderApproveAlertData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentName, equipmentNumber,
-        location, problemDescription,
+        location, ward, problemDescription,
         equipmentTypeName, problemCategoryName,
         technicianName, approverName, requestedAt,
         headerApprove, headerComment,
@@ -528,6 +535,7 @@ function buildHeaderApproveTemplate(data: HeaderApproveAlertData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: equipmentText },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(technicianName ? [{ label: 'ช่างผู้รับงาน', value: technicianName }] : []),
@@ -601,6 +609,7 @@ export interface MissionApproveAlertData {
     equipmentName?: string;
     equipmentNumber?: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     problemCategoryName?: string;
@@ -618,7 +627,7 @@ function buildMissionApproveTemplate(data: MissionApproveAlertData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentName, equipmentNumber,
-        location, problemDescription,
+        location, ward, problemDescription,
         equipmentTypeName, problemCategoryName,
         technicianName, approverName, assessmentName, nextStatusName, nextStatusId, requestedAt,
         missionApprove, missionComment,
@@ -659,6 +668,7 @@ function buildMissionApproveTemplate(data: MissionApproveAlertData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: equipmentText },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemCategoryName ? [{ label: 'หมวดปัญหา', value: problemCategoryName }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(technicianName ? [{ label: 'ช่างผู้รับงาน', value: technicianName }] : []),
@@ -743,6 +753,7 @@ export interface RepairPrAlertData {
     equipmentName?: string;
     equipmentNumber?: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     prNumber: string;
@@ -757,7 +768,7 @@ function buildRepairPrTemplate(data: RepairPrAlertData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentName, equipmentNumber,
-        location, problemDescription, equipmentTypeName,
+        location, ward, problemDescription, equipmentTypeName,
         prNumber, prDetail, documentNames,
         recordedByName, nextStatusName, requestedAt,
     } = data;
@@ -785,6 +796,7 @@ function buildRepairPrTemplate(data: RepairPrAlertData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: equipmentText },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(recordedByName ? [{ label: 'ผู้บันทึก', value: recordedByName }] : []),
         ...(nextStatusName ? [{ label: 'ขั้นตอนถัดไป', value: nextStatusName, color: '#22c55e' }] : []),
@@ -867,6 +879,7 @@ export interface RepairProgressAlertData {
     equipmentName?: string;
     equipmentNumber?: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     completedStepNames?: string[];
@@ -879,7 +892,7 @@ function buildRepairProgressTemplate(data: RepairProgressAlertData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentName, equipmentNumber,
-        location, problemDescription, equipmentTypeName,
+        location, ward, problemDescription, equipmentTypeName,
         completedStepNames, note, technicianName, requestedAt,
     } = data;
 
@@ -905,6 +918,7 @@ function buildRepairProgressTemplate(data: RepairProgressAlertData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: equipmentText },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(technicianName ? [{ label: 'ช่างผู้อัพเดท', value: technicianName }] : []),
     ];
@@ -986,6 +1000,7 @@ export interface RepairCompletedAlertData {
     equipmentName?: string;
     equipmentNumber?: string;
     location?: string;
+    ward?: string;          // หอผู้ป่วย/หน่วยงานของผู้แจ้ง (submajor หรือกลุ่มงานถ้าไม่มี)
     problemDescription?: string;
     equipmentTypeName?: string;
     technicianName?: string;
@@ -998,7 +1013,7 @@ function buildRepairCompletedTemplate(data: RepairCompletedAlertData): object {
     const { thaiDate, thaiTime } = formatThaiDate(new Date());
     const {
         requestId, equipmentName, equipmentNumber,
-        location, problemDescription, equipmentTypeName,
+        location, ward, problemDescription, equipmentTypeName,
         technicianName, completedAt, note, requestedAt,
     } = data;
 
@@ -1024,6 +1039,7 @@ function buildRepairCompletedTemplate(data: RepairCompletedAlertData): object {
         ...(equipmentTypeName ? [{ label: 'ประเภท', value: equipmentTypeName }] : []),
         { label: 'ครุภัณฑ์', value: equipmentText },
         ...(location ? [{ label: 'สถานที่', value: location }] : []),
+        ...(ward ? [{ label: 'หอผู้ป่วย/หน่วยงาน', value: ward }] : []),
         ...(problemDescription ? [{ label: 'อาการ', value: problemDescription }] : []),
         ...(technicianName ? [{ label: 'ช่างผู้ซ่อม', value: technicianName }] : []),
     ];
