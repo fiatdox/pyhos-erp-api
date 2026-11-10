@@ -1,6 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { requireRoles } from '../middlewares/roleGuard';
+import { deleteMySignature, getMySignature, setMySignature } from '../controllers/userSignatureController';
 import { getAllUsers, getUserById, getUserInfo, createUser, updateUser, deactivateUser, activateUser, verifyUser, unverifyUser, changePassword, getMyPasswordStatus, getMyUsernameStatus, checkMyUsername, changeMyUsername, getMySalaryId, getMyWorkProfile, setMySalaryId, updateMyCodes, getMyColleagues } from '../controllers/userController';
 
 // สร้าง Schema สำหรับตรวจสอบข้อมูล (Validation) ให้ตรงกับโครงสร้างตาราง users
@@ -86,6 +87,13 @@ export const userRoutes = new Elysia({ prefix: '/api/v1/users' })
         }),
         detail: { tags: ['Users'], summary: 'แก้ไขรหัสประจำตัวของตัวเอง', description: 'อัปเดต users.salary_id / attendance_id ของผู้ login — salary_id กันซ้ำกับผู้ใช้อื่น (409), null = ล้างค่า' }
     })
+    // ลายเซ็นของตัวเอง (ตั้งค่าบัญชี > ลายเซ็น) — ใช้ลงนามเอกสารที่อนุมัติผ่านระบบ
+    .get('/me/signature', getMySignature, { detail: { tags: ['Users'], summary: 'ลายเซ็นของตัวเอง', description: 'คืน data URL PNG หรือ null — อ่านได้เฉพาะของตัวเอง' } })
+    .put('/me/signature', setMySignature, {
+        body: t.Object({ image: t.String() }),
+        detail: { tags: ['Users'], summary: 'ตั้งลายเซ็นของตัวเอง', description: 'data:image/png;base64 ไม่เกิน 200KB มิติ 40×16 – 1200×600 · เอกสารที่ลงนามแล้วไม่เปลี่ยนตาม' },
+    })
+    .delete('/me/signature', deleteMySignature, { detail: { tags: ['Users'], summary: 'ลบลายเซ็นของตัวเอง' } })
     .get('/:id', getUserById, {
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['Users'] }

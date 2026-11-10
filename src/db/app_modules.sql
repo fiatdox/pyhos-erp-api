@@ -51,7 +51,7 @@ INSERT INTO app_modules (module_key, label, group_label, route_prefix, sort, not
 
     -- งานพัฒนาระบบบริการและสนับสนุนบริการสุขภาพ
     ('hss.strategy',          'งานยุทธศาสตร์และแผนงาน',        'งานพัฒนาระบบบริการฯ', '/hss/strategy',                 10, NULL),
-    ('hss.hrd',               'งานพัฒนาบุคลากรและการศึกษา',    'งานพัฒนาระบบบริการฯ', '/hss/hrd',                      20, NULL),
+    ('hss.hrd',               'งานพัฒนาทรัพยากรบุคคล',          'งานพัฒนาระบบบริการฯ', '/hss/hrd',                      20, NULL),
 
     -- งานคอมพิวเตอร์และเทคโนโลยีสารสนเทศ
     ('it.maintenance',        'งานซ่อมคอมพิวเตอร์',            'งานเทคโนโลยีสารสนเทศ', '/information-technology/maintenance',        10, NULL),
@@ -73,4 +73,16 @@ INSERT INTO app_modules (module_key, label, group_label, route_prefix, sort, not
     ('accounting.repair_pay', 'เบิกจ่ายค่าซ่อมบำรุง',          'งานการเงินและบัญชี', '/accounting/repair-payment',      50, NULL),
     ('accounting.payable',    'เจ้าหนี้การค้า / KPI จ่าย',      'งานการเงินและบัญชี', '/accounting/accounts-payable',    60, NULL),
     ('accounting.budget',     'งบประมาณรายหน่วยงาน',           'งานการเงินและบัญชี', '/accounting/budget',              70, NULL)
+ON CONFLICT (module_key) DO NOTHING;
+
+-- เปลี่ยนชื่อหน่วยงาน (พ.ย. 2569): งานพัฒนาบุคลากรและการศึกษา → งานพัฒนาทรัพยากรบุคคล
+-- แถวเดิมไม่ถูกแก้โดย INSERT ข้างบน (DO NOTHING) · แก้เฉพาะเมื่อยังเป็นชื่อเดิม (ไม่ทับชื่อที่ผู้ดูแลตั้งเอง) · รันซ้ำได้
+UPDATE app_modules SET label = 'งานพัฒนาทรัพยากรบุคคล'
+WHERE module_key = 'hss.hrd' AND label = 'งานพัฒนาบุคลากรและการศึกษา';
+
+-- เดินทางไปราชการ — เปิด/ปิดแยกจากโมดูล HRD (ส่วนอื่นของ HRD ยังเป็นข้อมูลตัวอย่าง)
+--   ซ้อนใต้ '/hss/hrd' → ปิด HRD แต่เปิดแถวนี้ = เห็นเฉพาะระบบไปราชการ (กฎที่เจาะจงกว่าชนะ)
+INSERT INTO app_modules (module_key, label, group_label, route_prefix, sort, note) VALUES
+    ('hss.hrd_travel', 'เดินทางไปราชการ', 'งานพัฒนาระบบบริการฯ', '/hss/hrd/official-travel', 25,
+     'ขออนุมัติเดินทางไปราชการ รายการคำขอ งบประมาณ และหน้าตั้งค่าของ HRD — เปิดได้แม้ปิดโมดูลงานพัฒนาทรัพยากรบุคคล')
 ON CONFLICT (module_key) DO NOTHING;

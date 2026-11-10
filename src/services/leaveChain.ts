@@ -254,7 +254,7 @@ export const resolveApprovalChain = async (userId: number): Promise<ResolvedChai
 };
 
 /** ขั้นของ ผอ. — ใช้ตัวจริงก่อน ไม่มี (หรือพ้นจากการปฏิบัติงานแล้ว) จึงใช้รักษาการ */
-const resolveDirectorStep = async (step: number): Promise<ChainStep | null> => {
+export const resolveDirectorStep = async (step: number): Promise<ChainStep | null> => {
     const rows = await core_kon`
         SELECT name, value FROM hr_settings WHERE name IN ('director_id', 'acting_director_id')
     `;

@@ -23,6 +23,7 @@ import { userCredentialRoutes } from "./routes/userCredentialRoutes";
 import { appModuleRoutes } from "./routes/appModuleRoutes";
 import { pageViewRoutes } from "./routes/pageViewRoutes";
 import { hrPostRoutes } from "./routes/hrPostRoutes";
+import { hrdTravelRoutes } from "./routes/hrdTravelRoutes";
 import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 import { startLeaveRolloverJob } from "./services/leaveRollover";
 import { startLeaveNotifyJob } from "./services/leaveNotify";
@@ -59,6 +60,7 @@ const app = new Elysia()
           { name: 'AssetDonation', description: 'ระบบรับบริจาคครุภัณฑ์โรงพยาบาล — เจ้าหน้าที่รับบริจาค → กรรมการ 3 ท่านลงมติ → ฝ่ายพัสดุขึ้นทะเบียน' },
           { name: 'MFA', description: 'ตั้งค่าการยืนยันตัวตนสองชั้น (OTP ผ่าน Line หมอพร้อม) — เฉพาะ ADMIN' },
           { name: 'UserCredential', description: 'จัดการ username / รหัสผ่าน / เลขบัตรประชาชนของบุคลากร — เฉพาะ ADMIN และ IT_STAFF' },
+          { name: 'HrdTravel', description: 'เดินทางไปราชการ (งานพัฒนาทรัพยากรบุคคล HRD) — ตั้งค่าเบี้ยเลี้ยง เฉพาะ ADMIN และ HRD' },
         ],
         components: {
           securitySchemes: {
@@ -99,6 +101,7 @@ const app = new Elysia()
   .use(appModuleRoutes)
   .use(pageViewRoutes)
   .use(hrPostRoutes)
+  .use(hrdTravelRoutes)
   //.get("/", () => "Hello Elysia")
   .listen(process.env.PORT || 5000);
 
