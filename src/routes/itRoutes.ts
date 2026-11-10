@@ -2,6 +2,8 @@ import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { getEquipmentTypes, getEquipmentTypeById, getProblemCategories, getProblemCategoryById, getPriorityLevels, getPriorityLevelById, getProcessStatuses, getProcessStatusById, getProcessStatusesByIds, createRepairRequest, getRepairRequests, getAllRepairRequests, getRepairRequestImages, getRepairRequestImageFile, receiveAssignment, rejectAssignment, requestExtension, getRepairExtensions, approveByHeader, approveByMission, getRepairAssessments, getRepairAssessmentById, updateRepairAssessment, getPrDocumentTypes, getRepairPr, recordRepairPr, getRepairPrStatus, getRepairWorkSteps, getRepairProgress, recordRepairProgress, completeRepair, getRepairStats } from '../controllers/itController';
 
+import { getRepairEdit, updateRepairRequest } from '../controllers/itRepairEditController';
+
 export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
     .use(authMiddleware)
     // ดึงรายการประเภทอุปกรณ์ IT ทั้งหมด
@@ -96,6 +98,26 @@ export const itRoutes = new Elysia({ prefix: '/api/v1/it' })
             summary: 'บันทึกคำร้องงานซ่อมคอมพิวเตอร์',
             description: 'บันทึกลงตาราง it_repair_requests และ it_repair_request_images (รูป 0-3 ภาพ) รับข้อมูลเป็น multipart/form-data',
         },
+    })
+    // แก้ไขข้อมูลใบส่งซ่อม (เฉพาะงาน IT — ตรวจ role ใน controller) + ประวัติการแก้ไข
+    .get('/repair-requests/:id/edit', getRepairEdit, {
+        params: t.Object({ id: t.Numeric() }),
+        detail: { tags: ['IT'], summary: 'ข้อมูลใบส่งซ่อมสำหรับแก้ไข', description: 'ค่าปัจจุบันของช่องที่แก้ได้ + ตัวเลือกประเภท/หมวดปัญหา + ประวัติการแก้ไข (ADMIN / CHIEF_GROUP_IT / CHIEF_MISSION_IT / IT_STAFF)' },
+    })
+    .patch('/repair-requests/:id', updateRepairRequest, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            equipment_name: t.Optional(t.String()),
+            brand: t.Optional(t.Nullable(t.String())),
+            equipment_number: t.Optional(t.Nullable(t.String())),
+            it_equipment_type_id: t.Optional(t.Numeric()),
+            problem_category_id: t.Optional(t.Numeric()),
+            location: t.Optional(t.Nullable(t.String())),
+            company_name: t.Optional(t.Nullable(t.String())),
+            budget_year: t.Optional(t.Nullable(t.String())),
+            unit_price: t.Optional(t.Nullable(t.Numeric())),
+        }),
+        detail: { tags: ['IT'], summary: 'แก้ไขข้อมูลใบส่งซ่อม', description: 'ช่าง/งาน IT แก้ชื่อครุภัณฑ์ ยี่ห้อ เลขครุภัณฑ์ ประเภท หมวดปัญหา สถานที่ ฯลฯ — ส่งเฉพาะช่องที่แก้ · เก็บประวัติก่อน/หลังใน it_repair_request_edits' },
     })
     // ดึงรายการภาพทั้งหมดตาม it_repair_request_id
     .get('/repair-requests/:id/images', getRepairRequestImages, {
