@@ -15,7 +15,8 @@ import { getLeaveRules } from '../services/leaveRules';
 import { getLeaveAnalytics } from '../controllers/hrLeaveAnalyticsController';
 import { getLeaveAccessPreview } from '../controllers/hrLeaveAccessController';
 import { getLegacyImportOptions, listLegacyImportRuns, getLegacyImportRun, startLegacyImportRun } from '../controllers/hrLegacyImportController';
-import { getLeaveDayCount, getHolidays, createHoliday, updateHoliday, deleteHoliday, getLeaveDayCheck, verifyLeaveDays, adjustLeaveDays, cancelLeaveDayCheck } from '../controllers/hrLeaveDayController';
+import { getLeaveDayCount, getHolidays, createHoliday, updateHoliday, deleteHoliday, getLeaveDayCheck, verifyLeaveDays, adjustLeaveDays, cancelLeaveDayCheck, editLeaveDates } from '../controllers/hrLeaveDayController';
+import { getPersonSummaryMeta, getPersonSummaryPeople, getPersonSummaryDetail } from '../controllers/hrLeavePersonSummaryController';
 import { getLeaveBalanceMeta, getLeaveBalances, createLeaveBalance, updateLeaveBalance, rolloverLeaveBalances, rolloverLeaveBalanceForUser, getLeaveBalanceAudit, getLeaveBalanceLogs, fixLeaveBalances, getLeaveBalanceTransferStatus } from '../controllers/hrLeaveBalanceController';
 
 export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
@@ -316,6 +317,22 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
     // ดึงประเภทการลาทั้งหมดพร้อมฟิลด์ครบ (หน้ากำหนดสิทธิ์การลา · ตัวกรองหน้าประวัติการลาเจ้าหน้าที่)
     .get('/leave-types/full', getLeaveTypesFull, {
         detail: { tags: ['HR'], summary: 'ดึงประเภทการลาทั้งหมด (ฟิลด์ครบ)', description: 'สำหรับหน้าตั้งค่ากำหนดสิทธิ์การลา — ADMIN/HR และ ผอ./รักษาการ ผอ. (ตรวจสิทธิ์ใน controller)' }
+    })
+    // สรุปประวัติวันลารายบุคคล — ADMIN / HR (ตรวจสิทธิ์ใน controller)
+    .get('/leave-person-summary/meta', getPersonSummaryMeta, {
+        detail: { tags: ['HR'], summary: 'ตัวกรองหน้าสรุปวันลารายบุคคล: กลุ่มภารกิจ กลุ่มงาน หน่วยงาน ประเภทการลา (ADMIN/HR)' }
+    })
+    .get('/leave-person-summary/people', getPersonSummaryPeople, {
+        query: t.Object({
+            fiscal_year: t.Optional(t.String()), mission_id: t.Optional(t.String()), major_id: t.Optional(t.String()),
+            submajor_id: t.Optional(t.String()), q: t.Optional(t.String()), page: t.Optional(t.String()), page_size: t.Optional(t.String()),
+        }),
+        detail: { tags: ['HR'], summary: 'รายชื่อบุคลากรที่ปฏิบัติงาน พร้อมสรุปวันลาย่อของปีงบ (ADMIN/HR)' }
+    })
+    .get('/leave-person-summary/:id', getPersonSummaryDetail, {
+        params: t.Object({ id: t.String() }),
+        query: t.Object({ fiscal_year: t.Optional(t.String()) }),
+        detail: { tags: ['HR'], summary: 'ประวัติการลารายคนในปีงบ: ใบลา สรุปตามประเภท วันลาพักผ่อนสะสม/คงเหลือ (ADMIN/HR)' }
     })
     .get('/leave-requests/staff-history', getStaffLeaveHistory, {
         query: t.Object({
