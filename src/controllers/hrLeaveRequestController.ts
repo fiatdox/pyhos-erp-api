@@ -742,7 +742,11 @@ export const getStaffLeaveHistory = async ({ user, query, set }: any) => {
                        c.created_at AS cancellation_created_at, c.updated_at AS cancellation_updated_at,
                        c.refunded_days AS cancellation_refunded_days, c.reject_comment AS cancellation_reject_comment,
                        t.count_working_days_only, r.day_check_status, r.day_check_note, r.day_checked_at,
-                       (SELECT CONCAT(cu.pname, cu.fname, ' ', cu.lname) FROM users cu WHERE cu.id = r.day_checked_by) AS day_checked_by_name
+                       (SELECT CONCAT(cu.pname, cu.fname, ' ', cu.lname) FROM users cu WHERE cu.id = r.day_checked_by) AS day_checked_by_name,
+                       -- ประวัติการแก้วันที่ลาโดย HR (ใหม่สุดก่อน)
+                       (SELECT COALESCE(json_agg(json_build_object('id', e.id, 'before', e.before, 'after', e.after, 'refunded_days', e.refunded_days::float8,
+                                   'reason', e.reason, 'created_at', e.created_at, 'actor_name', CONCAT(ea.pname, ea.fname, ' ', ea.lname)) ORDER BY e.created_at DESC), '[]'::json)
+                        FROM hr_leave_date_edits e LEFT JOIN users ea ON ea.id = e.actor_id WHERE e.request_id = r.id) AS date_edits
                 FROM hr_leave_requests r
                 JOIN hr_leave_types t ON t.id = r.leave_type_id
                 JOIN users u ON u.id = r.user_id

@@ -253,6 +253,94 @@ export const cancelLeaveDayCheck = async ({ params, set }: any) => {
     }
 };
 
+/**
+ * HR แก้วันที่ลา — ผู้ลาขอยกเลิกบางวัน (ต้นใบ / ท้ายใบ / ครึ่งวันสุดท้าย) ของใบที่ยื่นหรืออนุมัติแล้ว
+ * · ช่วงใหม่ต้องอยู่ในช่วงเดิม และจำนวนวันไม่เกินเดิม — ย้ายไปวันอื่นหรือลาเพิ่ม = ให้ผู้ลายื่นใบใหม่
+ *   (จึงไม่ต้องตรวจซ้อนทับใบอื่น / สิทธิ์คงเหลือซ้ำ)
+ * · จำนวนวัน = นับตามกฎของประเภท (วันทำการ / วันปฏิทิน + วันหยุดราชการ) หรือ HR ระบุเอง
+ * · คืนวันลาส่วนต่างทันที — ช่วงใหม่เริ่มคนละปีงบกับเดิม (ใบคร่อม 1 ต.ค.) คืนปีเดิมทั้งหมดแล้วหักปีใหม่
+ * · ใบระหว่างขอยกเลิก (CANCEL_PENDING) แก้ไม่ได้ — รอผลการยกเลิกก่อน
+ * · เก็บค่าก่อน/หลังใน hr_leave_date_edits และนับเป็นการตรวจของ HR (ADJUSTED)
+ */
+const fyOfDate = (d: string) => { const [y, m] = d.split('-').map(Number); return (m >= 10 ? y + 1 : y) + 543; };
+export const editLeaveDates = async ({ params, body, user, set }: any) => {
+    const { start_date, end_date } = body ?? {};
+    const halfDay = !!body?.is_half_day;
+    const period = halfDay ? body?.half_day_period : null;
+    const reason = String(body?.note ?? '').trim();
+    if (!realDate(start_date) || !realDate(end_date) || end_date < start_date) return fail(set, 400, 'ช่วงวันที่ไม่ถูกต้อง');
+    if (halfDay && period !== 'AM' && period !== 'PM') return fail(set, 400, 'ลาครึ่งวันต้องระบุช่วงเช้าหรือบ่าย');
+    if (!reason) return fail(set, 400, 'กรุณาระบุเหตุผลที่แก้วันที่ลา');
+    if (reason.length > 500) return fail(set, 400, 'เหตุผลยาวเกิน 500 ตัวอักษร');
+    try {
+        return await core_kon.begin(async (tx: any) => {
+            const [req] = await tx`
+                SELECT r.id, r.user_id, r.leave_type_id, to_char(r.start_date, 'YYYY-MM-DD') AS start_date, to_char(r.end_date, 'YYYY-MM-DD') AS end_date,
+                       r.total_days, r.days_deducted, r.is_half_day, r.half_day_period, r.status, t.count_working_days_only
+                FROM hr_leave_requests r JOIN hr_leave_types t ON t.id = r.leave_type_id
+                WHERE r.id = ${Number(params?.id)} FOR UPDATE OF r
+            `;
+            if (!req) return fail(set, 404, 'ไม่พบใบลา');
+            if (req.status === 'CANCEL_PENDING') return fail(set, 409, 'ใบลานี้อยู่ระหว่างขอยกเลิก — รอผลการยกเลิกก่อนจึงแก้วันที่ได้');
+            if (!['PENDING', 'APPROVED'].includes(req.status)) return fail(set, 409, 'แก้วันที่ได้เฉพาะใบที่รออนุมัติหรืออนุมัติแล้ว');
+            if (start_date < req.start_date || end_date > req.end_date)
+                return fail(set, 400, 'ช่วงวันที่ใหม่ต้องอยู่ในช่วงเดิมของใบลา — ถ้าจะลาวันอื่นเพิ่ม ให้ผู้ลายื่นใบใหม่');
+            const same = start_date === req.start_date && end_date === req.end_date && halfDay === !!req.is_half_day
+                && (halfDay ? period === req.half_day_period : true);
+
+            const count = await countLeaveDays(start_date, end_date, !!req.count_working_days_only, halfDay);
+            const span = spanDays(start_date, end_date);
+            const max = halfDay ? span - 0.5 : span;
+            const days = body?.total_days == null || body.total_days === '' ? count.computed_days : Number(body.total_days);
+            if (!(days > 0) || !Number.isInteger(days * 2)) return fail(set, 400, 'จำนวนวันต้องมากกว่า 0 และเป็นจำนวนเต็มหรือครึ่งวัน');
+            if (days > max) return fail(set, 400, `ช่วงวันที่ ${span} วัน${halfDay ? ' (มีครึ่งวัน)' : ''} ลาได้ไม่เกิน ${max} วัน`);
+            const before = Number(req.total_days);
+            if (days > before) return fail(set, 400, `จำนวนวันใหม่ (${days}) มากกว่าเดิม (${before}) — ถ้าจะเพิ่มวันลา ให้ผู้ลายื่นใบใหม่`);
+            if (same && days === before) return fail(set, 400, 'วันที่และจำนวนวันเหมือนเดิม ไม่มีอะไรเปลี่ยน');
+
+            const th = (d: string) => { const [y, m, dd] = d.split('-').map(Number); return `${dd}/${m}/${y + 543}`; };
+            const half = (h: boolean, p: string | null) => (h ? (p === 'PM' ? ' ครึ่งวันบ่าย' : ' ครึ่งวันเช้า') : '');
+            const rangeTh = (s: string, e: string, h: boolean, p: string | null) => `${s === e ? th(s) : `${th(s)}–${th(e)}`}${half(h, p)}`;
+            const summary = `แก้วันลาจาก ${rangeTh(req.start_date, req.end_date, !!req.is_half_day, req.half_day_period)} (${before} วัน)`
+                + ` เป็น ${rangeTh(start_date, end_date, halfDay, period)} (${days} วัน)`;
+
+            await tx`
+                UPDATE hr_leave_requests
+                SET start_date = ${start_date}, end_date = ${end_date}, is_half_day = ${halfDay}, half_day_period = ${period},
+                    total_days = ${days}, actual_days = ${days},
+                    day_check_status = 'ADJUSTED', day_check_note = ${`${reason} (${summary})`},
+                    day_checked_by = ${Number(user?.id)}, day_checked_at = now(), updated_at = now()
+                WHERE id = ${req.id}
+            `;
+            // ยอดที่หักไว้ — ใบรออนุมัติที่ยังไม่หัก (days_deducted = 0) จะหักตอนอนุมัติด้วยจำนวนใหม่ (เหมือนแก้จำนวนวัน)
+            const deducted = Number(req.days_deducted) > 0 ? Number(req.days_deducted) : (req.status === 'PENDING' ? null : before);
+            let refunded = 0;
+            if (deducted != null) {
+                if (fyOfDate(start_date) !== fyOfDate(req.start_date)) {
+                    await setDeduction(tx, { ...req, days_deducted: deducted }, 0);
+                    await setDeduction(tx, { ...req, start_date, days_deducted: 0 }, days);
+                } else {
+                    await setDeduction(tx, { ...req, days_deducted: deducted }, days);
+                }
+                refunded = Math.round((deducted - days) * 10) / 10;
+            }
+            const snap = (s: string, e: string, h: boolean, p: string | null, d: number) => ({ start_date: s, end_date: e, is_half_day: h, half_day_period: p, total_days: d });
+            await tx`
+                INSERT INTO hr_leave_date_edits (request_id, before, after, refunded_days, reason, actor_id)
+                VALUES (${req.id}, ${tx.json(snap(req.start_date, req.end_date, !!req.is_half_day, req.half_day_period, before))},
+                        ${tx.json(snap(start_date, end_date, halfDay, period, days))}, ${refunded}, ${reason}, ${Number(user?.id)})
+            `;
+            return {
+                success: true,
+                data: { id: req.id, before, after: days, refunded_days: refunded, computed_days: count.computed_days },
+                message: `${summary}${refunded > 0 ? ` · คืนวันลา ${refunded} วัน` : ''}`,
+            };
+        });
+    } catch (error: any) {
+        return serverError(set, 'editLeaveDates', error);
+    }
+};
+
 /** HR แก้จำนวนวันลาให้ถูกต้อง — ปรับยอดวันลาที่หักไว้ตามส่วนต่างทันที */
 export const adjustLeaveDays = async ({ params, body, user, set }: any) => {
     const days = Number(body?.total_days);

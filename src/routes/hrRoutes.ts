@@ -421,6 +421,15 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         body: t.Object({ total_days: t.Numeric(), note: t.String() }),
         detail: { tags: ['HR'], summary: 'แก้จำนวนวันลา (ADMIN/HR)', description: 'ปรับยอดวันลาที่หักไว้ตามส่วนต่างทันที' }
     })
+    .post('/leave-day-check/:id/dates', editLeaveDates, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+            start_date: t.String(), end_date: t.String(),
+            is_half_day: t.Optional(t.Boolean()), half_day_period: t.Optional(t.Nullable(t.String())),
+            total_days: t.Optional(t.Nullable(t.Numeric())), note: t.String(),
+        }),
+        detail: { tags: ['HR'], summary: 'แก้วันที่ลา (ADMIN/HR)', description: 'ผู้ลาขอยกเลิกบางวัน — ช่วงใหม่ต้องอยู่ในช่วงเดิม จำนวนวันไม่เกินเดิม · คืนวันลาส่วนต่างทันที · เก็บประวัติใน hr_leave_date_edits' }
+    })
     .post('/leave-day-check/:id/cancel', cancelLeaveDayCheck, {
         params: t.Object({ id: t.Numeric() }),
         detail: { tags: ['HR'], summary: 'ยกเลิกผลการตรวจจำนวนวันลา (ADMIN/HR)', description: 'ล้างสถานะตรวจ — จำนวนวันที่เคยแก้คงไว้' }
