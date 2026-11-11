@@ -469,6 +469,26 @@ const taskWhere = (s: any, t: TaskKey) => t === 'director'
 /** งานค้างที่ต้องทำก่อนขึ้นก่อน — ผล ผอ./ใกล้เดินทาง เรียงตามวันออกเดินทาง · ยอดการเงิน เรียงตามวันกลับ */
 const taskOrder = (s: any, t: TaskKey) => t === 'actual' ? s`r.end_at ASC, r.id ASC` : s`r.start_at ASC, r.id ASC`;
 
+// ── หน้าอนุมัติการเดินทาง (หัวหน้ากลุ่มงาน / หัวหน้ากลุ่มภารกิจ — ผอ. ลงนามบนกระดาษ ไม่มีหน้านี้) ──
+const APPROVE_BUCKETS = ['mine', 'inprogress', 'passed', 'rejected', 'cancelled'] as const;
+type ApproveBucket = (typeof APPROVE_BUCKETS)[number];
+/** mine = รอท่าน · inprogress = ยังอยู่ในสาย รอขั้นอื่น · passed = ผ่านสายแล้ว (รอ/ได้ผล ผอ.) · rejected · cancelled (alias r) */
+const bucketWhere = (s: any, b: ApproveBucket, uid: number) =>
+    b === 'mine' ? pendingFor(s, uid)
+        : b === 'inprogress' ? s`(r.status = 'submitted' AND r.approval_stage = 'chain' AND NOT ${pendingFor(s, uid)})`
+            : b === 'passed' ? s`(r.status = 'submitted' AND r.approval_stage IN ('director', 'approved'))`
+                : b === 'rejected' ? s`(r.status = 'rejected')` : s`(r.status = 'cancelled')`;
+const approveBuckets = async (uid: number) => {
+    const [c] = await core_kon`SELECT
+            count(*) FILTER (WHERE ${bucketWhere(core_kon, 'mine', uid)})::int AS mine,
+            count(*) FILTER (WHERE ${bucketWhere(core_kon, 'inprogress', uid)})::int AS inprogress,
+            count(*) FILTER (WHERE ${bucketWhere(core_kon, 'passed', uid)})::int AS passed,
+            count(*) FILTER (WHERE ${bucketWhere(core_kon, 'rejected', uid)})::int AS rejected,
+            count(*) FILTER (WHERE ${bucketWhere(core_kon, 'cancelled', uid)})::int AS cancelled
+        FROM hrd_travel_requests r WHERE ${involvedIn(core_kon, uid)}`;
+    return c;
+};
+
 export const getRequests = async ({ query, user, set }: any) => {
     try {
         const uid = Number(user?.id);
@@ -478,6 +498,8 @@ export const getRequests = async ({ query, user, set }: any) => {
         const search = String(query?.search ?? '').trim().slice(0, 100);
         const status = ['submitted', 'rejected', 'cancelled'].includes(query?.status) ? query.status : null;
         const pendingOnly = scope === 'approve' && query?.pending === '1';
+        // หน้าอนุมัติ (scope=approve) แยกกลุ่ม: รอท่าน · รอขั้นอื่น · ผ่านสายแล้ว · ไม่อนุมัติ · ยกเลิก
+        const bucket = scope === 'approve' && (APPROVE_BUCKETS as readonly string[]).includes(query?.bucket) ? query.bucket as ApproveBucket : null;
         // ?task= ใช้ได้เฉพาะ scope=all (ADMIN/HRD ผ่านการตรวจด้านบนแล้ว)
         const task = scope === 'all' && (TASK_KEYS as readonly string[]).includes(query?.task) ? query.task as TaskKey : null;
         const limit = Math.min(Math.max(Number(query?.limit) || 50, 1), 200);
@@ -489,7 +511,8 @@ export const getRequests = async ({ query, user, set }: any) => {
             ${search ? core_kon`AND (r.subject ILIKE ${like} OR r.purpose ILIKE ${like} OR r.location ILIKE ${like} OR r.requester_name ILIKE ${like} OR r.memo_no ILIKE ${like}
                 OR EXISTS (SELECT 1 FROM hrd_travel_request_travelers st WHERE st.request_id = r.id AND st.name ILIKE ${like}))` : core_kon``}
             ${status ? core_kon`AND r.status = ${status}` : core_kon``}
-            ${task ? core_kon`AND ${taskWhere(core_kon, task)}` : core_kon``}`;
+            ${task ? core_kon`AND ${taskWhere(core_kon, task)}` : core_kon``}
+            ${bucket ? core_kon`AND ${bucketWhere(core_kon, bucket, uid)}` : core_kon``}`;
         const [rows, [{ total }]] = await Promise.all([
             // แท็บรออนุมัติ: ที่รอฉันขึ้นก่อน
             core_kon`SELECT ${REQ_COLS(core_kon)}, (SELECT count(*)::int FROM hrd_travel_request_travelers t WHERE t.request_id = r.id) AS traveler_count,
@@ -507,8 +530,9 @@ export const getRequests = async ({ query, user, set }: any) => {
             core_kon`SELECT count(*)::int AS soon, count(*) FILTER (WHERE r.start_at < now())::int AS soon_overdue
                      FROM hrd_travel_requests r WHERE ${scopeWhere} AND ${taskWhere(core_kon, 'soon')}`,
         ]);
+        // จำนวนแต่ละกลุ่มของหน้าอนุมัติ — ไม่ขึ้นกับคำค้น/ตัวกรอง
         return { success: true, data: { rows: rows.map((r: any) => ({ ...r, ...permsOf(r, uid, manager) })), total, limit, offset, can_manage: manager, pending_approvals: pending,
-            soon: { count: soon, overdue: soon_overdue, days: SOON_DAYS } } };
+            soon: { count: soon, overdue: soon_overdue, days: SOON_DAYS }, ...(scope === 'approve' ? { buckets: await approveBuckets(uid) } : {}) } };
     } catch (e: any) {
         console.error('[hrdRequest] list:', e?.message);
         return fail(set, 500, 'โหลดรายการคำขอไม่สำเร็จ');
@@ -779,10 +803,13 @@ export const recordDirector = async ({ params, body, user, set }: any) => {
 export const getApprovalCount = async ({ user, set }: any) => {
     try {
         const uid = Number(user?.id);
-        const [{ pending, involved }] = await core_kon`
+        const [{ pending, involved, is_head }] = await core_kon`
             SELECT (SELECT count(*)::int FROM hrd_travel_requests r WHERE ${pendingFor(core_kon, uid)}) AS pending,
-                   EXISTS (SELECT 1 FROM hrd_travel_requests r WHERE ${involvedIn(core_kon, uid)}) AS involved`;
-        return { success: true, data: { pending, involved } };
+                   EXISTS (SELECT 1 FROM hrd_travel_requests r WHERE ${involvedIn(core_kon, uid)}) AS involved,
+                   (EXISTS (SELECT 1 FROM majors WHERE is_active = 'Y' AND (supervisor_id = ${uid} OR acting_supervisor_id = ${uid}))
+                    OR EXISTS (SELECT 1 FROM missions WHERE is_active = 'Y' AND (supervisor_id = ${uid} OR acting_supervisor_id = ${uid}))) AS is_head`;
+        // is_approver = เห็นหน้าอนุมัติการเดินทาง: หัวหน้า/รักษาการกลุ่มงานหรือกลุ่มภารกิจ หรือเคยอยู่ในสายของคำขอใด
+        return { success: true, data: { pending, involved, is_approver: involved || is_head } };
     } catch (e: any) {
         console.error('[hrdRequest] count:', e?.message);
         return fail(set, 500, 'โหลดจำนวนคำขอที่รออนุมัติไม่สำเร็จ');
