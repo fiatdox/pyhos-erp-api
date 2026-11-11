@@ -98,9 +98,22 @@ const tripCounts = async (ids: number[], fy: number, exceptId: number | null = n
     return new Map(rows.map((r: any) => [Number(r.user_id), r.n]));
 };
 
+/**
+ * ชื่อตำแหน่งที่ใช้ในเอกสาร (alias u = users, up = user_positions) — ข้าราชการต่อท้ายด้วยระดับเสมอ
+ * เช่น "พยาบาลวิชาชีพ" + "ชำนาญการ" = "พยาบาลวิชาชีพชำนาญการ" · ระดับที่มีตัวเลขเว้นวรรค · ระดับว่างหรือ "-" ไม่ต่อ
+ * ประเภทอื่น (พนักงานราชการ พกส. ลูกจ้าง) ใช้ชื่อตำแหน่งอย่างเดียว แม้ทะเบียนจะมีระดับค้างอยู่
+ */
+const POS_SQL = (s: any = core_kon) => s`(CASE WHEN up.position_name IS NULL THEN NULL ELSE TRIM(CONCAT(TRIM(up.position_name),
+    (SELECT CASE WHEN lv.level_name IS NULL OR TRIM(lv.level_name) IN ('', '-') THEN ''
+                 WHEN lv.level_name ~ '[0-9]' THEN ' ' || TRIM(lv.level_name)
+                 ELSE TRIM(lv.level_name) END
+     FROM user_levels lv
+     WHERE lv.user_level_id = u.user_level_id
+       AND EXISTS (SELECT 1 FROM user_types ty WHERE ty.user_type_id = u.user_type_id AND TRIM(ty.type_name) = 'ข้าราชการ')))) END)`;
+
 /** ข้อมูลบุคลากร + อัตราเบี้ยเลี้ยง + ระดับสิทธิ์ที่พักปัจจุบัน */
 const peopleWithRate = (s: any, ids: number[]) => s`
-    SELECT u.id, ${nameOf(s)} AS name, up.position_name AS position, mj.name AS unit,
+    SELECT u.id, ${nameOf(s)} AS name, ${POS_SQL(s)} AS position, mj.name AS unit,
            t.id AS tier_id, t.name AS tier_name, t.amount AS rate, ${working(s)} AS working, ${lodgingCols(s)}
     FROM users u
     LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
@@ -116,12 +129,21 @@ const personOut = (r: any) => ({
     flight_class: r.flight_class,
 });
 
+/** เลขที่บันทึกข้อความ (ส่วนหลัง "พย.๐๐๓๓.๒๐๒/") — ไม่บังคับ · ตัวเลขไทย/อารบิก ตัวอักษร - / . และช่องว่าง ไม่เกิน 30 ตัว */
+const MEMO_NO_RE = /^[0-9๐-๙A-Za-zก-ฮ.\-/ ]+$/;
+const memoNoOf = (v: unknown) => {
+    const t = text(v, 'memo_no', 'เลขที่บันทึกข้อความ', 30, false);
+    if (t && !MEMO_NO_RE.test(t)) throw new Bad(400, 'เลขที่บันทึกข้อความใช้ได้เฉพาะตัวเลข ตัวอักษร - / และ .', 'memo_no');
+    return t;
+};
+
 /** ตรวจ + คำนวณคำขอทั้งใบ — คืนแถวที่พร้อมบันทึก (ใช้ทั้งยื่นใหม่และแก้ไข) */
 // keepBudgetId = งบเดิมของคำขอที่กำลังแก้ (ปิดใช้งานแล้วก็ยังแก้คำขอเดิมได้)
 const computeRequest = async (s: any, body: any, requesterId: number, keepBudgetId: number | null = null) => {
     const purpose = text(body?.purpose, 'purpose', 'ความประสงค์ (เพื่อ...)', 300, true)!;
     const subject = text(body?.subject, 'subject', 'เรื่อง/วัตถุประสงค์', 1000, true)!;
     const location = text(body?.location, 'location', 'สถานที่ไปราชการ', 300, true)!;
+    const memoNo = memoNoOf(body?.memo_no);
 
     const startMs = Date.parse(String(body?.start_at ?? '')), endMs = Date.parse(String(body?.end_at ?? ''));
     if (!Number.isFinite(startMs)) throw new Bad(400, 'กรุณาระบุวันเวลาออกเดินทาง', 'start_at');
@@ -243,7 +265,7 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
     return {
         row: {
             requester_id: requesterId, requester_name: me.name, requester_position: me.position ?? null, requester_unit: me.unit ?? null,
-            purpose, subject, location, start_at: new Date(startMs), end_at: new Date(endMs), overnight: calc.overnight,
+            memo_no: memoNo, purpose, subject, location, start_at: new Date(startMs), end_at: new Date(endMs), overnight: calc.overnight,
             allowance_max_days: calc.days, allowance_days: days, meals_provided: meals, ...v,
             allowance_amount: allowance, lodging_mode: lodgingMode, lodging_rooms: lodgingRooms, lodging_nights: lodgingNights,
             lodging_amount: lodging, lodging_cap: lodgingCap, lodging_note: lodgingNote,
@@ -255,7 +277,7 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
     };
 };
 
-const REQ_COLS = (s: any) => s`r.id, r.requester_id, r.requester_name, r.requester_position, r.requester_unit, r.purpose, r.subject, r.location,
+const REQ_COLS = (s: any) => s`r.id, r.memo_no, r.requester_id, r.requester_name, r.requester_position, r.requester_unit, r.purpose, r.subject, r.location,
     r.start_at, r.end_at, r.overnight, r.allowance_max_days::float8 AS allowance_max_days, r.allowance_days::float8 AS allowance_days, r.meals_provided,
     r.vehicle_mode, r.vehicle_id, r.vehicle_name, r.vehicle_plate, r.distance_km::float8 AS distance_km, r.rate_per_km::float8 AS rate_per_km,
     r.route_id, r.route_text, r.route_max_fare, r.vehicle_other,
@@ -320,7 +342,7 @@ const canView = async (uid: number, r: any) => r.requester_id === uid || await c
 const positionsOf = async (ids: number[]) => {
     const u = [...new Set(ids.filter(Boolean))];
     if (!u.length) return new Map<number, string | null>();
-    const rows = await core_kon`SELECT u.id, up.position_name FROM users u LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id WHERE u.id IN ${core_kon(u)}`;
+    const rows = await core_kon`SELECT u.id, ${POS_SQL()} AS position_name FROM users u LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id WHERE u.id IN ${core_kon(u)}`;
     return new Map(rows.map((r: any) => [Number(r.id), r.position_name ?? null]));
 };
 /** การกดในระบบของคำขอ (มีสำเนาลายเซ็น) */
@@ -444,12 +466,15 @@ export const getRequests = async ({ query, user, set }: any) => {
         const where = core_kon`TRUE
             ${scope === 'mine' ? core_kon`AND ${mineIn(core_kon, uid)}` : core_kon``}
             ${scope === 'approve' ? (pendingOnly ? core_kon`AND ${pendingFor(core_kon, uid)}` : core_kon`AND ${involvedIn(core_kon, uid)}`) : core_kon``}
-            ${search ? core_kon`AND (r.subject ILIKE ${like} OR r.purpose ILIKE ${like} OR r.location ILIKE ${like} OR r.requester_name ILIKE ${like})` : core_kon``}
+            ${search ? core_kon`AND (r.subject ILIKE ${like} OR r.purpose ILIKE ${like} OR r.location ILIKE ${like} OR r.requester_name ILIKE ${like} OR r.memo_no ILIKE ${like}
+                OR EXISTS (SELECT 1 FROM hrd_travel_request_travelers st WHERE st.request_id = r.id AND st.name ILIKE ${like}))` : core_kon``}
             ${status ? core_kon`AND r.status = ${status}` : core_kon``}
             ${task ? core_kon`AND ${taskWhere(core_kon, task)}` : core_kon``}`;
         const [rows, [{ total }]] = await Promise.all([
             // แท็บรออนุมัติ: ที่รอฉันขึ้นก่อน
-            core_kon`SELECT ${REQ_COLS(core_kon)}, (SELECT count(*)::int FROM hrd_travel_request_travelers t WHERE t.request_id = r.id) AS traveler_count
+            core_kon`SELECT ${REQ_COLS(core_kon)}, (SELECT count(*)::int FROM hrd_travel_request_travelers t WHERE t.request_id = r.id) AS traveler_count,
+                            -- ชื่อผู้เดินทางทุกคน (ผู้ขอก่อน) — แสดงในรายการและค้นหาได้
+                            (SELECT COALESCE(json_agg(t.name ORDER BY t.sort_order, t.id), '[]'::json) FROM hrd_travel_request_travelers t WHERE t.request_id = r.id) AS traveler_names
                      FROM hrd_travel_requests r WHERE ${where}
                      ORDER BY ${task ? taskOrder(core_kon, task) : core_kon`${scope === 'approve' ? core_kon`${pendingFor(core_kon, uid)} DESC,` : core_kon``} r.start_at DESC, r.id DESC`} LIMIT ${limit} OFFSET ${offset}`,
             core_kon`SELECT count(*)::int AS total FROM hrd_travel_requests r WHERE ${where}`,
@@ -612,7 +637,7 @@ export const getTravelerStats = async ({ query, user, set }: any) => {
             LEFT JOIN majors mj ON mj.major_id = u.major_id
             WHERE TRUE ${search ? core_kon`AND (${nameOf()} ILIKE ${like} OR mj.name ILIKE ${like} OR up.position_name ILIKE ${like})` : core_kon``}`;
         const [rows, [{ total, trips }]] = await Promise.all([
-            core_kon`SELECT u.id, ${nameOf()} AS name, up.position_name AS position, mj.name AS unit,
+            core_kon`SELECT u.id, ${nameOf()} AS name, ${POS_SQL()} AS position, mj.name AS unit,
                             count(*)::int AS trips, SUM(r.allowance_days)::float8 AS days, SUM(${ALLOWANCE_SQL(core_kon)})::float8 AS allowance,
                             MAX(r.start_at) AS last_start
                      ${base} GROUP BY u.id, u.pname, u.fname, u.lname, up.position_name, mj.name
