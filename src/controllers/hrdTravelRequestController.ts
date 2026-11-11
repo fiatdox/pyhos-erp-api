@@ -210,6 +210,14 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
         v.vehicle_other = text(body?.vehicle_other, 'vehicle_other', 'ยานพาหนะอื่น', 200, true);
         transport = money(body?.transport_amount, 'transport_amount', 'ค่าพาหนะ');
     }
+    // ค่าพาหนะย่อย (รวมใน ๖.๓): แท็กซี่ สถานีขนส่ง/สนามบิน ↔ ที่พัก ขาไป/ขากลับ · บ้าน ↔ สถานี ไป-กลับ — เฉพาะรถโดยสาร/เครื่องบิน/อื่น ๆ
+    const taxiGo = money(body?.taxi_go_amount, 'taxi_go_amount', 'ค่าแท็กซี่ขาไป');
+    const taxiBack = money(body?.taxi_back_amount, 'taxi_back_amount', 'ค่าแท็กซี่ขากลับ');
+    const homeStation = money(body?.home_station_amount, 'home_station_amount', 'ค่าเดินทางบ้าน-สถานี');
+    if ((mode === 'gov_car' || mode === 'private') && taxiGo + taxiBack + homeStation > 0) {
+        const field = taxiGo > 0 ? 'taxi_go_amount' : taxiBack > 0 ? 'taxi_back_amount' : 'home_station_amount';
+        throw new Bad(400, 'ค่าแท็กซี่และค่าเดินทางไปสถานีเบิกได้เมื่อเดินทางด้วยรถโดยสาร เครื่องบิน หรืออื่น ๆ', field);
+    }
 
     // ๖.๒ ค่าเช่าที่พัก — ทั้งคณะเลือกรูปแบบเดียวกัน · อัตราต่อคนต่อคืนตามระดับสิทธิ์ของแต่ละคน
     const lodgingMode = (body?.lodging_mode ?? 'none') as LodgingMode;
@@ -253,7 +261,7 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
     const other = money(body?.other_amount, 'other_amount', 'ค่าใช้จ่ายอื่น');
     const otherDesc = text(body?.other_desc, 'other_desc', 'รายการค่าใช้จ่ายอื่น', 200, other > 0);
 
-    const total = round2(allowance + lodging + transport + registration + fuel + toll + other);
+    const total = round2(allowance + lodging + transport + taxiGo + taxiBack + homeStation + registration + fuel + toll + other);
 
     // งบประมาณ — คำขอเป็นแค่ประมาณการ ไม่ตัดงบและไม่บล็อกเมื่อเกินคงเหลือ (หน้าเว็บเตือน)
     // งบถูกตัดเมื่องาน HRD บันทึกยอดที่การเงินยืนยันแล้วเท่านั้น (recordActual)
@@ -269,7 +277,8 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
             allowance_max_days: calc.days, allowance_days: days, meals_provided: meals, ...v,
             allowance_amount: allowance, lodging_mode: lodgingMode, lodging_rooms: lodgingRooms, lodging_nights: lodgingNights,
             lodging_amount: lodging, lodging_cap: lodgingCap, lodging_note: lodgingNote,
-            transport_amount: transport, registration_amount: registration, fuel_amount: fuel, toll_amount: toll,
+            transport_amount: transport, taxi_go_amount: taxiGo, taxi_back_amount: taxiBack, home_station_amount: homeStation,
+            registration_amount: registration, fuel_amount: fuel, toll_amount: toll,
             other_amount: other, other_desc: otherDesc, total_amount: total,
             budget_id: budget.id, budget_type: budget.budget_type, budget_name: budget.name,
         },
@@ -283,7 +292,8 @@ const REQ_COLS = (s: any) => s`r.id, r.memo_no, r.requester_id, r.requester_name
     r.route_id, r.route_text, r.route_max_fare, r.vehicle_other,
     r.allowance_amount::float8 AS allowance_amount, r.lodging_mode, r.lodging_rooms, r.lodging_nights, r.lodging_amount::float8 AS lodging_amount,
     r.lodging_cap::float8 AS lodging_cap, r.lodging_note,
-    r.transport_amount::float8 AS transport_amount, r.registration_amount::float8 AS registration_amount, r.fuel_amount::float8 AS fuel_amount,
+    r.transport_amount::float8 AS transport_amount, r.taxi_go_amount::float8 AS taxi_go_amount, r.taxi_back_amount::float8 AS taxi_back_amount,
+    r.home_station_amount::float8 AS home_station_amount, r.registration_amount::float8 AS registration_amount, r.fuel_amount::float8 AS fuel_amount,
     r.toll_amount::float8 AS toll_amount, r.other_amount::float8 AS other_amount, r.other_desc, r.total_amount::float8 AS total_amount,
     r.budget_id, r.budget_type, r.budget_name, r.actual_amount::float8 AS actual_amount, r.actual_note, r.actual_at,
     r.status, r.cancel_reason, r.cancelled_at, r.created_at, r.updated_at,
