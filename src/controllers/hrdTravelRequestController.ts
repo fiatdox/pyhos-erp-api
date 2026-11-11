@@ -277,7 +277,7 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
     };
 };
 
-const REQ_COLS = (s: any) => s`r.id, r.memo_no, r.requester_id, r.requester_name, r.requester_position, r.requester_unit, r.purpose, r.subject, r.location,
+const REQ_COLS = (s: any) => s`r.id, r.memo_no, r.requester_id, r.requester_name, ${REQUESTER_POS(s)} AS requester_position, r.requester_unit, r.purpose, r.subject, r.location,
     r.start_at, r.end_at, r.overnight, r.allowance_max_days::float8 AS allowance_max_days, r.allowance_days::float8 AS allowance_days, r.meals_provided,
     r.vehicle_mode, r.vehicle_id, r.vehicle_name, r.vehicle_plate, r.distance_km::float8 AS distance_km, r.rate_per_km::float8 AS rate_per_km,
     r.route_id, r.route_text, r.route_max_fare, r.vehicle_other,
@@ -288,6 +288,15 @@ const REQ_COLS = (s: any) => s`r.id, r.memo_no, r.requester_id, r.requester_name
     r.budget_id, r.budget_type, r.budget_name, r.actual_amount::float8 AS actual_amount, r.actual_note, r.actual_at,
     r.status, r.cancel_reason, r.cancelled_at, r.created_at, r.updated_at,
     r.sign_mode, r.approval_stage, r.approval_chain, r.current_step, r.reject_reason, r.director_result, r.director_note, r.director_at`;
+
+/** ตำแหน่งผู้ขอ (alias r) — ข้าราชการต่อด้วยระดับเสมอ: คำขอที่บันทึกก่อนมีกติกานี้ยังไม่มีระดับต่อท้าย จึงเติมระดับปัจจุบันให้ตอนแสดง */
+const REQUESTER_POS = (s: any) => s`COALESCE((
+    SELECT CASE WHEN RIGHT(r.requester_position, length(TRIM(lv.level_name))) = TRIM(lv.level_name) THEN r.requester_position
+                WHEN lv.level_name ~ '[0-9]' THEN r.requester_position || ' ' || TRIM(lv.level_name)
+                ELSE r.requester_position || TRIM(lv.level_name) END
+    FROM users u JOIN user_levels lv ON lv.user_level_id = u.user_level_id JOIN user_types ty ON ty.user_type_id = u.user_type_id
+    WHERE u.id = r.requester_id AND r.requester_position IS NOT NULL AND TRIM(ty.type_name) = 'ข้าราชการ'
+      AND lv.level_name IS NOT NULL AND TRIM(lv.level_name) NOT IN ('', '-')), r.requester_position)`;
 
 // ── สายอนุมัติในระบบ ──
 /** ขั้นที่อนุมัติในระบบ = ช่องความเห็นในบันทึกข้อความ (หัวหน้ากลุ่มงาน · หัวหน้ากลุ่มภารกิจ) — ผอ. ลงนามบนกระดาษ */
@@ -437,7 +446,8 @@ export const searchTravelPeople = async ({ query, set }: any) => {
 
 // ── งานที่ HRD ต้องดำเนินการ (alias r) — ใช้ทั้งการ์ดหน้าแรกและตัวกรอง ?task= ของรายการคำขอ ──
 // director = รอบันทึกผลคำสั่ง ผอ. (ลงนามในระบบครบสาย หรือเดินเอกสาร) · actual = ผอ. อนุมัติแล้ว รอบันทึกยอดที่การเงินยืนยัน
-// soon = ใกล้ถึง/เลยวันเดินทาง (ภายใน SOON_DAYS วัน) แต่ยังไม่ผ่านสายอนุมัติ — ทั้งสามใช้ index idx_hrd_travel_requests_open
+// soon = ใกล้ถึง/เลยวันเดินทาง (ภายใน SOON_DAYS วัน) แต่ ผอ. ยังไม่อนุมัติ (ค้างในสาย หรือรอ ผอ. ลงนาม) — ต้องเร่ง ไม่งั้นเดินทางไม่ได้
+// ทั้งสามใช้ index idx_hrd_travel_requests_open
 const SOON_DAYS = 7;
 const TASK_KEYS = ['director', 'actual', 'soon'] as const;
 type TaskKey = (typeof TASK_KEYS)[number];
@@ -445,7 +455,7 @@ const taskWhere = (s: any, t: TaskKey) => t === 'director'
     ? s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage = 'director')`
     : t === 'actual'
         ? s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage = 'approved')`
-        : s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage = 'chain' AND r.start_at < now() + make_interval(days => ${SOON_DAYS}))`;
+        : s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage IN ('chain', 'director') AND r.start_at < now() + make_interval(days => ${SOON_DAYS}))`;
 /** งานค้างที่ต้องทำก่อนขึ้นก่อน — ผล ผอ./ใกล้เดินทาง เรียงตามวันออกเดินทาง · ยอดการเงิน เรียงตามวันกลับ */
 const taskOrder = (s: any, t: TaskKey) => t === 'actual' ? s`r.end_at ASC, r.id ASC` : s`r.start_at ASC, r.id ASC`;
 
@@ -479,11 +489,16 @@ export const getRequests = async ({ query, user, set }: any) => {
                      ORDER BY ${task ? taskOrder(core_kon, task) : core_kon`${scope === 'approve' ? core_kon`${pendingFor(core_kon, uid)} DESC,` : core_kon``} r.start_at DESC, r.id DESC`} LIMIT ${limit} OFFSET ${offset}`,
             core_kon`SELECT count(*)::int AS total FROM hrd_travel_requests r WHERE ${where}`,
         ]);
-        const [manager, [{ pending }]] = await Promise.all([
+        const scopeWhere = scope === 'mine' ? mineIn(core_kon, uid) : scope === 'approve' ? involvedIn(core_kon, uid) : core_kon`TRUE`;
+        const [manager, [{ pending }], [{ soon, soon_overdue }]] = await Promise.all([
             canManage(uid),
             core_kon`SELECT count(*)::int AS pending FROM hrd_travel_requests r WHERE ${pendingFor(core_kon, uid)}`,
+            // ใกล้เดินทางแต่ ผอ. ยังไม่อนุมัติ — ในขอบเขตเดียวกับแท็บ (ไม่ขึ้นกับคำค้น/ตัวกรอง)
+            core_kon`SELECT count(*)::int AS soon, count(*) FILTER (WHERE r.start_at < now())::int AS soon_overdue
+                     FROM hrd_travel_requests r WHERE ${scopeWhere} AND ${taskWhere(core_kon, 'soon')}`,
         ]);
-        return { success: true, data: { rows: rows.map((r: any) => ({ ...r, ...permsOf(r, uid, manager) })), total, limit, offset, can_manage: manager, pending_approvals: pending } };
+        return { success: true, data: { rows: rows.map((r: any) => ({ ...r, ...permsOf(r, uid, manager) })), total, limit, offset, can_manage: manager, pending_approvals: pending,
+            soon: { count: soon, overdue: soon_overdue, days: SOON_DAYS } } };
     } catch (e: any) {
         console.error('[hrdRequest] list:', e?.message);
         return fail(set, 500, 'โหลดรายการคำขอไม่สำเร็จ');
@@ -791,7 +806,7 @@ export const getHrdTasks = async ({ user, set }: any) => {
         if (!(await canManage(Number(user?.id)))) return fail(set, 403, 'เฉพาะผู้ดูแลระบบและเจ้าหน้าที่งานพัฒนาทรัพยากรบุคคล (HRD)');
         const fy = fiscalYearOf(Date.now());
         const itemCols = core_kon`r.id, r.requester_name, r.requester_unit, r.subject, r.location, r.start_at, r.end_at, r.sign_mode,
-            r.total_amount::float8 AS total_amount, r.current_step, r.approval_chain`;
+            r.total_amount::float8 AS total_amount, r.current_step, r.approval_chain, r.approval_stage`;
         const items = (t: TaskKey) => core_kon`SELECT ${itemCols} FROM hrd_travel_requests r WHERE ${taskWhere(core_kon, t)} ORDER BY ${taskOrder(core_kon, t)} LIMIT 5`;
         const [[c], director, actual, soon, budgets] = await Promise.all([
             core_kon`
@@ -813,11 +828,12 @@ export const getHrdTasks = async ({ user, set }: any) => {
                 GROUP BY b.id ORDER BY b.name`,
         ]);
         // คำขอที่ยังอยู่ในสาย — บอกว่ารอใคร (ขั้นปัจจุบัน)
-        const waiting = ({ approval_chain, current_step, ...rest }: any) => {
+        const waiting = ({ approval_chain, current_step, approval_stage, ...rest }: any) => {
+            if (approval_stage === 'director') return { ...rest, waiting_for: rest.sign_mode === 'paper' ? 'เดินเอกสาร · รอผลคำสั่งผู้อำนวยการ' : 'ผู้อำนวยการ (ลงนามบนกระดาษ)' };
             const step = parseChain(approval_chain).find(x => Number(x.step) === Number(current_step));
             return { ...rest, waiting_for: step ? `${step.level_name} · ${step.approver_name}` : null };
         };
-        const strip = ({ approval_chain, current_step, ...rest }: any) => rest;
+        const strip = ({ approval_chain, current_step, approval_stage, ...rest }: any) => rest;
         const rows = budgets.map((b: any) => ({ ...b, remaining: round2(b.amount - b.spent), projected: round2(b.amount - b.spent - b.pending) }));
         return {
             success: true,
