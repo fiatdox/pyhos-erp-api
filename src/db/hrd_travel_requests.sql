@@ -16,7 +16,7 @@
 CREATE TABLE IF NOT EXISTS hrd_travel_budgets (
     id           SERIAL PRIMARY KEY,
     fiscal_year  INT NOT NULL CHECK (fiscal_year BETWEEN 2500 AND 2700),     -- ปีงบประมาณ พ.ศ.
-    budget_type  VARCHAR(10) NOT NULL CHECK (budget_type IN ('hospital', 'budget', 'project')),
+    budget_type  VARCHAR(10) NOT NULL CHECK (budget_type IN ('hospital', 'budget', 'project')),   -- CHECK นี้ถูกแทนด้วย FK ไป hrd_travel_budget_types (hrd_travel_budget_types.sql — รันต่อจากไฟล์นี้)
     name         VARCHAR(200) NOT NULL,
     amount       NUMERIC(14,2) NOT NULL CHECK (amount > 0),
     note         VARCHAR(300),

@@ -8,7 +8,8 @@ import { ALLOWANCE_SQL } from './hrdTravelRequestController';
 
 const fail = (set: any, status: number, message: string, field?: string) => { set.status = status; return { success: false, message, ...(field ? { field } : {}) }; };
 class Bad extends Error { constructor(public status: number, message: string, public field?: string) { super(message); } }
-const TYPES = ['hospital', 'budget', 'project'] as const;
+// ประเภทงบอยู่ในตาราง hrd_travel_budget_types (src/db/hrd_travel_budget_types.sql) — ADMIN/HRD เพิ่มเองได้
+const TYPE_CODE_RE = /^[a-z0-9]{1,10}$/;
 const MAX_AMOUNT = 1_000_000_000;
 
 /** ปีงบประมาณ พ.ศ. ของวันนี้ (ต.ค. ขึ้นปีงบใหม่) */
@@ -21,7 +22,7 @@ const readBudget = (body: any) => {
     const fy = Number(body?.fiscal_year);
     if (!Number.isInteger(fy) || fy < 2500 || fy > 2700) throw new Bad(400, 'ปีงบประมาณ (พ.ศ.) ไม่ถูกต้อง', 'fiscal_year');
     const type = String(body?.budget_type ?? '');
-    if (!(TYPES as readonly string[]).includes(type)) throw new Bad(400, 'กรุณาเลือกประเภทงบ', 'budget_type');
+    if (!TYPE_CODE_RE.test(type)) throw new Bad(400, 'กรุณาเลือกประเภทงบ', 'budget_type');
     const name = String(body?.name ?? '').trim().replace(/\s+/g, ' ');
     if (!name || name.length > 200) throw new Bad(400, 'กรุณาระบุชื่องบ (ไม่เกิน 200 ตัวอักษร)', 'name');
     const amount = Number(body?.amount);
@@ -31,6 +32,12 @@ const readBudget = (body: any) => {
     if (note && note.length > 300) throw new Bad(400, 'หมายเหตุไม่เกิน 300 ตัวอักษร', 'note');
     const isActive = body?.is_active === undefined ? true : !!body.is_active;
     return { fiscal_year: fy, budget_type: type, name, amount, note, is_active: isActive };
+};
+/** ประเภทต้องมีอยู่ · ประเภทที่ปิดใช้แล้วเลือกใหม่ไม่ได้ (งบเดิมที่เป็นประเภทนั้นอยู่แล้วแก้อย่างอื่นได้) */
+const checkType = async (sql: any, code: string, keep: string | null) => {
+    const [t] = await sql`SELECT is_active FROM hrd_travel_budget_types WHERE code = ${code}`;
+    if (!t) throw new Bad(400, 'ไม่พบประเภทงบนี้', 'budget_type');
+    if (!t.is_active && code !== keep) throw new Bad(400, 'ประเภทงบนี้ปิดใช้งานแล้ว', 'budget_type');
 };
 const snap = (b: any) => ({ fiscal_year: b.fiscal_year, budget_type: b.budget_type, name: b.name, amount: Number(b.amount), note: b.note ?? null, is_active: !!b.is_active });
 
@@ -75,6 +82,7 @@ export const createBudget = async ({ body, user, set }: any) => {
         const b = readBudget(body);
         const actor = Number(user.id);
         const id = await core_kon.begin(async (sql: any) => {
+            await checkType(sql, b.budget_type, null);
             if ((await sql`SELECT 1 FROM hrd_travel_budgets WHERE fiscal_year = ${b.fiscal_year} AND name = ${b.name}`).length)
                 throw new Bad(409, `ปีงบ ${b.fiscal_year} มีงบชื่อ "${b.name}" อยู่แล้ว`, 'name');
             const [row] = await sql`INSERT INTO hrd_travel_budgets ${sql({ ...b, created_by: actor, updated_by: actor })} RETURNING id`;
@@ -98,6 +106,7 @@ export const updateBudget = async ({ params, body, user, set }: any) => {
         const changed = await core_kon.begin(async (sql: any) => {
             const [cur] = await sql`SELECT * FROM hrd_travel_budgets WHERE id = ${Number(params.id)} FOR UPDATE`;
             if (!cur) throw new Bad(404, 'ไม่พบงบ');
+            await checkType(sql, b.budget_type, cur.budget_type);
             if ((await sql`SELECT 1 FROM hrd_travel_budgets WHERE fiscal_year = ${b.fiscal_year} AND name = ${b.name} AND id <> ${cur.id}`).length)
                 throw new Bad(409, `ปีงบ ${b.fiscal_year} มีงบชื่อ "${b.name}" อยู่แล้ว`, 'name');
             const [{ spent, n }] = await sql`SELECT COALESCE(SUM(actual_amount), 0)::float8 AS spent, count(*)::int AS n
@@ -142,7 +151,7 @@ export const getBudgetLog = async ({ params, user, set }: any) => {
 interface DashFilters { budgetId: number | null; budgetType: string | null; missionId: number | null; majorId: number | null; userId: number | null; status: 'confirmed' | 'pending' | null }
 const pid = (v: unknown) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
 const parseDash = (q: any): DashFilters => ({
-    budgetId: pid(q?.budget_id), budgetType: (TYPES as readonly string[]).includes(q?.budget_type) ? q.budget_type : null,
+    budgetId: pid(q?.budget_id), budgetType: TYPE_CODE_RE.test(String(q?.budget_type ?? '')) ? q.budget_type : null,
     missionId: pid(q?.mission_id), majorId: pid(q?.major_id), userId: pid(q?.user_id),
     status: q?.status === 'confirmed' || q?.status === 'pending' ? q.status : null,
 });
@@ -223,5 +232,83 @@ export const getBudgetDashboard = async ({ query, user, set }: any) => {
     } catch (e: any) {
         console.error('[hrdBudget] dashboard:', e?.message);
         return fail(set, 500, 'โหลด dashboard ไม่สำเร็จ');
+    }
+};
+
+// ── ประเภทงบ (ช่องที่ติ๊กในบันทึกข้อความ) ──
+// อ่าน: ทุกคนที่ login (หน้าเว็บใช้แปลงรหัสเป็นชื่อ) · เพิ่ม/แก้: ADMIN / HRD · ไม่มีลบ — ปิดใช้แทน (งบ/คำขอเดิมอ้างอยู่)
+// ref_code = รหัสงบของการเงิน (P20, P21, ...) · รายการย่อยของประเภท = งบ (hrd_travel_budgets) ที่เป็นประเภทนั้น
+const REF_CODE_RE = /^[A-Za-z0-9.\-/]{1,20}$/;
+const readType = (body: any) => {
+    const name = String(body?.name ?? '').trim().replace(/\s+/g, ' ');
+    if (!name || name.length > 100) throw new Bad(400, 'กรุณาระบุชื่อประเภท (ไม่เกิน 100 ตัวอักษร)', 'name');
+    const refCode = String(body?.ref_code ?? '').trim().toUpperCase() || null;
+    if (refCode && !REF_CODE_RE.test(refCode)) throw new Bad(400, 'รหัสงบใช้ตัวอักษรอังกฤษ ตัวเลข . - / ไม่เกิน 20 ตัว เช่น P20', 'ref_code');
+    const label = String(body?.item_label ?? '').trim().replace(/\s+/g, ' ') || 'รายการงบ';
+    if (label.length > 30) throw new Bad(400, 'ข้อความหน้าชื่องบไม่เกิน 30 ตัวอักษร', 'item_label');
+    const order = body?.sort_order === undefined || body?.sort_order === null || body?.sort_order === '' ? null : Number(body.sort_order);
+    if (order !== null && (!Number.isInteger(order) || order < 0 || order > 9999)) throw new Bad(400, 'ลำดับต้องเป็นจำนวนเต็ม 0–9999', 'sort_order');
+    return { name, ref_code: refCode, item_label: label, sort_order: order, is_active: body?.is_active === undefined ? true : !!body.is_active };
+};
+const dupCheck = async (sql: any, t: { name: string; ref_code: string | null }, code: string | null) => {
+    if ((await sql`SELECT 1 FROM hrd_travel_budget_types WHERE name = ${t.name} ${code ? sql`AND code <> ${code}` : sql``}`).length)
+        throw new Bad(409, `มีประเภท "${t.name}" อยู่แล้ว`, 'name');
+    if (t.ref_code && (await sql`SELECT 1 FROM hrd_travel_budget_types WHERE UPPER(ref_code) = ${t.ref_code} ${code ? sql`AND code <> ${code}` : sql``}`).length)
+        throw new Bad(409, `รหัสงบ ${t.ref_code} ใช้กับประเภทอื่นแล้ว`, 'ref_code');
+};
+
+export const getBudgetTypes = async ({ set }: any) => {
+    try {
+        const rows = await core_kon`
+            SELECT t.code, t.ref_code, t.name, t.item_label, t.sort_order, t.is_active,
+                   (SELECT count(*)::int FROM hrd_travel_budgets b WHERE b.budget_type = t.code) AS budgets
+            FROM hrd_travel_budget_types t ORDER BY t.sort_order, t.code`;
+        return { success: true, data: rows };
+    } catch (e: any) {
+        console.error('[hrdBudget] types:', e?.message);
+        return fail(set, 500, 'โหลดประเภทงบไม่สำเร็จ');
+    }
+};
+
+export const createBudgetType = async ({ body, user, set }: any) => {
+    try {
+        const denied = await guard(user, set); if (denied) return denied;
+        const t = readType(body);
+        const actor = Number(user.id);
+        const code = await core_kon.begin(async (sql: any) => {
+            await dupCheck(sql, t, null);
+            const [{ n }] = await sql`SELECT nextval('hrd_travel_budget_type_seq') AS n`;
+            const order = t.sort_order ?? (await sql`SELECT COALESCE(MAX(sort_order), 0) + 1 AS o FROM hrd_travel_budget_types`)[0].o;
+            const [row] = await sql`INSERT INTO hrd_travel_budget_types ${sql({ ...t, sort_order: order, code: `t${n}`, created_by: actor, updated_by: actor })} RETURNING code`;
+            return row.code;
+        });
+        return { success: true, data: { code } };
+    } catch (e: any) {
+        if (e instanceof Bad) return fail(set, e.status, e.message, e.field);
+        console.error('[hrdBudget] type create:', e?.message);
+        return fail(set, 500, 'เพิ่มประเภทงบไม่สำเร็จ');
+    }
+};
+
+export const updateBudgetType = async ({ params, body, user, set }: any) => {
+    try {
+        const denied = await guard(user, set); if (denied) return denied;
+        const code = String(params?.code ?? '');
+        if (!TYPE_CODE_RE.test(code)) return fail(set, 404, 'ไม่พบประเภทงบ');
+        const t = readType(body);
+        const actor = Number(user.id);
+        await core_kon.begin(async (sql: any) => {
+            const [cur] = await sql`SELECT code, sort_order FROM hrd_travel_budget_types WHERE code = ${code} FOR UPDATE`;
+            if (!cur) throw new Bad(404, 'ไม่พบประเภทงบ');
+            await dupCheck(sql, t, code);
+            if (!t.is_active && !(await sql`SELECT 1 FROM hrd_travel_budget_types WHERE is_active AND code <> ${code}`).length)
+                throw new Bad(409, 'ต้องเปิดใช้อย่างน้อย 1 ประเภท', 'is_active');
+            await sql`UPDATE hrd_travel_budget_types SET ${sql({ ...t, sort_order: t.sort_order ?? cur.sort_order, updated_by: actor, updated_at: new Date() })} WHERE code = ${code}`;
+        });
+        return { success: true, data: { code } };
+    } catch (e: any) {
+        if (e instanceof Bad) return fail(set, e.status, e.message, e.field);
+        console.error('[hrdBudget] type update:', e?.message);
+        return fail(set, 500, 'บันทึกประเภทงบไม่สำเร็จ');
     }
 };

@@ -6,7 +6,7 @@ import {
     approveRequest, cancelRequest, createRequest, getApprovalCount, getHrdTasks, getRequestById, getRequestMeta, getRequests, getTravelerStats, getTravelHistory,
     recordActual, recordDirector, rejectRequest, searchTravelPeople, updateRequest,
 } from '../controllers/hrdTravelRequestController';
-import { createBudget, getBudgetDashboard, getBudgetLog, getBudgets, updateBudget } from '../controllers/hrdTravelBudgetController';
+import { createBudget, createBudgetType, getBudgetDashboard, getBudgetLog, getBudgets, getBudgetTypes, updateBudget, updateBudgetType } from '../controllers/hrdTravelBudgetController';
 import { deleteLodgingPerson, getLodging, getLodgingLog, setLodgingLevel, setLodgingPerson, updateLodgingClass } from '../controllers/hrdTravelLodgingController';
 import { getSignModeLog, getSignModes, setSignMode } from '../controllers/hrdTravelSignModeController';
 
@@ -115,4 +115,8 @@ export const hrdTravelRoutes = new Elysia({ prefix: '/api/v1/hrd/travel' })
     })
     .post('/budgets', createBudget, { body: anyBody, detail })
     .put('/budgets/:id', updateBudget, { ...idParam, body: anyBody, detail: { ...detail, description: 'ลดวงเงินต่ำกว่ายอดที่ใช้ไม่ได้' } })
-    .get('/budgets/:id/log', getBudgetLog, { ...idParam, detail });
+    .get('/budgets/:id/log', getBudgetLog, { ...idParam, detail })
+    // ประเภทงบ (ช่องที่ติ๊กในบันทึกข้อความ) — อ่านได้ทุกคน · เพิ่ม/แก้ ADMIN / HRD
+    .get('/budget-types', getBudgetTypes, { detail: { ...detail, description: 'ประเภทงบทั้งหมด (รวมที่ปิดใช้) + จำนวนงบที่ใช้ประเภทนั้น' } })
+    .post('/budget-types', createBudgetType, { body: anyBody, detail: { ...detail, description: 'เพิ่มประเภท — ระบบตั้งรหัสภายในให้ (t4, t5, ...) · ref_code = รหัสงบของการเงิน เช่น P20' } })
+    .put('/budget-types/:code', updateBudgetType, { params: t.Object({ code: t.String() }), body: anyBody, detail: { ...detail, description: 'แก้ชื่อ / รหัสงบ / ข้อความหน้าชื่องบ / ลำดับ / เปิด-ปิดใช้ (ไม่มีลบ)' } });

@@ -267,7 +267,8 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
     // งบถูกตัดเมื่องาน HRD บันทึกยอดที่การเงินยืนยันแล้วเท่านั้น (recordActual)
     const budgetId = Number(body?.budget_id);
     const [budget] = Number.isInteger(budgetId) && budgetId > 0
-        ? await s`SELECT id, budget_type, name, is_active FROM hrd_travel_budgets WHERE id = ${budgetId}` : [];
+        ? await s`SELECT b.id, b.budget_type, b.name, b.is_active, t.name AS type_name, t.item_label
+                  FROM hrd_travel_budgets b JOIN hrd_travel_budget_types t ON t.code = b.budget_type WHERE b.id = ${budgetId}` : [];
     if (!budget) throw new Bad(400, 'กรุณาเลือกงบประมาณที่ใช้', 'budget_id');
     if (!budget.is_active && budget.id !== keepBudgetId) throw new Bad(400, `${budget.name} ปิดใช้งานแล้ว เลือกงบอื่น`, 'budget_id');
     return {
@@ -281,6 +282,8 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
             registration_amount: registration, fuel_amount: fuel, toll_amount: toll,
             other_amount: other, other_desc: otherDesc, total_amount: total,
             budget_id: budget.id, budget_type: budget.budget_type, budget_name: budget.name,
+            // ชื่อประเภท ณ วันยื่น — แก้ชื่อประเภทภายหลังไม่เปลี่ยนบันทึกข้อความเดิม
+            budget_type_name: budget.type_name, budget_item_label: budget.item_label,
         },
         travelers: travelers.map(({ _lodging, ...t }) => t),
     };
@@ -295,7 +298,7 @@ const REQ_COLS = (s: any) => s`r.id, r.memo_no, r.requester_id, r.requester_name
     r.transport_amount::float8 AS transport_amount, r.taxi_go_amount::float8 AS taxi_go_amount, r.taxi_back_amount::float8 AS taxi_back_amount,
     r.home_station_amount::float8 AS home_station_amount, r.registration_amount::float8 AS registration_amount, r.fuel_amount::float8 AS fuel_amount,
     r.toll_amount::float8 AS toll_amount, r.other_amount::float8 AS other_amount, r.other_desc, r.total_amount::float8 AS total_amount,
-    r.budget_id, r.budget_type, r.budget_name, r.actual_amount::float8 AS actual_amount, r.actual_note, r.actual_at,
+    r.budget_id, r.budget_type, r.budget_name, r.budget_type_name, r.budget_item_label, r.actual_amount::float8 AS actual_amount, r.actual_note, r.actual_at,
     r.status, r.cancel_reason, r.cancelled_at, r.created_at, r.updated_at,
     r.sign_mode, r.approval_stage, r.approval_chain, r.current_step, r.reject_reason, r.director_result, r.director_note, r.director_at`;
 
@@ -401,11 +404,13 @@ export const getRequestMeta = async ({ user, set }: any) => {
             core_kon`SELECT id, mode, origin, destination, max_fare, note FROM hrd_travel_routes WHERE is_active ORDER BY mode, origin, destination`,
             // งบที่เลือกได้ · คงเหลือ = วงเงิน − ยอดที่การเงินยืนยันแล้ว · pending = ประมาณการของคำขออื่นที่ยังไม่ยืนยัน (ไว้เตือน)
             core_kon`SELECT b.id, b.fiscal_year, b.budget_type, b.name, b.amount::float8 AS amount, b.is_active,
+                       t.name AS type_name, t.ref_code AS type_ref_code, t.sort_order AS type_sort,
                        (b.amount - COALESCE(x.spent, 0))::float8 AS remaining, COALESCE(x.pending, 0)::float8 AS pending
                      FROM hrd_travel_budgets b
+                     JOIN hrd_travel_budget_types t ON t.code = b.budget_type
                      LEFT JOIN LATERAL (SELECT SUM(r.actual_amount) AS spent, SUM(r.total_amount) FILTER (WHERE r.actual_amount IS NULL) AS pending
                                         FROM hrd_travel_requests r WHERE r.budget_id = b.id AND r.status = 'submitted') x ON TRUE
-                     ORDER BY b.fiscal_year DESC, b.budget_type, b.name`,
+                     ORDER BY b.fiscal_year DESC, t.sort_order, t.code, b.name`,
             canManage(uid),
         ]);
         if (!me) return fail(set, 404, 'ไม่พบข้อมูลผู้ใช้');
