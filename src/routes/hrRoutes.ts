@@ -101,10 +101,10 @@ export const hrRoutes = new Elysia({ prefix: '/api/v1/hr' })
         detail: { tags: ['HR'], summary: 'ดูสายอนุมัติของตัวเองก่อนยื่นใบลา' }
     })
     .get('/leave-requests/summary', getLeaveSummary, {
-        query: t.Object({ from: t.Optional(t.String()), to: t.Optional(t.String()) }),
+        query: t.Object({ from: t.Optional(t.String()), to: t.Optional(t.String()), fiscal_year: t.Optional(t.String()) }),
         detail: {
             tags: ['HR'],
-            summary: 'สรุปรายการลาตามขอบเขตที่ผู้เรียกมีสิทธิ์เห็น',
+            summary: 'สรุปรายการลาตามขอบเขตที่ผู้เรียกมีสิทธิ์เห็น (+ วันลาพักผ่อนคงเหลือของปีงบเมื่อส่ง fiscal_year)',
             description: 'ADMIN/HR เห็นทุกคน · หัวหน้าเห็นเฉพาะหน่วยที่ตัวเองคุม · พนักงานทั่วไปเห็นเฉพาะของตัวเอง',
         }
     })

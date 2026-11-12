@@ -1423,9 +1423,20 @@ export const getLeaveSummary = async ({ user, query, set }: any) => {
             ORDER BY r.start_date DESC
         `;
 
+        // วันลาพักผ่อนคงเหลือของปีงบที่ดู (?fiscal_year=พ.ศ.) — เฉพาะคนที่อยู่ในผลลัพธ์ (ขอบเขตเดียวกับใบลา)
+        // ยอดจาก hr_leave_balances (คงเหลือ = ยกมา + สิทธิ์ปีนี้ − ใช้ไป ซึ่งรวมใบรออนุมัติที่หักไว้แล้ว) · ไม่มีแถว = ยังไม่ได้ตั้งยอด
+        const fy = /^\d{4}$/.test(String(query?.fiscal_year ?? '')) ? Number(query.fiscal_year) : null;
+        const userIds = [...new Set(rows.map((r: any) => Number(r.user_id)))];
+        const annual = fy && userIds.length ? await core_kon`
+            SELECT b.user_id, b.carried_in::float8 AS carried_in, b.entitled::float8 AS entitled,
+                   b.used::float8 AS used, b.remaining::float8 AS remaining
+            FROM hr_leave_balances b JOIN hr_leave_types t ON t.id = b.leave_type_id
+            WHERE t.code = 'ANNUAL' AND b.fiscal_year = ${fy} AND b.user_id IN ${core_kon(userIds)}` : [];
+
         return {
             success: true,
             data: rows,
+            ...(fy ? { annual_balances: Object.fromEntries(annual.map((b: any) => [b.user_id, { carried_in: b.carried_in, entitled: b.entitled, used: b.used, remaining: b.remaining }])) } : {}),
             scope: {
                 can_see_all: canSeeAll,
                 missions,
