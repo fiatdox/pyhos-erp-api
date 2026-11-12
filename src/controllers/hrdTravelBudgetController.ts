@@ -148,17 +148,46 @@ export const getBudgetLog = async ({ params, user, set }: any) => {
 //          + ค่าใช้จ่ายร่วมอื่นของคำขอ (พาหนะ ลงทะเบียน ฯลฯ) หารเท่ากัน
 //   ยอดยืนยันจากการเงินปรับตามสัดส่วนเดียวกัน → รวมทุกคนในคำขอ = ยอดของคำขอพอดี
 // กลุ่มงาน/กลุ่มภารกิจ = สังกัดปัจจุบันของผู้เดินทาง
-interface DashFilters { budgetId: number | null; budgetType: string | null; missionId: number | null; majorId: number | null; userId: number | null; status: 'confirmed' | 'pending' | null }
+// กลุ่มสาขาวิชาชีพ — จัดจากชื่อตำแหน่ง (ไม่มีตารางกลุ่ม · ตำแหน่งใหม่ที่ขึ้นต้นแบบเดิมเข้ากลุ่มเองอัตโนมัติ)
+// ผู้เดินทาง: ตำแหน่ง ณ วันยื่น (snapshot มีระดับต่อท้าย เช่น "พยาบาลวิชาชีพชำนาญการ" — จับคำขึ้นต้นจึงยังได้) ถ้าว่างใช้ตำแหน่งปัจจุบัน
+// ลำดับ WHEN สำคัญ: กลุ่มเฉพาะ (สาธารณสุข/สหวิชาชีพ) ต้องมาก่อน "นัก…" ทั่วไปของสายสนับสนุน
+export const PROFESSION_KEYS = ['doctor', 'nurse', 'pharmacist', 'dentist', 'allied', 'public_health', 'support', 'technical', 'operation', 'executive', 'unknown'] as const;
+type ProfessionKey = typeof PROFESSION_KEYS[number];
+const PROFESSION_RULES: [ProfessionKey, string[]][] = [
+    ['executive', ['ผู้อำนวยการ']],
+    ['dentist', ['ทันตแพทย์']],
+    ['allied', ['แพทย์แผนไทย', 'นักเทคนิคการแพทย์', 'นักกายภาพบำบัด', 'นักรังสีการแพทย์', 'นักจิตวิทยา', 'นักกิจกรรมบำบัด', 'นักโภชนาการ', 'โภชนากร',
+        'นักวิทยาศาสตร์การแพทย์', 'นักเทคโนโลยีหัวใจ', 'นักสังคมสงเคราะห์', 'นักแก้ไขความผิดปกติ', 'นักกายอุปกรณ์', 'นักเวชศาสตร์']],
+    ['doctor', ['นายแพทย์', 'แพทย์']],
+    ['pharmacist', ['เภสัชกร']],
+    ['nurse', ['พยาบาลวิชาชีพ', 'พยาบาลเทคนิค']],
+    ['public_health', ['นักวิชาการสาธารณสุข', 'นักสาธารณสุข', 'เจ้าพนักงานสาธารณสุข', 'เจ้าพนักงานทันตสาธารณสุข', 'ผู้ช่วยเจ้าหน้าที่สาธารณสุข', 'นักวิชาการสุขศึกษา']],
+    ['support', ['นัก', 'นิติกร', 'บรรณารักษ์', 'วิศวกร', 'สถาปนิก', 'เจ้าหน้าที่บริหาร']],
+    ['technical', ['เจ้าพนักงาน', 'นายช่าง', 'เจ้าหน้าที่']],
+    // ที่เหลือ (พนักงาน ผู้ช่วย ช่าง ลูกจ้าง ฯลฯ) = operation
+];
+// คืน CASE ... END (ค่าคงที่จากโค้ด ไม่มีค่าจากผู้ใช้ — escape ' ไว้กันพลาดเท่านั้น)
+const professionCase = (expr: string) => {
+    const q = (s: string) => `'${s.replace(/'/g, "''")}'`;
+    const whens = PROFESSION_RULES.map(([k, ps]) => `WHEN ${ps.map(p => `${expr} LIKE ${q(p + '%')}`).join(' OR ')} THEN ${q(k)}`).join(' ');
+    return `CASE WHEN COALESCE(${expr}, '') = '' THEN 'unknown' ${whens} ELSE 'operation' END`;
+};
+const TRAVELER_PROFESSION = professionCase(`COALESCE(NULLIF(TRIM(t.position), ''), up.position_name)`);
+
+interface DashFilters { budgetId: number | null; budgetType: string | null; missionId: number | null; majorId: number | null; userId: number | null; status: 'confirmed' | 'pending' | null; profession: ProfessionKey | null }
 const pid = (v: unknown) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
 const parseDash = (q: any): DashFilters => ({
     budgetId: pid(q?.budget_id), budgetType: TYPE_CODE_RE.test(String(q?.budget_type ?? '')) ? q.budget_type : null,
     missionId: pid(q?.mission_id), majorId: pid(q?.major_id), userId: pid(q?.user_id),
     status: q?.status === 'confirmed' || q?.status === 'pending' ? q.status : null,
+    profession: (PROFESSION_KEYS as readonly string[]).includes(q?.profession) ? q.profession : null,
 });
 const linesOf = (budgetIds: number[], f: DashFilters) => core_kon`
+    SELECT * FROM (
     SELECT r.id AS rid, r.budget_id, r.budget_type, r.budget_name, r.start_at, r.subject, r.location, r.requester_name,
            r.total_amount AS req_total, r.actual_amount AS req_actual, n.n AS travelers,
            t.user_id, t.name, t.is_requester, mj.name AS unit, u.major_id, u.mission_id, r.allowance_days AS days,
+           ${core_kon.unsafe(TRAVELER_PROFESSION)} AS profession,
            ${ALLOWANCE_SQL(core_kon)} AS allowance,
            CASE WHEN r.actual_amount IS NULL THEN 0
                 WHEN r.total_amount > 0 THEN e.est * r.actual_amount / r.total_amount
@@ -172,13 +201,15 @@ const linesOf = (budgetIds: number[], f: DashFilters) => core_kon`
                          + (r.total_amount - r.allowance_amount - r.lodging_amount) / n.n AS est) e ON TRUE
     LEFT JOIN users u ON u.id = t.user_id
     LEFT JOIN majors mj ON mj.major_id = u.major_id
+    LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
     WHERE r.status = 'submitted' AND ${budgetIds.length ? core_kon`r.budget_id IN ${core_kon(budgetIds)}` : core_kon`FALSE`}
       ${f.budgetId ? core_kon`AND r.budget_id = ${f.budgetId}` : core_kon``}
       ${f.budgetType ? core_kon`AND r.budget_type = ${f.budgetType}` : core_kon``}
       ${f.missionId ? core_kon`AND u.mission_id = ${f.missionId}` : core_kon``}
       ${f.majorId ? core_kon`AND u.major_id = ${f.majorId}` : core_kon``}
       ${f.userId ? core_kon`AND t.user_id = ${f.userId}` : core_kon``}
-      ${f.status === 'confirmed' ? core_kon`AND r.actual_amount IS NOT NULL` : f.status === 'pending' ? core_kon`AND r.actual_amount IS NULL` : core_kon``}`;
+      ${f.status === 'confirmed' ? core_kon`AND r.actual_amount IS NOT NULL` : f.status === 'pending' ? core_kon`AND r.actual_amount IS NULL` : core_kon``}
+    ) x ${f.profession ? core_kon`WHERE x.profession = ${f.profession}` : core_kon``}`;
 const m2 = (frag: string) => core_kon.unsafe(`ROUND(COALESCE(${frag}, 0)::numeric, 2)::float8`);
 
 // Dashboard ปีงบเดียว — query: fiscal_year + ตัวกรอง (budget_id, budget_type, mission_id, major_id, user_id, status)
@@ -191,7 +222,7 @@ export const getBudgetDashboard = async ({ query, user, set }: any) => {
         const budgets = (await budgetRows(core_kon`b.fiscal_year = ${fy}`)).map(withRemaining);
         const ids = budgets.map((b: any) => b.id);
         const L = linesOf(ids, f);
-        const [[filtered], byBudget, monthly, byUnit, byPerson, requests, categories] = await Promise.all([
+        const [[filtered], byBudget, monthly, byUnit, byPerson, requests, categories, byProfession, headcount, monthlyProfession] = await Promise.all([
             core_kon`WITH l AS (${L}) SELECT ${m2('SUM(spent)')} AS spent, ${m2('SUM(pending)')} AS pending,
                             count(DISTINCT user_id)::int AS people, count(DISTINCT rid)::int AS requests,
                             count(DISTINCT rid) FILTER (WHERE req_actual IS NOT NULL)::int AS confirmed FROM l`,
@@ -218,15 +249,39 @@ export const getBudgetDashboard = async ({ query, user, set }: any) => {
             core_kon`WITH l AS (${L}) SELECT ${m2('SUM(r.allowance_amount)')} AS allowance, ${m2('SUM(r.lodging_amount)')} AS lodging,
                             ${m2('SUM(r.transport_amount + r.fuel_amount + r.toll_amount)')} AS transport, ${m2('SUM(r.registration_amount + r.other_amount)')} AS other
                      FROM hrd_travel_requests r WHERE r.id IN (SELECT DISTINCT rid FROM l)`,
+            // กลุ่มสาขาวิชาชีพ: คนที่ได้ไป · คน-ครั้ง · วัน · ยอด
+            core_kon`WITH l AS (${L}) SELECT profession AS key, ${m2('SUM(spent)')} AS spent, ${m2('SUM(pending)')} AS pending,
+                            count(DISTINCT user_id)::int AS people, count(*)::int AS person_trips, count(DISTINCT rid)::int AS requests,
+                            COALESCE(SUM(days), 0)::float8 AS days, ${m2('SUM(allowance)')} AS allowance
+                     FROM l GROUP BY 1`,
+            // บุคลากรปัจจุบันในแต่ละกลุ่ม (ตามกลุ่มภารกิจ/กลุ่มงานที่กรอง) — ใช้หาสัดส่วนคนที่ได้เดินทาง
+            core_kon`SELECT profession AS key, count(*)::int AS n FROM (
+                         SELECT ${core_kon.unsafe(professionCase('up.position_name'))} AS profession
+                         FROM users u LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
+                         WHERE u.is_active = 'Y' AND COALESCE(u.user_status_id, 1) = 1 AND (u.work_end_date IS NULL OR u.work_end_date >= CURRENT_DATE)
+                           ${f.missionId ? core_kon`AND u.mission_id = ${f.missionId}` : core_kon``}
+                           ${f.majorId ? core_kon`AND u.major_id = ${f.majorId}` : core_kon``}
+                     ) h GROUP BY 1`,
+            core_kon`WITH l AS (${L}) SELECT to_char(start_at AT TIME ZONE 'Asia/Bangkok', 'YYYY-MM') AS month, profession AS key,
+                            ${m2('SUM(spent + pending)')} AS amount
+                     FROM l GROUP BY 1, 2 ORDER BY 1`,
         ]);
+        const hc = new Map(headcount.map((h: any) => [h.key, h.n]));
+        const profRows = new Map(byProfession.map((p: any) => [p.key, p]));
+        // ครบทุกกลุ่มตามลำดับคงที่ (สีติดกับกลุ่ม) — กลุ่มที่ไม่มีคนไปก็แสดง 0 ให้เห็นว่ายังไม่ได้ไป
+        const by_profession = PROFESSION_KEYS.map(k => {
+            const p: any = profRows.get(k) ?? { spent: 0, pending: 0, people: 0, person_trips: 0, requests: 0, days: 0, allowance: 0 };
+            return { key: k, spent: p.spent, pending: p.pending, people: p.people, person_trips: p.person_trips, requests: p.requests, days: p.days, allowance: p.allowance, headcount: hc.get(k) ?? 0 };
+        }).filter(p => p.people > 0 || p.headcount > 0);
         const sum = (k: string) => Math.round(budgets.reduce((n: number, b: any) => n + b[k], 0) * 100) / 100;
         const totals = { amount: sum('amount'), spent: sum('spent'), pending: sum('pending'), remaining: sum('remaining'), projected: sum('projected'),
             requests: budgets.reduce((n: number, b: any) => n + b.requests, 0), confirmed: budgets.reduce((n: number, b: any) => n + b.confirmed, 0) };
         const cat = categories[0] ?? {};
         return { success: true, data: {
             fiscal_year: fy, current_fiscal_year: currentFiscalYear(),
-            filters: { budget_id: f.budgetId, budget_type: f.budgetType, mission_id: f.missionId, major_id: f.majorId, user_id: f.userId, status: f.status },
+            filters: { budget_id: f.budgetId, budget_type: f.budgetType, mission_id: f.missionId, major_id: f.majorId, user_id: f.userId, status: f.status, profession: f.profession },
             totals, budgets, filtered, by_budget: byBudget, monthly, by_unit: byUnit, by_person: byPerson, requests,
+            by_profession, monthly_profession: monthlyProfession,
             categories: ['allowance', 'lodging', 'transport', 'other'].map(k => ({ key: k, amount: cat[k] ?? 0 })),
         } };
     } catch (e: any) {

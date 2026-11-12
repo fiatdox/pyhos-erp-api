@@ -110,8 +110,9 @@ export const hrdTravelRoutes = new Elysia({ prefix: '/api/v1/hrd/travel' })
         query: t.Object({
             fiscal_year: t.Optional(t.String()), budget_id: t.Optional(t.String()), budget_type: t.Optional(t.String()),
             mission_id: t.Optional(t.String()), major_id: t.Optional(t.String()), user_id: t.Optional(t.String()), status: t.Optional(t.String()),
+            profession: t.Optional(t.String()),
         }),
-        detail: { ...detail, description: 'ภาพรวมงบ + เจาะลึกตามตัวกรอง: รายงบ รายเดือน กลุ่มงาน รายบุคคล รายการคำขอ (ยอดรายคน = เบี้ยเลี้ยงของคนนั้น + ค่าใช้จ่ายร่วมหารเท่ากัน)' },
+        detail: { ...detail, description: 'ภาพรวมงบ + เจาะลึกตามตัวกรอง: รายงบ รายเดือน กลุ่มงาน กลุ่มสาขาวิชาชีพ รายบุคคล รายการคำขอ (ยอดรายคน = เบี้ยเลี้ยงของคนนั้น + ค่าใช้จ่ายร่วมหารเท่ากัน)' },
     })
     .post('/budgets', createBudget, { body: anyBody, detail })
     .put('/budgets/:id', updateBudget, { ...idParam, body: anyBody, detail: { ...detail, description: 'ลดวงเงินต่ำกว่ายอดที่ใช้ไม่ได้' } })
