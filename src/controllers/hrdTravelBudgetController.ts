@@ -244,7 +244,8 @@ const readType = (body: any) => {
     if (!name || name.length > 100) throw new Bad(400, 'กรุณาระบุชื่อประเภท (ไม่เกิน 100 ตัวอักษร)', 'name');
     const refCode = String(body?.ref_code ?? '').trim().toUpperCase() || null;
     if (refCode && !REF_CODE_RE.test(refCode)) throw new Bad(400, 'รหัสงบใช้ตัวอักษรอังกฤษ ตัวเลข . - / ไม่เกิน 20 ตัว เช่น P20', 'ref_code');
-    const label = String(body?.item_label ?? '').trim().replace(/\s+/g, ' ') || 'รายการงบ';
+    // ว่างได้ = บันทึกข้อความพิมพ์ชื่องบโดยไม่มีคำนำหน้า · ไม่ส่งมาเลย (เพิ่มใหม่) = "รายการงบ"
+    const label = body?.item_label === undefined ? 'รายการงบ' : String(body.item_label ?? '').trim().replace(/\s+/g, ' ');
     if (label.length > 30) throw new Bad(400, 'ข้อความหน้าชื่องบไม่เกิน 30 ตัวอักษร', 'item_label');
     const order = body?.sort_order === undefined || body?.sort_order === null || body?.sort_order === '' ? null : Number(body.sort_order);
     if (order !== null && (!Number.isInteger(order) || order < 0 || order > 9999)) throw new Bad(400, 'ลำดับต้องเป็นจำนวนเต็ม 0–9999', 'sort_order');
