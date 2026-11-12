@@ -579,6 +579,7 @@ export const updateMyCodes = async ({ user, body, set }: any) => {
 // ผู้ปฏิบัติงานแทนตอนลา — บุคลากรในกลุ่มงานของ "หัวหน้าลำดับต่ำสุด" ของผู้ login
 //   1) หัวหน้า/รักษาการหน่วยงาน (submajor) ของเรา  ไม่มี →  2) หัวหน้า/รักษาการกลุ่มงาน (major) ของเรา
 //   กลุ่มงานที่ใช้ = กลุ่มงานที่หัวหน้าคนนั้นสังกัด + กลุ่มงานที่เป็นหัวหน้า/รักษาการอยู่
+//   + กลุ่มงานของผู้ลาเองเสมอ (หัวหน้าอาจสังกัดกลุ่มงานอื่น)
 //   ไม่พบหัวหน้าทั้งสองระดับ → ใช้กลุ่มงานของตัวเอง (ไม่มีกลุ่มงานจึงใช้กลุ่มภารกิจ)
 export const getMyColleagues = async ({ user: actor, query, set }: any) => {
     try {
@@ -613,7 +614,9 @@ export const getMyColleagues = async ({ user: actor, query, set }: any) => {
                 WHERE is_active = 'Y' AND (supervisor_id IN ${core_kon(heads)} OR acting_supervisor_id IN ${core_kon(heads)})`;
             majorIds = rows.map((r: any) => Number(r.major_id));
         }
-        if (!majorIds.length && me.major_id != null) majorIds = [Number(me.major_id)];
+        // กลุ่มงานของผู้ลาเองต้องอยู่ในรายชื่อเสมอ — หัวหน้าหน่วยงานอาจสังกัดกลุ่มงานอื่น
+        // (เช่น หัวหน้าหน่วยพยาบาลผู้ป่วยนอกสังกัดกลุ่มงานจิตเวช) ถ้าใช้แค่กลุ่มงานของหัวหน้า เพื่อนร่วมหน่วยจะหายจากรายชื่อ
+        if (me.major_id != null && !majorIds.includes(Number(me.major_id))) majorIds.push(Number(me.major_id));
 
         const cols = core_kon`u.id, u.pname, u.fname, u.lname, up.position_name`;
         if (majorIds.length) {
