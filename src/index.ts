@@ -27,6 +27,7 @@ import { hrdTravelRoutes } from "./routes/hrdTravelRoutes";
 import { itAssetRoutes } from "./routes/itAssetRoutes";
 import { itAssetRiskRoutes } from "./routes/itAssetRiskRoutes";
 import { itBiaRoutes } from "./routes/itBiaRoutes";
+import { itRiskRegisterRoutes } from "./routes/itRiskRegisterRoutes";
 import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 import { startLeaveRolloverJob } from "./services/leaveRollover";
 import { startLeaveNotifyJob } from "./services/leaveNotify";
@@ -108,6 +109,7 @@ const app = new Elysia()
   .use(itAssetRoutes)
   .use(itAssetRiskRoutes)
   .use(itBiaRoutes)
+  .use(itRiskRegisterRoutes)
   //.get("/", () => "Hello Elysia")
   .listen(process.env.PORT || 5000);
 
