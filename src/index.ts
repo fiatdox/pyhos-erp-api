@@ -29,6 +29,7 @@ import { itAssetRiskRoutes } from "./routes/itAssetRiskRoutes";
 import { itBiaRoutes } from "./routes/itBiaRoutes";
 import { itRiskRegisterRoutes } from "./routes/itRiskRegisterRoutes";
 import { itExecutiveRoutes } from "./routes/itExecutiveRoutes";
+import { itThirdPartyRoutes } from "./routes/itThirdPartyRoutes";
 import { loggerMiddleware } from "./middlewares/loggerMiddleware";
 import { startLeaveRolloverJob } from "./services/leaveRollover";
 import { startLeaveNotifyJob } from "./services/leaveNotify";
@@ -112,6 +113,7 @@ const app = new Elysia()
   .use(itBiaRoutes)
   .use(itRiskRegisterRoutes)
   .use(itExecutiveRoutes)
+  .use(itThirdPartyRoutes)
   //.get("/", () => "Hello Elysia")
   .listen(process.env.PORT || 5000);
 
