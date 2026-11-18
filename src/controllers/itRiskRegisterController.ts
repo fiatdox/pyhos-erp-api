@@ -5,7 +5,7 @@ import { core_kon } from '../db/db';
 // ระดับความเสี่ยง (ตามแบบฟอร์ม): 12.5–25 วิกฤติ · 9.5–12.4 สูง · 3.5–9.4 ปานกลาง · 1–3.4 ต่ำ — คำนวณที่หน้าเว็บ
 // สร้างรอบใหม่ยกรายการที่ยัง Open จากรอบก่อนมาได้ (copied_from) · ผู้บันทึกการแก้ไข = ผู้ใช้จาก token
 
-class Bad extends Error { constructor(public status: number, msg: string, public field?: string) { super(msg); } }
+export class Bad extends Error { constructor(public status: number, msg: string, public field?: string) { super(msg); } }
 const fail = (set: any, status: number, message: string, field?: string) => { set.status = status; return { success: false, message, field }; };
 const handle = (set: any, tag: string, e: any) => {
     if (e instanceof Bad) return fail(set, e.status, e.message, e.field);
@@ -83,13 +83,13 @@ const readItem = (b: any) => {
 
 // ผู้บันทึก = บัญชีเจ้าหน้าที่ IT ที่ยังใช้งาน · recorder_name เก็บชื่อ ณ วันบันทึกไว้ (ทะเบียนเก่ายังแสดงชื่อเดิมแม้เปลี่ยนชื่อ/ย้ายงาน)
 const RECORDER_ROLES = ['IT_STAFF', 'CHIEF_GROUP_IT', 'CHIEF_MISSION_IT'];
-const itStaff = (sql: any, id?: number) => sql`
+export const itStaff = (sql: any, id?: number) => sql`
     SELECT DISTINCT u.id, CONCAT(u.pname, u.fname, ' ', u.lname) AS name, up.position_name
     FROM user_m_users_roles mu JOIN users u ON u.id = mu.user_id JOIN user_roles r ON r.id = mu.role_id
     LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
     WHERE UPPER(r.role_name) = ANY(${RECORDER_ROLES}) AND COALESCE(UPPER(u.is_active), 'Y') <> 'N' ${id ? sql`AND u.id = ${id}` : sql``}
     ORDER BY name`;
-const withRecorder = async (sql: any, h: ReturnType<typeof readHeader>, keep?: { recorder_id: number | null; recorder_name: string | null }) => {
+export const withRecorder = async <H extends { recorder_id: number }>(sql: any, h: H, keep?: { recorder_id: number | null; recorder_name: string | null }) => {
     // แก้หัวทะเบียนโดยไม่เปลี่ยนผู้บันทึก → คงชื่อเดิมไว้ แม้บัญชีนั้นจะไม่ได้อยู่ฝ่าย IT แล้ว
     if (keep && keep.recorder_id === h.recorder_id) return { ...h, recorder_name: keep.recorder_name };
     const [u] = await itStaff(sql, h.recorder_id);
