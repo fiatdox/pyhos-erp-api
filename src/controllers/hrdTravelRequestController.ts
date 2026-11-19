@@ -139,7 +139,32 @@ const memoNoOf = (v: unknown) => {
 
 /** ตรวจ + คำนวณคำขอทั้งใบ — คืนแถวที่พร้อมบันทึก (ใช้ทั้งยื่นใหม่และแก้ไข) */
 // keepBudgetId = งบเดิมของคำขอที่กำลังแก้ (ปิดใช้งานแล้วก็ยังแก้คำขอเดิมได้)
-const computeRequest = async (s: any, body: any, requesterId: number, keepBudgetId: number | null = null) => {
+const computeRequest = async (s: any, bodyIn: any, requesterId: number, keepBudgetId: number | null = null) => {
+    // ไม่เบิกค่าใช้จ่าย (เช่น ออกหน่วย): เลือกหลายวันในเดือนเดียว เวลาเดียวกันทุกวัน · ยอดเงินทุกช่อง = 0 · ไม่ผูกงบ
+    const noClaim = bodyIn?.cost_mode === 'no_claim';
+    let tripDates: string[] | null = null;
+    let body = bodyIn;
+    if (noClaim) {
+        const ds = [...new Set((Array.isArray(bodyIn?.trip_dates) ? bodyIn.trip_dates : []).map((x: unknown) => String(x)))].sort() as string[];
+        if (!ds.length) throw new Bad(400, 'กรุณาเลือกวันที่เดินทางอย่างน้อย ๑ วัน', 'trip_dates');
+        if (ds.length > 31) throw new Bad(400, 'เลือกวันที่ได้ไม่เกิน ๓๑ วัน', 'trip_dates');
+        for (const d of ds) {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) !== d) throw new Bad(400, `วันที่ ${d} ไม่ถูกต้อง`, 'trip_dates');
+        }
+        if (new Set(ds.map(d => d.slice(0, 7))).size > 1) throw new Bad(400, 'วันที่เดินทางต้องอยู่ในเดือนเดียวกัน (ต่างเดือนให้แยกคำขอ)', 'trip_dates');
+        const tm = /^([01]\d|2[0-3]):[0-5]\d$/;
+        const dayStart = String(bodyIn?.day_start ?? ''), dayEnd = String(bodyIn?.day_end ?? '');
+        if (!tm.test(dayStart)) throw new Bad(400, 'กรุณาระบุเวลาออกเดินทาง', 'day_start');
+        if (!tm.test(dayEnd)) throw new Bad(400, 'กรุณาระบุเวลากลับถึง', 'day_end');
+        if (dayEnd <= dayStart) throw new Bad(400, 'เวลากลับต้องหลังเวลาออกเดินทาง (ไป-กลับในวันเดียวกัน)', 'day_end');
+        tripDates = ds;
+        // ยอดเงินทุกช่องเป็น 0 — ไม่เชื่อค่าที่ส่งมา
+        body = {
+            ...bodyIn, start_at: `${ds[0]}T${dayStart}:00+07:00`, end_at: `${ds[ds.length - 1]}T${dayEnd}:00+07:00`,
+            allowance_days: 0, meals_provided: 0, toll_amount: 0, transport_amount: 0, taxi_go_amount: 0, taxi_back_amount: 0, home_station_amount: 0,
+            lodging_mode: 'none', lodging_amount: 0, registration_amount: 0, other_amount: 0, other_desc: null,
+        };
+    }
     const purpose = text(body?.purpose, 'purpose', 'ความประสงค์ (เพื่อ...)', 300, true)!;
     const subject = text(body?.subject, 'subject', 'เรื่อง/วัตถุประสงค์', 1000, true)!;
     const location = text(body?.location, 'location', 'สถานที่ไปราชการ', 300, true)!;
@@ -149,7 +174,7 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
     if (!Number.isFinite(startMs)) throw new Bad(400, 'กรุณาระบุวันเวลาออกเดินทาง', 'start_at');
     if (!Number.isFinite(endMs)) throw new Bad(400, 'กรุณาระบุวันเวลากลับถึง', 'end_at');
     if (endMs <= startMs) throw new Bad(400, 'วันเวลากลับต้องหลังวันเวลาออกเดินทาง', 'end_at');
-    if (endMs - startMs > MAX_TRIP_DAYS * 86_400_000) throw new Bad(400, `เดินทางได้ไม่เกิน ${MAX_TRIP_DAYS} วันต่อคำขอ`, 'end_at');
+    if (!noClaim && endMs - startMs > MAX_TRIP_DAYS * 86_400_000) throw new Bad(400, `เดินทางได้ไม่เกิน ${MAX_TRIP_DAYS} วันต่อคำขอ`, 'end_at');
     const calc = allowanceDays(startMs, endMs);
 
     // ผู้เดินทาง = ผู้ขอ + ผู้ร่วมเดินทาง (ไม่ซ้ำ)
@@ -185,11 +210,20 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
     // ๕. ยานพาหนะ + ๖.๓ / ๖.๕
     const mode = String(body?.vehicle_mode ?? '') as Mode;
     if (!MODES.includes(mode)) throw new Bad(400, 'กรุณาเลือกยานพาหนะที่ใช้เดินทาง', 'vehicle_mode');
+    if (noClaim && (mode === 'bus' || mode === 'plane')) throw new Bad(400, 'คำขอไม่เบิกค่าใช้จ่ายเลือกได้เฉพาะรถยนต์ราชการ รถยนต์ส่วนตัว หรืออื่น ๆ', 'vehicle_mode');
+    // ขออนุมัติใช้รถราชการ (แนบหนังสือขออนุมัติใช้รถ) — เฉพาะรถยนต์ราชการ
+    const vehicleRequest = mode === 'gov_car' && body?.vehicle_request === true;
     const v: any = { vehicle_mode: mode, vehicle_id: null, vehicle_name: null, vehicle_plate: null, distance_km: null, rate_per_km: null, route_id: null, route_text: null, route_max_fare: null, vehicle_other: null };
     let transport = 0, fuel = 0;
     const toll = money(body?.toll_amount, 'toll_amount', 'ค่าทางด่วน');
     if (toll > 0 && mode !== 'gov_car' && mode !== 'private') throw new Bad(400, 'ค่าทางด่วนเบิกได้เมื่อเดินทางด้วยรถยนต์', 'toll_amount');
-    if (mode === 'private') {
+    if (mode === 'private' && noClaim) {
+        // ไม่เบิกค่าน้ำมัน — ระบุทะเบียน (ประเภทรถ/ระยะทางไม่บังคับ)
+        const [veh] = Number(body?.vehicle_id) > 0 ? await s`SELECT id, name FROM hrd_travel_vehicle_rates WHERE id = ${Number(body.vehicle_id)}` : [];
+        const km = Number(body?.distance_km);
+        Object.assign(v, { vehicle_id: veh?.id ?? null, vehicle_name: veh?.name ?? null, distance_km: Number.isFinite(km) && km > 0 && km <= MAX_KM ? Math.round(km * 10) / 10 : null,
+            vehicle_plate: text(body?.vehicle_plate, 'vehicle_plate', 'ทะเบียนรถ', 50, true) });
+    } else if (mode === 'private') {
         const [veh] = Number(body?.vehicle_id) > 0 ? await s`SELECT id, name, rate_per_km::float8 AS rate FROM hrd_travel_vehicle_rates WHERE id = ${Number(body.vehicle_id)}` : [];
         if (!veh) throw new Bad(400, 'กรุณาเลือกประเภทรถส่วนตัว', 'vehicle_id');
         const km = Number(body?.distance_km);
@@ -217,6 +251,20 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
     if ((mode === 'gov_car' || mode === 'private') && taxiGo + taxiBack + homeStation > 0) {
         const field = taxiGo > 0 ? 'taxi_go_amount' : taxiBack > 0 ? 'taxi_back_amount' : 'home_station_amount';
         throw new Bad(400, 'ค่าแท็กซี่และค่าเดินทางไปสถานีเบิกได้เมื่อเดินทางด้วยรถโดยสาร เครื่องบิน หรืออื่น ๆ', field);
+    }
+    // บ้าน/ที่พัก ↔ สถานี: เลือกอำเภอที่ขึ้นรถ (อัตรา สสจ.พะเยา บาท/เที่ยว/คน) + จุดขึ้นรถ · เบิกจ่ายจริงไม่เกิน อัตรา × เที่ยว × คน
+    const hs: Record<string, unknown> = { home_station_rate_id: null, home_station_district: null, home_station_rate: null, home_station_trips: null, home_station_from: null, home_station_to: null };
+    if (homeStation > 0) {
+        const [lr] = Number(body?.home_station_rate_id) > 0
+            ? await s`SELECT id, district, rate FROM hrd_travel_local_rates WHERE id = ${Number(body.home_station_rate_id)}` : [];
+        if (!lr) throw new Bad(400, 'กรุณาเลือกอำเภอที่ขึ้นรถ (อัตราค่ารถรับจ้าง สสจ.พะเยา)', 'home_station_rate_id');
+        const trips = body?.home_station_trips == null || body?.home_station_trips === '' ? 2 : Number(body.home_station_trips);
+        if (trips !== 1 && trips !== 2) throw new Bad(400, 'จำนวนเที่ยวต้องเป็นเที่ยวเดียวหรือไป-กลับ', 'home_station_trips');
+        const from = text(body?.home_station_from, 'home_station_from', 'จุดขึ้นรถ', 200, true);
+        const to = text(body?.home_station_to, 'home_station_to', 'สถานีที่ไปขึ้นรถ', 200, true);
+        const hsCap = lr.rate * trips * travelers.length;
+        if (homeStation > hsCap) throw new Bad(400, `ค่าเดินทางไปสถานีเบิกได้ไม่เกิน ${hsCap.toLocaleString('en-US')} บาท (อ.${lr.district} ${lr.rate} บาท/เที่ยว/คน × ${trips} เที่ยว × ${travelers.length} คน)`, 'home_station_amount');
+        Object.assign(hs, { home_station_rate_id: lr.id, home_station_district: lr.district, home_station_rate: lr.rate, home_station_trips: trips, home_station_from: from, home_station_to: to });
     }
 
     // ๖.๒ ค่าเช่าที่พัก — ทั้งคณะเลือกรูปแบบเดียวกัน · อัตราต่อคนต่อคืนตามระดับสิทธิ์ของแต่ละคน
@@ -266,7 +314,8 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
     // งบประมาณ — คำขอเป็นแค่ประมาณการ ไม่ตัดงบและไม่บล็อกเมื่อเกินคงเหลือ (หน้าเว็บเตือน)
     // งบถูกตัดเมื่องาน HRD บันทึกยอดที่การเงินยืนยันแล้วเท่านั้น (recordActual)
     const budgetId = Number(body?.budget_id);
-    const [budget] = Number.isInteger(budgetId) && budgetId > 0
+    const [budget] = noClaim ? [{ id: null, budget_type: null, name: null, is_active: true, type_name: null, item_label: null }]
+        : Number.isInteger(budgetId) && budgetId > 0
         ? await s`SELECT b.id, b.budget_type, b.name, b.is_active, t.name AS type_name, t.item_label
                   FROM hrd_travel_budgets b JOIN hrd_travel_budget_types t ON t.code = b.budget_type WHERE b.id = ${budgetId}` : [];
     if (!budget) throw new Bad(400, 'กรุณาเลือกงบประมาณที่ใช้', 'budget_id');
@@ -274,11 +323,12 @@ const computeRequest = async (s: any, body: any, requesterId: number, keepBudget
     return {
         row: {
             requester_id: requesterId, requester_name: me.name, requester_position: me.position ?? null, requester_unit: me.unit ?? null,
-            memo_no: memoNo, purpose, subject, location, start_at: new Date(startMs), end_at: new Date(endMs), overnight: calc.overnight,
-            allowance_max_days: calc.days, allowance_days: days, meals_provided: meals, ...v,
+            memo_no: memoNo, purpose, subject, location, start_at: new Date(startMs), end_at: new Date(endMs),
+            allowance_max_days: noClaim ? 0 : calc.days, allowance_days: days, overnight: noClaim ? false : calc.overnight,
+            cost_mode: noClaim ? 'no_claim' : 'claim', trip_dates: tripDates, vehicle_request: vehicleRequest, meals_provided: meals, ...v,
             allowance_amount: allowance, lodging_mode: lodgingMode, lodging_rooms: lodgingRooms, lodging_nights: lodgingNights,
             lodging_amount: lodging, lodging_cap: lodgingCap, lodging_note: lodgingNote,
-            transport_amount: transport, taxi_go_amount: taxiGo, taxi_back_amount: taxiBack, home_station_amount: homeStation,
+            transport_amount: transport, taxi_go_amount: taxiGo, taxi_back_amount: taxiBack, home_station_amount: homeStation, ...hs,
             registration_amount: registration, fuel_amount: fuel, toll_amount: toll,
             other_amount: other, other_desc: otherDesc, total_amount: total,
             budget_id: budget.id, budget_type: budget.budget_type, budget_name: budget.name,
@@ -296,14 +346,16 @@ const REQ_COLS = (s: any) => s`r.id, r.memo_no, r.requester_id, r.requester_name
     r.allowance_amount::float8 AS allowance_amount, r.lodging_mode, r.lodging_rooms, r.lodging_nights, r.lodging_amount::float8 AS lodging_amount,
     r.lodging_cap::float8 AS lodging_cap, r.lodging_note,
     r.transport_amount::float8 AS transport_amount, r.taxi_go_amount::float8 AS taxi_go_amount, r.taxi_back_amount::float8 AS taxi_back_amount,
-    r.home_station_amount::float8 AS home_station_amount, r.registration_amount::float8 AS registration_amount, r.fuel_amount::float8 AS fuel_amount,
+    r.home_station_amount::float8 AS home_station_amount, r.home_station_rate_id, r.home_station_district, r.home_station_rate::float8 AS home_station_rate,
+    r.home_station_trips, r.home_station_from, r.home_station_to, r.cost_mode, r.trip_dates::text[] AS trip_dates, r.vehicle_request,
+    (SELECT x.status FROM hrd_travel_reports x WHERE x.request_id = r.id) AS report_status, r.registration_amount::float8 AS registration_amount, r.fuel_amount::float8 AS fuel_amount,
     r.toll_amount::float8 AS toll_amount, r.other_amount::float8 AS other_amount, r.other_desc, r.total_amount::float8 AS total_amount,
     r.budget_id, r.budget_type, r.budget_name, r.budget_type_name, r.budget_item_label, r.actual_amount::float8 AS actual_amount, r.actual_note, r.actual_at,
     r.status, r.cancel_reason, r.cancelled_at, r.created_at, r.updated_at,
     r.sign_mode, r.approval_stage, r.approval_chain, r.current_step, r.reject_reason, r.director_result, r.director_note, r.director_at`;
 
 /** ตำแหน่งผู้ขอ (alias r) — ข้าราชการต่อด้วยระดับเสมอ: คำขอที่บันทึกก่อนมีกติกานี้ยังไม่มีระดับต่อท้าย จึงเติมระดับปัจจุบันให้ตอนแสดง */
-const REQUESTER_POS = (s: any) => s`COALESCE((
+export const REQUESTER_POS = (s: any) => s`COALESCE((
     SELECT CASE WHEN RIGHT(r.requester_position, length(TRIM(lv.level_name))) = TRIM(lv.level_name) THEN r.requester_position
                 WHEN lv.level_name ~ '[0-9]' THEN r.requester_position || ' ' || TRIM(lv.level_name)
                 ELSE r.requester_position || TRIM(lv.level_name) END
@@ -349,14 +401,14 @@ const permsOf = (r: any, uid: number, manager: boolean) => {
     return {
         can_edit: open && r.requester_id === uid && Number(r.current_step) === 1 && r.approval_stage !== 'approved',
         can_cancel: open && (r.requester_id === uid || manager),
-        can_record_actual: manager && r.status === 'submitted' && r.approval_stage === 'approved',
+        can_record_actual: manager && r.status === 'submitted' && r.approval_stage === 'approved' && r.cost_mode !== 'no_claim',
         can_approve: !!step && Number(step.approver_id) === uid && r.requester_id !== uid,
         can_record_director: manager && r.status === 'submitted' && r.approval_stage === 'director',
         waiting_for: step ? { level_name: step.level_name, approver_name: step.approver_name, is_acting: !!step.is_acting } : null,
     };
 };
 
-const canView = async (uid: number, r: any) => r.requester_id === uid || await canManage(uid)
+export const canViewRequest = async (uid: number, r: any) => r.requester_id === uid || await canManage(uid)
     || (r.sign_mode === 'esign' && parseChain(r.approval_chain).some(s => Number(s.approver_id) === uid))
     || (await core_kon`SELECT 1 FROM hrd_travel_request_travelers WHERE request_id = ${r.id} AND user_id = ${uid}
                        UNION ALL SELECT 1 FROM hrd_travel_request_approvals WHERE request_id = ${r.id} AND approver_id = ${uid}`).length > 0;
@@ -398,10 +450,11 @@ const signersOf = async (r: any, approvals: any[]) => {
 export const getRequestMeta = async ({ user, set }: any) => {
     try {
         const uid = Number(user?.id);
-        const [[me], vehicles, routes, budgets, manager] = await Promise.all([
+        const [[me], vehicles, routes, localRates, budgets, manager] = await Promise.all([
             peopleWithRate(core_kon, [uid]),
             core_kon`SELECT id, code, name, rate_per_km::float8 AS rate_per_km FROM hrd_travel_vehicle_rates ORDER BY sort_order, id`,
             core_kon`SELECT id, mode, origin, destination, max_fare, note FROM hrd_travel_routes WHERE is_active ORDER BY mode, origin, destination`,
+            core_kon`SELECT id, district, rate, note FROM hrd_travel_local_rates ORDER BY sort_order, id`,
             // งบที่เลือกได้ · คงเหลือ = วงเงิน − ยอดที่การเงินยืนยันแล้ว · pending = ประมาณการของคำขออื่นที่ยังไม่ยืนยัน (ไว้เตือน)
             core_kon`SELECT b.id, b.fiscal_year, b.budget_type, b.name, b.amount::float8 AS amount, b.is_active,
                        t.name AS type_name, t.ref_code AS type_ref_code, t.sort_order AS type_sort,
@@ -427,7 +480,7 @@ export const getRequestMeta = async ({ user, set }: any) => {
             success: true,
             data: {
                 me: { ...personOut(me), fy_trips: trips, has_signature: hasSig }, sign_mode: sign.mode, approval_chain: chainOut,
-                fiscal_year: fy, vehicles, routes, budgets, can_manage: manager,
+                fiscal_year: fy, vehicles, routes, local_rates: localRates, budgets, can_manage: manager,
             },
         };
     } catch (e: any) {
@@ -469,7 +522,8 @@ type TaskKey = (typeof TASK_KEYS)[number];
 const taskWhere = (s: any, t: TaskKey) => t === 'director'
     ? s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage = 'director')`
     : t === 'actual'
-        ? s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage = 'approved')`
+        // ไม่เบิกค่าใช้จ่าย ไม่มียอดให้การเงินยืนยัน
+        ? s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage = 'approved' AND r.cost_mode <> 'no_claim')`
         : s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage IN ('chain', 'director') AND r.start_at < now() + make_interval(days => ${SOON_DAYS}))`;
 /** งานค้างที่ต้องทำก่อนขึ้นก่อน — ผล ผอ./ใกล้เดินทาง เรียงตามวันออกเดินทาง · ยอดการเงิน เรียงตามวันกลับ */
 const taskOrder = (s: any, t: TaskKey) => t === 'actual' ? s`r.end_at ASC, r.id ASC` : s`r.start_at ASC, r.id ASC`;
@@ -549,10 +603,13 @@ export const getRequestById = async ({ params, user, set }: any) => {
         const uid = Number(user?.id);
         const [r] = await core_kon`SELECT ${REQ_COLS(core_kon)} FROM hrd_travel_requests r WHERE r.id = ${Number(params.id)}`;
         if (!r) return fail(set, 404, 'ไม่พบคำขอ');
-        if (!(await canView(uid, r))) return fail(set, 403, 'ไม่มีสิทธิ์ดูคำขอนี้');
-        const [travelers, approvals, manager, [sig]] = await Promise.all([
+        if (!(await canViewRequest(uid, r))) return fail(set, 403, 'ไม่มีสิทธิ์ดูคำขอนี้');
+        const [travelers, approvals, manager, [sig], files] = await Promise.all([
             loadTravelers([r.id]), loadApprovals(r.id), canManage(uid),
             core_kon`SELECT requester_signature FROM hrd_travel_requests WHERE id = ${r.id}`,
+            // ไฟล์แนบ (หนังสือต้นเรื่อง / อนุมัติเครื่องบิน / อนุมัติรถยนต์ส่วนตัว) — src/controllers/hrdTravelFileController.ts
+            core_kon`SELECT f.id, f.kind, f.original_name, f.mime, f.size_bytes, f.uploaded_at, CONCAT(u.pname, u.fname, ' ', u.lname) AS uploaded_by_name
+                     FROM hrd_travel_request_files f LEFT JOIN users u ON u.id = f.uploaded_by WHERE f.request_id = ${r.id} ORDER BY f.kind, f.id`,
         ]);
         const signers = await signersOf(r, approvals);
         // ประวัติในปีงบของวันออกเดินทาง: ไปแล้วก่อนครั้งนี้ (prior_trips) และทั้งปีไม่นับครั้งนี้ (fy_trips)
@@ -570,7 +627,12 @@ export const getRequestById = async ({ params, user, set }: any) => {
         return {
             success: true,
             data: {
-                ...r, fiscal_year: fy, travelers: withTrips, signers, requester_signature: sig?.requester_signature ?? null,
+                ...r, fiscal_year: fy, travelers: withTrips, signers, requester_signature: sig?.requester_signature ?? null, files,
+                // ไฟล์ที่ต้องแนบแต่ยังไม่มี: หนังสือต้นเรื่องทุกคำขอ · เครื่องบิน → อนุมัติเดินทางโดยเครื่องบิน · รถส่วนตัว → อนุมัติใช้รถยนต์ส่วนตัว
+                // ไม่เบิกค่าใช้จ่าย ไม่บังคับหนังสือต้นเรื่อง · ขออนุมัติใช้รถราชการ → หนังสือขออนุมัติใช้รถ
+                missing_files: [...(r.cost_mode === 'no_claim' ? [] : ['source']), ...(r.vehicle_mode === 'plane' ? ['plane'] : []), ...(r.vehicle_mode === 'private' ? ['private_car'] : []),
+                    ...(r.vehicle_mode === 'gov_car' && r.vehicle_request ? ['vehicle_use'] : [])]
+                    .filter(k => !files.some((f: any) => f.kind === k)),
                 approvals: approvals.map((a: any) => ({ ...a, signature: undefined })),   // ภาพลายเซ็นอยู่ใน signers แล้ว
                 ...permsOf(r, uid, manager),
             },
@@ -716,7 +778,8 @@ export const recordActual = async ({ params, body, user, set }: any) => {
         if (!clear && (body?.actual_amount === undefined || body?.actual_amount === '')) return fail(set, 400, 'กรุณาระบุยอดที่การเงินยืนยัน', 'actual_amount');
         const note = text(body?.actual_note, 'actual_note', 'หมายเหตุ', 300, false);
         const r = await core_kon.begin(async (sql: any) => {
-            const [cur] = await sql`SELECT id, status, approval_stage FROM hrd_travel_requests WHERE id = ${Number(params.id)} FOR UPDATE`;
+            const [cur] = await sql`SELECT id, status, approval_stage, cost_mode FROM hrd_travel_requests WHERE id = ${Number(params.id)} FOR UPDATE`;
+            if (cur?.cost_mode === 'no_claim') throw new Bad(409, 'คำขอนี้ไม่เบิกค่าใช้จ่าย ไม่ต้องบันทึกยอดเบิกจ่าย');
             if (!cur) throw new Bad(404, 'ไม่พบคำขอ');
             if (cur.status !== 'submitted') throw new Bad(409, cur.status === 'rejected' ? 'คำขอนี้ไม่ได้รับอนุมัติ' : 'คำขอนี้ยกเลิกแล้ว');
             if (!clear && cur.approval_stage !== 'approved') throw new Bad(409, 'ยังไม่ได้บันทึกว่าผู้อำนวยการอนุมัติ — บันทึกผลคำสั่ง ผอ. ก่อน');

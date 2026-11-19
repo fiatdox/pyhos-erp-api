@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { getAllowanceLog, getAllowanceMeta, getAllowances, getAllowanceTierLog, setAllowances, updateAllowanceTier } from '../controllers/hrdTravelController';
-import { createRoute, deleteRoute, getTransport, getTransportLog, updateRoute, updateVehicleRate } from '../controllers/hrdTravelTransportController';
+import { createRoute, deleteRoute, getTransport, getTransportLog, updateLocalRate, updateRoute, updateVehicleRate } from '../controllers/hrdTravelTransportController';
 import {
     approveRequest, cancelRequest, createRequest, getApprovalCount, getHrdTasks, getRequestById, getRequestMeta, getRequests, getTravelerStats, getTravelHistory,
     recordActual, recordDirector, rejectRequest, searchTravelPeople, updateRequest,
@@ -9,6 +9,8 @@ import {
 import { createBudget, createBudgetType, getBudgetDashboard, getBudgetLog, getBudgets, getBudgetTypes, updateBudget, updateBudgetType } from '../controllers/hrdTravelBudgetController';
 import { deleteLodgingPerson, getLodging, getLodgingLog, setLodgingLevel, setLodgingPerson, updateLodgingClass } from '../controllers/hrdTravelLodgingController';
 import { getSignModeLog, getSignModes, setSignMode } from '../controllers/hrdTravelSignModeController';
+import { deleteRequestFile, getRequestFile, uploadRequestFile } from '../controllers/hrdTravelFileController';
+import { getReport, getReports, saveReport } from '../controllers/hrdTravelReportController';
 
 const anyBody = t.Record(t.String(), t.Any());
 
@@ -54,6 +56,10 @@ export const hrdTravelRoutes = new Elysia({ prefix: '/api/v1/hrd/travel' })
     .put('/transport/vehicles/:id', updateVehicleRate, {
         ...idParam, body: t.Object({ rate_per_km: t.Numeric(), name: t.Optional(t.String()) }),
         detail: { ...detail, description: 'แก้อัตราค่าน้ำมันบาท/กม. ของประเภทรถ' },
+    })
+    .put('/transport/local/:id', updateLocalRate, {
+        ...idParam, body: t.Object({ rate: t.Numeric(), note: t.Optional(t.Nullable(t.String())) }),
+        detail: { ...detail, description: 'แก้อัตราค่ารถรับจ้างในจังหวัด (บ้าน/ที่พัก ↔ สถานี) ของอำเภอ บาท/เที่ยว/คน' },
     })
     .post('/transport/routes', createRoute, { body: t.Record(t.String(), t.Any()), detail: { ...detail, description: 'เพิ่มเส้นทาง bus/plane · ห้ามซ้ำไม่ว่าทิศไหน' } })
     .put('/transport/routes/:id', updateRoute, { ...idParam, body: t.Record(t.String(), t.Any()), detail })
@@ -102,6 +108,20 @@ export const hrdTravelRoutes = new Elysia({ prefix: '/api/v1/hrd/travel' })
     .post('/requests/:id/approve', approveRequest, { ...idParam, body: anyBody, detail: { ...detail, description: 'ผู้อนุมัติขั้นปัจจุบันอนุมัติพร้อมลายเซ็น (ต้องตั้งลายเซ็นก่อน) · ขั้นสุดท้าย → รอ ผอ. ลงนามบนกระดาษ' } })
     .post('/requests/:id/reject', rejectRequest, { ...idParam, body: anyBody, detail: { ...detail, description: 'ไม่อนุมัติ (ต้องมีเหตุผล) พร้อมลายเซ็น = จบคำขอ' } })
     .post('/requests/:id/director', recordDirector, { ...idParam, body: anyBody, detail: { ...detail, description: 'ADMIN/HRD บันทึกผลคำสั่ง ผอ. ตามบันทึกข้อความที่ลงนามจริง' } })
+    // ไฟล์แนบ: kind = source (หนังสือต้นเรื่อง) | plane (อนุมัติเดินทางโดยเครื่องบิน) | private_car (ขออนุมัติใช้รถยนต์ส่วนตัว)
+    .post('/requests/:id/files', uploadRequestFile, {
+        ...idParam, body: t.Object({ kind: t.String(), file: t.File({ maxSize: '10m' }) }),
+        detail: { ...detail, description: 'แนบไฟล์ (PDF/รูป ≤ 10MB, ≤ 5 ไฟล์ต่อประเภท) — ผู้ขอ หรือ ADMIN/HRD ขณะคำขอยังไม่ยกเลิก/ไม่ถูกปฏิเสธ' },
+    })
+    .get('/requests/:id/files/:fileId', getRequestFile, { params: t.Object({ id: t.Numeric(), fileId: t.Numeric() }), detail: { ...detail, description: 'เปิดไฟล์แนบ (สิทธิ์เดียวกับการดูคำขอ)' } })
+    .post('/requests/:id/files/:fileId/delete', deleteRequestFile, { params: t.Object({ id: t.Numeric(), fileId: t.Numeric() }), detail })
+    // รายงานผลการเดินทาง (เสนอผู้บริหารทราบ — ลงนามรับทราบบนกระดาษ)
+    .get('/requests/:id/report', getReport, { ...idParam, detail: { ...detail, description: 'รายงานผลการเดินทางของคำขอ + ข้อมูลคำขอสำหรับพิมพ์บันทึกข้อความ' } })
+    .put('/requests/:id/report', saveReport, { ...idParam, body: anyBody, detail: { ...detail, description: 'บันทึกร่าง/ส่งรายงาน (content = tiptap JSON ที่กรองแล้ว) — ผู้ขอ หรือ ADMIN/HRD' } })
+    .get('/reports', getReports, {
+        query: t.Object({ fiscal_year: t.Optional(t.String()), search: t.Optional(t.String()), status: t.Optional(t.String()), limit: t.Optional(t.String()), offset: t.Optional(t.String()) }),
+        detail: { ...detail, description: 'รายงานที่เห็นได้: ADMIN/HRD/ผอ. ทั้งหมด · หัวหน้าในสาย/ผู้เกี่ยวข้อง เฉพาะคำขอของตน' },
+    })
     .put('/requests/:id/actual', recordActual, { ...idParam, body: anyBody, detail: { ...detail, description: 'ADMIN/HRD บันทึกเบิกจ่ายจริง (null = ล้าง) — ตัดงบด้วยยอดจริง' } })
 
     // งบประมาณ + dashboard — ADMIN / HRD

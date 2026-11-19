@@ -8,7 +8,7 @@ import { canManage, guard } from './hrdTravelController';
 const MODES = ['bus', 'plane'] as const;
 type Mode = typeof MODES[number];
 const MODE_LABEL: Record<Mode, string> = { bus: 'รถโดยสารประจำทาง', plane: 'เครื่องบิน' };
-const MAX_RATE = 100, MAX_FARE = 100000;
+const MAX_RATE = 100, MAX_FARE = 100000, MAX_LOCAL = 10000;
 
 const fail = (set: any, status: number, message: string, field?: string) => { set.status = status; return { success: false, message, ...(field ? { field } : {}) }; };
 class Bad extends Error { constructor(public status: number, message: string, public field?: string) { super(message); } }
@@ -18,19 +18,22 @@ const vehicleCols = (s: any) => s`v.id, v.code, v.name, v.rate_per_km::float8 AS
 const routeCols = (s: any) => s`r.id, r.mode, r.origin, r.destination, r.max_fare, r.note, r.updated_at,
     CONCAT(u.pname, u.fname, ' ', u.lname) AS updated_by_name`;
 const snapRoute = (r: any) => ({ mode: r.mode, origin: r.origin, destination: r.destination, max_fare: r.max_fare, note: r.note });
-const log = (s: any, entity: 'vehicle' | 'route', id: number, action: string, before: any, after: any, actor: number) =>
+const log = (s: any, entity: 'vehicle' | 'route' | 'local', id: number, action: string, before: any, after: any, actor: number) =>
     s`INSERT INTO hrd_travel_transport_log (entity, entity_id, action, before, after, changed_by)
       VALUES (${entity}, ${id}, ${action}, ${before ? s.json(before) : null}, ${after ? s.json(after) : null}, ${actor})`;
 
 export const getTransport = async ({ user, set }: any) => {
     try {
-        const [vehicles, routes, editable] = await Promise.all([
+        const [vehicles, routes, localRates, editable] = await Promise.all([
             core_kon`SELECT ${vehicleCols(core_kon)} FROM hrd_travel_vehicle_rates v LEFT JOIN users u ON u.id = v.updated_by ORDER BY v.sort_order, v.id`,
             core_kon`SELECT ${routeCols(core_kon)} FROM hrd_travel_routes r LEFT JOIN users u ON u.id = r.updated_by
                      WHERE r.is_active ORDER BY r.mode, r.origin, r.destination`,
+            core_kon`SELECT l.id, l.district, l.rate, l.note, l.updated_at,
+                       CASE WHEN l.updated_by IS NULL THEN NULL ELSE CONCAT(u.pname, u.fname, ' ', u.lname) END AS updated_by_name
+                     FROM hrd_travel_local_rates l LEFT JOIN users u ON u.id = l.updated_by ORDER BY l.sort_order, l.id`,
             canManage(Number(user?.id)),
         ]);
-        return { success: true, data: { vehicles, routes, can_edit: editable, limits: { max_rate: MAX_RATE, max_fare: MAX_FARE } } };
+        return { success: true, data: { vehicles, routes, local_rates: localRates, can_edit: editable, limits: { max_rate: MAX_RATE, max_fare: MAX_FARE, max_local: MAX_LOCAL } } };
     } catch (e: any) {
         console.error('[hrdTransport] get:', e?.message);
         return fail(set, 500, 'โหลดการตั้งค่าการเดินทางไม่สำเร็จ');
@@ -62,6 +65,31 @@ export const updateVehicleRate = async ({ params, body, user, set }: any) => {
     } catch (e: any) {
         if (e instanceof Bad) return fail(set, e.status, e.message, e.field);
         console.error('[hrdTransport] vehicle:', e?.message);
+        return fail(set, 500, 'บันทึกอัตราไม่สำเร็จ');
+    }
+};
+
+// ค่ารถรับจ้างในจังหวัดพะเยา (บ้าน/ที่พัก ↔ สถานี) แยกอำเภอ: body { rate, note? } — แก้ได้เฉพาะอัตรา/หมายเหตุ ชื่ออำเภอคงที่
+export const updateLocalRate = async ({ params, body, user, set }: any) => {
+    try {
+        const denied = await guard(user, set); if (denied) return denied;
+        const rate = Number(body?.rate);
+        if (!Number.isInteger(rate) || rate <= 0 || rate > MAX_LOCAL) return fail(set, 400, `อัตราต้องเป็นจำนวนเต็มบาท 1–${MAX_LOCAL.toLocaleString('en-US')}`, 'rate');
+        const note = body?.note == null ? null : String(body.note).trim().replace(/\s+/g, ' ') || null;
+        if (note && note.length > 200) return fail(set, 400, 'หมายเหตุไม่เกิน 200 ตัวอักษร', 'note');
+        const actor = Number(user.id);
+        const changed = await core_kon.begin(async (sql: any) => {
+            const [cur] = await sql`SELECT id, district, rate, note FROM hrd_travel_local_rates WHERE id = ${Number(params.id)} FOR UPDATE`;
+            if (!cur) throw new Bad(404, 'ไม่พบอำเภอ');
+            if (cur.rate === rate && (cur.note ?? null) === note) return false;
+            await sql`UPDATE hrd_travel_local_rates SET rate = ${rate}, note = ${note}, updated_by = ${actor}, updated_at = NOW() WHERE id = ${cur.id}`;
+            await log(sql, 'local', cur.id, 'update', { district: cur.district, rate: cur.rate, note: cur.note }, { district: cur.district, rate, note }, actor);
+            return true;
+        });
+        return { success: true, data: { changed } };
+    } catch (e: any) {
+        if (e instanceof Bad) return fail(set, e.status, e.message, e.field);
+        console.error('[hrdTransport] local:', e?.message);
         return fail(set, 500, 'บันทึกอัตราไม่สำเร็จ');
     }
 };
@@ -159,7 +187,7 @@ export const deleteRoute = async ({ params, user, set }: any) => {
 export const getTransportLog = async ({ query, user, set }: any) => {
     try {
         const denied = await guard(user, set); if (denied) return denied;
-        const entity = query?.entity === 'vehicle' ? 'vehicle' : 'route';
+        const entity = query?.entity === 'vehicle' ? 'vehicle' : query?.entity === 'local' ? 'local' : 'route';
         const id = Number(query?.id) || null;
         const mode = MODES.includes(query?.mode) ? query.mode : null;
         const rows = await core_kon`
