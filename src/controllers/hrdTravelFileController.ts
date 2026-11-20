@@ -7,21 +7,29 @@ import { join } from 'node:path';
 import { core_kon } from '../db/db';
 import { canManage } from './hrdTravelController';
 import { canViewRequest } from './hrdTravelRequestController';
+import { canFinance } from './hrdTravelClaimController';
 
 const UPLOAD_DIR = join(process.cwd(), 'uploads', 'hrd-travel');
 await mkdir(UPLOAD_DIR, { recursive: true }).catch(() => {});
 
-export const FILE_KINDS = ['source', 'plane', 'private_car', 'vehicle_use'] as const;
+export const FILE_KINDS = ['source', 'plane', 'private_car', 'vehicle_use', 'receipt'] as const;
 type Kind = typeof FILE_KINDS[number];
-const KIND_LABEL: Record<Kind, string> = { source: 'หนังสือต้นเรื่อง', plane: 'หนังสืออนุมัติเดินทางโดยเครื่องบิน', private_car: 'หนังสือขออนุมัติใช้รถยนต์ส่วนตัว', vehicle_use: 'หนังสือขออนุมัติใช้รถ' };
+const KIND_LABEL: Record<Kind, string> = { source: 'หนังสือต้นเรื่อง', plane: 'หนังสืออนุมัติเดินทางโดยเครื่องบิน', private_car: 'หนังสือขออนุมัติใช้รถยนต์ส่วนตัว', vehicle_use: 'หนังสือขออนุมัติใช้รถ', receipt: 'ใบเสร็จ/หลักฐานการเบิก' };
 const MIME: Record<string, string> = {
     pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif',
 };
 const MAX_BYTES = 10 * 1024 * 1024;
 const MAX_PER_KIND = 5;
+/** ใบเสร็จการเบิกหลายใบ (ที่พักรายคน ลงทะเบียน ทางด่วนหลายด่าน) */
+const maxOf = (k: Kind) => k === 'receipt' ? 40 : MAX_PER_KIND;
 
 const fail = (set: any, status: number, message: string, field?: string) => { set.status = status; return { success: false, message, ...(field ? { field } : {}) }; };
 
+/** ใบเสร็จแก้ได้เมื่อยังไม่ส่งเบิก หรือ HRD ส่งกลับ */
+const receiptsEditable = async (requestId: number) => {
+    const [c] = await core_kon`SELECT status FROM hrd_travel_claims WHERE request_id = ${requestId}`;
+    return !c || c.status === 'draft' || c.status === 'returned';
+};
 /** คำขอที่แก้ไฟล์แนบได้ (ผู้ขอ / ADMIN / HRD · ยังเป็น submitted) */
 const editable = async (uid: number, id: number) => {
     const [r] = await core_kon`SELECT id, requester_id, status FROM hrd_travel_requests WHERE id = ${id}`;
@@ -47,7 +55,9 @@ export const uploadRequestFile = async ({ params, body, user, set }: any) => {
         const ok = await editable(uid, Number(params.id));
         if (ok.error) return fail(set, ok.error[0], ok.error[1]);
         const [{ n }] = await core_kon`SELECT count(*)::int AS n FROM hrd_travel_request_files WHERE request_id = ${ok.r.id} AND kind = ${kind}`;
-        if (n >= MAX_PER_KIND) return fail(set, 400, `${KIND_LABEL[kind]}แนบได้ไม่เกิน ${MAX_PER_KIND} ไฟล์`, 'file');
+        if (n >= maxOf(kind)) return fail(set, 400, `${KIND_LABEL[kind]}แนบได้ไม่เกิน ${maxOf(kind)} ไฟล์`, 'file');
+        // ใบเสร็จแก้ได้ขณะยังไม่ส่งเบิก (ร่าง/ถูกส่งกลับ) — ส่งแล้วเป็นหลักฐานที่ HRD/การเงินตรวจ
+        if (kind === 'receipt' && !(await receiptsEditable(ok.r.id))) return fail(set, 409, 'ส่งเบิกแล้ว แก้ใบเสร็จไม่ได้ — รอ HRD/การเงินตรวจ', 'file');
 
         const stored = `${crypto.randomUUID()}.${ext}`;
         await Bun.write(join(UPLOAD_DIR, stored), file);
@@ -74,7 +84,9 @@ export const getRequestFile = async ({ params, user, set }: any) => {
         const [f] = await core_kon`SELECT f.file_name, f.original_name, f.mime, r.id, r.requester_id, r.sign_mode, r.approval_chain
             FROM hrd_travel_request_files f JOIN hrd_travel_requests r ON r.id = f.request_id
             WHERE f.id = ${Number(params.fileId)} AND f.request_id = ${Number(params.id)}`;
-        if (!f || !(await canViewRequest(uid, f))) return fail(set, 404, 'ไม่พบไฟล์แนบ');
+        // การเงินเปิดไฟล์ของคำขอที่ส่งถึงการเงินแล้วได้ (ตรวจใบเสร็จ)
+        const financeSees = async () => (await canFinance(uid)) && (await core_kon`SELECT 1 FROM hrd_travel_claims WHERE request_id = ${f.id} AND status IN ('finance', 'verified', 'closed')`).length > 0;
+        if (!f || !((await canViewRequest(uid, f)) || (await financeSees()))) return fail(set, 404, 'ไม่พบไฟล์แนบ');
         const name = String(f.file_name).split(/[\\/]/).pop()!;
         const file = Bun.file(join(UPLOAD_DIR, name));
         if (!(await file.exists())) return fail(set, 404, 'ไม่พบไฟล์ในเซิร์ฟเวอร์');
@@ -94,6 +106,8 @@ export const deleteRequestFile = async ({ params, user, set }: any) => {
         const uid = Number(user?.id);
         const ok = await editable(uid, Number(params.id));
         if (ok.error) return fail(set, ok.error[0], ok.error[1]);
+        const [k] = await core_kon`SELECT kind FROM hrd_travel_request_files WHERE id = ${Number(params.fileId)} AND request_id = ${ok.r.id}`;
+        if (k?.kind === 'receipt' && !(await receiptsEditable(ok.r.id))) return fail(set, 409, 'ส่งเบิกแล้ว ลบใบเสร็จไม่ได้');
         const [f] = await core_kon`DELETE FROM hrd_travel_request_files WHERE id = ${Number(params.fileId)} AND request_id = ${ok.r.id} RETURNING file_name`;
         if (!f) return fail(set, 404, 'ไม่พบไฟล์แนบ');
         await unlink(join(UPLOAD_DIR, String(f.file_name).split(/[\\/]/).pop()!)).catch(() => {});

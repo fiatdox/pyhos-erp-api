@@ -1,12 +1,13 @@
+import { closeClaim, financeReviewClaim, getClaim, getClaims, hrdReviewClaim, saveClaim } from '../controllers/hrdTravelClaimController';
 import { Elysia, t } from 'elysia';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { getAllowanceLog, getAllowanceMeta, getAllowances, getAllowanceTierLog, setAllowances, updateAllowanceTier } from '../controllers/hrdTravelController';
 import { createRoute, deleteRoute, getTransport, getTransportLog, updateLocalRate, updateRoute, updateVehicleRate } from '../controllers/hrdTravelTransportController';
 import {
     approveRequest, cancelRequest, createRequest, getApprovalCount, getHrdTasks, getRequestById, getRequestMeta, getRequests, getTravelerStats, getTravelHistory,
-    recordActual, recordDirector, rejectRequest, searchTravelPeople, updateRequest,
+    recordActual, recordDirector, rejectRequest, reviewRequest, rescheduleRequest, resyncChain, updateTravelers, searchTravelPeople, updateRequest,
 } from '../controllers/hrdTravelRequestController';
-import { createBudget, createBudgetType, getBudgetDashboard, getBudgetLog, getBudgets, getBudgetTypes, updateBudget, updateBudgetType } from '../controllers/hrdTravelBudgetController';
+import { createBudget, createBudgetType, getBudgetCompare, getBudgetDashboard, getBudgetLog, getBudgets, getBudgetTypes, updateBudget, updateBudgetType } from '../controllers/hrdTravelBudgetController';
 import { deleteLodgingPerson, getLodging, getLodgingLog, setLodgingLevel, setLodgingPerson, updateLodgingClass } from '../controllers/hrdTravelLodgingController';
 import { getSignModeLog, getSignModes, setSignMode } from '../controllers/hrdTravelSignModeController';
 import { deleteRequestFile, getRequestFile, uploadRequestFile } from '../controllers/hrdTravelFileController';
@@ -92,14 +93,14 @@ export const hrdTravelRoutes = new Elysia({ prefix: '/api/v1/hrd/travel' })
         query: t.Object({ fiscal_year: t.Optional(t.String()), search: t.Optional(t.String()), limit: t.Optional(t.String()), offset: t.Optional(t.String()) }),
         detail: { ...detail, description: 'สรุปรายบุคคลในปีงบ (ครั้ง/วัน/เบี้ยเลี้ยง) — ADMIN/HRD' },
     })
-    .get('/requests/hrd-tasks', getHrdTasks, { detail: { ...detail, description: 'งานที่ต้องดำเนินการของ HRD: รอบันทึกผล ผอ. · รอยอดการเงิน · ใกล้เดินทางแต่ยังไม่อนุมัติ · งบที่เกินวงเงิน (ADMIN/HRD)' } })
+    .get('/requests/hrd-tasks', getHrdTasks, { detail: { ...detail, description: 'งานที่ต้องดำเนินการของ HRD: รอตรวจคำขอ · รอบันทึกผล ผอ. · รอยอดการเงิน · ใกล้เดินทางแต่ยังไม่อนุมัติ · งบที่เกินวงเงิน (ADMIN/HRD)' } })
     .get('/requests/approvals/count', getApprovalCount, { detail: { ...detail, description: 'จำนวนคำขอที่รอผู้ใช้อนุมัติ และเคยอยู่ในสายอนุมัติหรือไม่' } })
     .get('/requests', getRequests, {
         query: t.Object({
-            scope: t.Optional(t.String()), search: t.Optional(t.String()), status: t.Optional(t.String()), pending: t.Optional(t.String()), task: t.Optional(t.String()),
+            scope: t.Optional(t.String()), search: t.Optional(t.String()), status: t.Optional(t.String()), pending: t.Optional(t.String()), task: t.Optional(t.String()), stage: t.Optional(t.String()),
             limit: t.Optional(t.String()), offset: t.Optional(t.String()),
         }),
-        detail: { ...detail, description: 'scope=mine (ของฉัน/ร่วมเดินทาง) · scope=approve (รอฉันอนุมัติ/อยู่ในสาย · pending=1 เฉพาะที่รอ) · scope=all เฉพาะ ADMIN/HRD (task=director|actual|soon = งานที่ต้องดำเนินการ)' },
+        detail: { ...detail, description: 'scope=mine (ของฉัน/ร่วมเดินทาง) · scope=approve (รอฉันอนุมัติ/อยู่ในสาย · pending=1 เฉพาะที่รอ) · scope=all เฉพาะ ADMIN/HRD (task=review|director|actual|soon = งานที่ต้องดำเนินการ)' },
     })
     .get('/requests/:id', getRequestById, { ...idParam, detail: { ...detail, description: 'คำขอ + ผู้เดินทาง + ผู้ลงนามตามผัง (พิมพ์ PDF)' } })
     .post('/requests', createRequest, { body: anyBody, detail: { ...detail, description: 'ยื่นคำขอ · ยอดเงินเกินคงเหลือของงบไม่ได้' } })
@@ -107,6 +108,10 @@ export const hrdTravelRoutes = new Elysia({ prefix: '/api/v1/hrd/travel' })
     .post('/requests/:id/cancel', cancelRequest, { ...idParam, body: anyBody, detail: { ...detail, description: 'ยกเลิก = คืนยอดจองให้งบ' } })
     .post('/requests/:id/approve', approveRequest, { ...idParam, body: anyBody, detail: { ...detail, description: 'ผู้อนุมัติขั้นปัจจุบันอนุมัติพร้อมลายเซ็น (ต้องตั้งลายเซ็นก่อน) · ขั้นสุดท้าย → รอ ผอ. ลงนามบนกระดาษ' } })
     .post('/requests/:id/reject', rejectRequest, { ...idParam, body: anyBody, detail: { ...detail, description: 'ไม่อนุมัติ (ต้องมีเหตุผล) พร้อมลายเซ็น = จบคำขอ' } })
+    .post('/requests/:id/reschedule', rescheduleRequest, { ...idParam, body: anyBody, detail: { ...detail, description: 'HRD เลื่อนวันเดินทางของคำขอที่ ผอ. อนุมัติแล้ว (เก็บประวัติ)' } })
+    .post('/requests/:id/travelers', updateTravelers, { ...idParam, body: anyBody, detail: { ...detail, description: 'HRD แก้ผู้ร่วมเดินทางหลังหัวหน้าเริ่มอนุมัติ (เก็บประวัติ)' } })
+    .post('/requests/:id/chain', resyncChain, { ...idParam, body: anyBody, detail: { ...detail, description: 'HRD คิดสายอนุมัติใหม่ตามผังปัจจุบัน (dry_run = ดูตัวอย่าง)' } })
+    .post('/requests/:id/review', reviewRequest, { ...idParam, body: anyBody, detail: { ...detail, description: 'ADMIN/HRD ตรวจคำขอ (ขั้นแรก): passed ผ่านเข้าสายหัวหน้า · returned ส่งกลับให้ผู้ขอแก้ไข · rejected ไม่อนุมัติ' } })
     .post('/requests/:id/director', recordDirector, { ...idParam, body: anyBody, detail: { ...detail, description: 'ADMIN/HRD บันทึกผลคำสั่ง ผอ. ตามบันทึกข้อความที่ลงนามจริง' } })
     // ไฟล์แนบ: kind = source (หนังสือต้นเรื่อง) | plane (อนุมัติเดินทางโดยเครื่องบิน) | private_car (ขออนุมัติใช้รถยนต์ส่วนตัว)
     .post('/requests/:id/files', uploadRequestFile, {
@@ -116,6 +121,13 @@ export const hrdTravelRoutes = new Elysia({ prefix: '/api/v1/hrd/travel' })
     .get('/requests/:id/files/:fileId', getRequestFile, { params: t.Object({ id: t.Numeric(), fileId: t.Numeric() }), detail: { ...detail, description: 'เปิดไฟล์แนบ (สิทธิ์เดียวกับการดูคำขอ)' } })
     .post('/requests/:id/files/:fileId/delete', deleteRequestFile, { params: t.Object({ id: t.Numeric(), fileId: t.Numeric() }), detail })
     // รายงานผลการเดินทาง (เสนอผู้บริหารทราบ — ลงนามรับทราบบนกระดาษ)
+    // เคลียร์ค่าใช้จ่ายจริง (src/controllers/hrdTravelClaimController.ts)
+    .get('/claims', getClaims, { query: t.Object({ queue: t.Optional(t.String()), limit: t.Optional(t.String()) }), detail: { ...detail, description: 'คิวการเบิก — HRD: hrd/finance_returned/returned/overdue/finance/verified/closed · การเงิน: finance/verified/closed' } })
+    .get('/claims/request/:id', getClaim, { ...idParam, detail: { ...detail, description: 'ข้อมูลการเบิกของคำขอ (ผู้ขอ/ผู้ร่วมเดินทาง/HRD/การเงิน)' } })
+    .put('/claims/request/:id', saveClaim, { ...idParam, body: anyBody, detail: { ...detail, description: 'ผู้ขอบันทึกร่าง / ส่งเบิก (submit: true) — ระบบคิดเบี้ยเลี้ยง/เพดานเอง' } })
+    .post('/claims/:id/hrd', hrdReviewClaim, { ...idParam, body: anyBody, detail: { ...detail, description: 'HRD ตรวจ: pass (ปรับยอดรายรายการพร้อมเหตุผล → ส่งการเงิน) / return' } })
+    .post('/claims/:id/finance', financeReviewClaim, { ...idParam, body: anyBody, detail: { ...detail, description: 'การเงิน: verify (ตัดงบตามยอดจริง) / return (ตีกลับ HRD) — ไม่แก้ยอด' } })
+    .post('/claims/:id/close', closeClaim, { ...idParam, body: anyBody, detail: { ...detail, description: 'การเงินปิดเรื่องหลังคืนเงิน/จ่ายเงินแล้ว' } })
     .get('/requests/:id/report', getReport, { ...idParam, detail: { ...detail, description: 'รายงานผลการเดินทางของคำขอ + ข้อมูลคำขอสำหรับพิมพ์บันทึกข้อความ' } })
     .put('/requests/:id/report', saveReport, { ...idParam, body: anyBody, detail: { ...detail, description: 'บันทึกร่าง/ส่งรายงาน (content = tiptap JSON ที่กรองแล้ว) — ผู้ขอ หรือ ADMIN/HRD' } })
     .get('/reports', getReports, {
@@ -133,6 +145,10 @@ export const hrdTravelRoutes = new Elysia({ prefix: '/api/v1/hrd/travel' })
             profession: t.Optional(t.String()),
         }),
         detail: { ...detail, description: 'ภาพรวมงบ + เจาะลึกตามตัวกรอง: รายงบ รายเดือน กลุ่มงาน กลุ่มสาขาวิชาชีพ รายบุคคล รายการคำขอ (ยอดรายคน = เบี้ยเลี้ยงของคนนั้น + ค่าใช้จ่ายร่วมหารเท่ากัน)' },
+    })
+    .get('/budgets/compare', getBudgetCompare, {
+        query: t.Object({ years: t.Optional(t.String()), to_year: t.Optional(t.String()), budget_type: t.Optional(t.String()), mission_id: t.Optional(t.String()), major_id: t.Optional(t.String()) }),
+        detail: { ...detail, description: 'เปรียบเทียบย้อนหลังหลายปีงบ (ค่าเริ่มต้น 5 ปี สูงสุด 10): จำนวนคำขอ คน-ครั้ง วัน ประมาณการ/ยอดยืนยัน แยกหมวด + รายกลุ่มงาน ณ วันยื่น' },
     })
     .post('/budgets', createBudget, { body: anyBody, detail })
     .put('/budgets/:id', updateBudget, { ...idParam, body: anyBody, detail: { ...detail, description: 'ลดวงเงินต่ำกว่ายอดที่ใช้ไม่ได้' } })

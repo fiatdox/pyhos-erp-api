@@ -21,7 +21,7 @@ import { canManage } from './hrdTravelController';
 import { lodgingCols, lodgingJoin } from './hrdTravelLodgingController';
 import { signModeOf } from './hrdTravelSignModeController';
 import { signatureOf } from './userSignatureController';
-import { parseChain, resolveApprovalChain, resolveDirectorStep, type ChainStep } from '../services/leaveChain';
+import { approvalCapacitiesOf, parseChain, resolveApprovalChain, resolveDirectorStep, type ApprovalCapacity, type ChainStep } from '../services/leaveChain';
 
 const fail = (set: any, status: number, message: string, field?: string) => { set.status = status; return { success: false, message, ...(field ? { field } : {}) }; };
 class Bad extends Error { constructor(public status: number, message: string, public field?: string) { super(message); } }
@@ -79,6 +79,14 @@ const text = (v: unknown, field: string, label: string, max: number, required: b
     return t || null;
 };
 
+/** เหมือน text แต่คงการขึ้นบรรทัดใหม่ (รายการที่ต้องแก้ไขทีละบรรทัด) · ไม่เกิน 30 บรรทัด */
+const multiline = (v: unknown, field: string, label: string, max: number, required: boolean) => {
+    const t = v == null ? '' : String(v).split(/\r\n|\r|\n/).map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 30).join('\n');
+    if (required && !t) throw new Bad(400, `กรุณาระบุ${label}`, field);
+    if (t.length > max) throw new Bad(400, `${label}ไม่เกิน ${max} ตัวอักษร`, field);
+    return t || null;
+};
+
 // ── ประวัติการไปราชการ (งาน HRD ใช้ประกอบการพิจารณาอนุญาต) ──
 /** ปีงบประมาณ พ.ศ. ของเวลาหนึ่ง (ต.ค. ขึ้นปีงบใหม่ · เวลาไทย) */
 export const fiscalYearOf = (ms: number) => {
@@ -93,7 +101,7 @@ const tripCounts = async (ids: number[], fy: number, exceptId: number | null = n
     const { from, to } = fyRange(fy);
     const rows = await core_kon`
         SELECT t.user_id, count(*)::int AS n FROM hrd_travel_request_travelers t JOIN hrd_travel_requests r ON r.id = t.request_id
-        WHERE t.user_id IN ${core_kon(ids)} AND r.status = 'submitted' AND r.start_at >= ${from} AND r.start_at < ${to} AND r.id <> ${exceptId ?? 0}
+        WHERE t.user_id IN ${core_kon(ids)} AND NOT t.absent AND r.status = 'submitted' AND r.start_at >= ${from} AND r.start_at < ${to} AND r.id <> ${exceptId ?? 0}
         GROUP BY t.user_id`;
     return new Map(rows.map((r: any) => [Number(r.user_id), r.n]));
 };
@@ -348,11 +356,17 @@ const REQ_COLS = (s: any) => s`r.id, r.memo_no, r.requester_id, r.requester_name
     r.transport_amount::float8 AS transport_amount, r.taxi_go_amount::float8 AS taxi_go_amount, r.taxi_back_amount::float8 AS taxi_back_amount,
     r.home_station_amount::float8 AS home_station_amount, r.home_station_rate_id, r.home_station_district, r.home_station_rate::float8 AS home_station_rate,
     r.home_station_trips, r.home_station_from, r.home_station_to, r.cost_mode, r.trip_dates::text[] AS trip_dates, r.vehicle_request,
-    (SELECT x.status FROM hrd_travel_reports x WHERE x.request_id = r.id) AS report_status, r.registration_amount::float8 AS registration_amount, r.fuel_amount::float8 AS fuel_amount,
+    (SELECT x.status FROM hrd_travel_reports x WHERE x.request_id = r.id) AS report_status,
+    (SELECT cl.status FROM hrd_travel_claims cl WHERE cl.request_id = r.id) AS claim_status, r.registration_amount::float8 AS registration_amount, r.fuel_amount::float8 AS fuel_amount,
     r.toll_amount::float8 AS toll_amount, r.other_amount::float8 AS other_amount, r.other_desc, r.total_amount::float8 AS total_amount,
     r.budget_id, r.budget_type, r.budget_name, r.budget_type_name, r.budget_item_label, r.actual_amount::float8 AS actual_amount, r.actual_note, r.actual_at,
     r.status, r.cancel_reason, r.cancelled_at, r.created_at, r.updated_at,
-    r.sign_mode, r.approval_stage, r.approval_chain, r.current_step, r.reject_reason, r.director_result, r.director_note, r.director_at`;
+    r.sign_mode, r.approval_capacity, r.capacity_label, r.approval_stage, r.approval_chain, r.current_step, r.reject_reason, r.director_result, r.director_note, r.director_at,
+    (SELECT v.note FROM hrd_travel_request_reviews v WHERE v.request_id = r.id AND r.approval_stage = 'returned' ORDER BY v.acted_at DESC, v.id DESC LIMIT 1) AS return_note,
+    EXISTS (SELECT 1 FROM hrd_travel_request_reviews v WHERE v.request_id = r.id) AS hrd_reviewed,
+    (SELECT TRIM(CONCAT(du.pname, du.fname, ' ', du.lname)) FROM users du WHERE du.id = r.director_by) AS director_by_name`;
+/** ผู้ใช้เป็นผู้เดินทางในคำขอ (alias r) — HRD ที่ร่วมเดินทางตรวจคำขอ/การเบิกของคณะตัวเองไม่ได้ */
+const IS_TRAVELER = (s: any, uid: number) => s`EXISTS (SELECT 1 FROM hrd_travel_request_travelers it WHERE it.request_id = r.id AND it.user_id = ${uid}) AS is_traveler`;
 
 /** ตำแหน่งผู้ขอ (alias r) — ข้าราชการต่อด้วยระดับเสมอ: คำขอที่บันทึกก่อนมีกติกานี้ยังไม่มีระดับต่อท้าย จึงเติมระดับปัจจุบันให้ตอนแสดง */
 export const REQUESTER_POS = (s: any) => s`COALESCE((
@@ -372,6 +386,12 @@ export const travelChainOf = async (uid: number): Promise<ChainStep[]> => {
         .filter(s => TRAVEL_LEVELS.includes(s.level) && !s.external && Number(s.approver_id) !== uid)
         .map((s, i) => ({ ...s, step: i + 1 }));
 };
+/** ฐานะที่เลือกยื่นได้ — มีให้เลือกเมื่อ ≥ ๒ ฐานะ (ตัวแรก = ค่าตั้งต้น ตรงกับสายตามสังกัด) · ไม่ใช่หัวหน้าหลายหน่วย = [] */
+const capacitiesOf = async (uid: number): Promise<ApprovalCapacity[]> => {
+    const caps = await approvalCapacitiesOf(uid).catch(() => []);
+    return caps.length >= 2 ? caps.map(c => ({ ...c, steps: c.steps.filter(s => TRAVEL_LEVELS.includes(s.level) && Number(s.approver_id) !== uid) })) : [];
+};
+const chainOut = (chain: ChainStep[]) => chain.map(s => ({ step: s.step, level_name: s.level_name, approver_name: s.approver_name, is_acting: !!s.is_acting, unit_name: s.unit_name }));
 const currentStepOf = (r: any): ChainStep | null =>
     r.status === 'submitted' && r.approval_stage === 'chain' ? parseChain(r.approval_chain).find(s => Number(s.step) === Number(r.current_step)) ?? null : null;
 const NO_SIGNATURE = 'ยังไม่ได้ตั้งค่าลายเซ็น — ตั้งได้ที่ ตั้งค่าบัญชี > ลายเซ็น';
@@ -402,17 +422,28 @@ const loadTravelers = (ids: number[]) => ids.length === 0 ? Promise.resolve([]) 
            lodging_class_id, lodging_class_name, lodging_room, lodging_rate, lodging_cap::float8 AS lodging_cap, flight_class
     FROM hrd_travel_request_travelers t WHERE request_id IN ${core_kon(ids)} ORDER BY request_id, sort_order, id`;
 
-// แก้ได้ก่อนมีผู้อนุมัติกด (current_step = 1) · ยกเลิกได้จนกว่าการเงินยืนยันยอด
+/**
+ * ขั้นที่ผู้ขอยังแก้คำขอได้ — รอ HRD ตรวจ / ส่งกลับแก้ไข / อยู่ในสายแต่ยังไม่มีหัวหน้ากด (แก้แล้วกลับไปรอ HRD ตรวจใหม่)
+ * รอ ผอ. ลงนาม (ไม่มีขั้นในระบบ เช่น หัวหน้าภารกิจ หรือเดินเอกสาร) แก้ไม่ได้: เอกสารเสนอ ผอ. แล้ว — ยกเลิกแล้วยื่นใหม่
+ */
+const editableStage = (r: { approval_stage: string; current_step: unknown }) =>
+    r.approval_stage === 'hrd' || r.approval_stage === 'returned' || (r.approval_stage === 'chain' && Number(r.current_step) === 1);
+// แก้ได้ตาม editableStage · ยกเลิกได้จนกว่าการเงินยืนยันยอด
 // บันทึกยอดยืนยัน = ADMIN/HRD หลัง ผอ. อนุมัติ · อนุมัติ = ผู้อนุมัติของขั้นปัจจุบัน · บันทึกผล ผอ. = ADMIN/HRD
 const permsOf = (r: any, uid: number, manager: boolean) => {
     const open = r.status === 'submitted' && r.actual_amount == null;
     const step = currentStepOf(r);
     return {
-        can_edit: open && r.requester_id === uid && Number(r.current_step) === 1 && r.approval_stage !== 'approved',
+        can_edit: open && r.requester_id === uid && editableStage(r),
         can_cancel: open && (r.requester_id === uid || manager),
         can_record_actual: manager && r.status === 'submitted' && r.approval_stage === 'approved' && r.cost_mode !== 'no_claim',
         can_approve: !!step && Number(step.approver_id) === uid && r.requester_id !== uid,
         can_record_director: manager && r.status === 'submitted' && r.approval_stage === 'director',
+        // HRD ตรวจคำขอ (ขั้นแรก) — ไม่ตรวจคำขอของตัวเอง
+        can_hrd_review: manager && r.status === 'submitted' && r.approval_stage === 'hrd' && r.requester_id !== uid && !r.is_traveler,
+        // เบิกค่าใช้จ่ายจริง (ผู้ขอ เบิกแทนทั้งคณะ) — ผอ. อนุมัติแล้ว ยังไม่ส่งเบิก หรือ HRD ส่งกลับ
+        can_claim: (r.requester_id === uid || (manager && Number(r.traveler_count ?? 0) > 1)) && r.status === 'submitted' && r.approval_stage === 'approved' && r.cost_mode !== 'no_claim'
+            && (r.claim_status == null || r.claim_status === 'draft' || r.claim_status === 'returned'),
         waiting_for: step ? { level_name: step.level_name, approver_name: step.approver_name, is_acting: !!step.is_acting } : null,
     };
 };
@@ -477,18 +508,20 @@ export const getRequestMeta = async ({ user, set }: any) => {
         ]);
         if (!me) return fail(set, 404, 'ไม่พบข้อมูลผู้ใช้');
         const fy = fiscalYearOf(Date.now());
-        const [trips, hasSig, chain, sign] = await Promise.all([
+        const [trips, hasSig, chain, sign, caps] = await Promise.all([
             tripCounts([uid], fy).then(m => m.get(uid) ?? 0),
             signatureOf(core_kon, uid).then(Boolean),
             travelChainOf(uid),
             signModeOf(core_kon, uid),
+            capacitiesOf(uid),
         ]);
         // สายอนุมัติที่คำขอใหม่จะเดิน (แสดงในแบบฟอร์มก่อนยื่น) + โหมดการลงนามตามกลุ่มของผู้ขอ
-        const chainOut = chain.map(s => ({ step: s.step, level_name: s.level_name, approver_name: s.approver_name, is_acting: !!s.is_acting, unit_name: s.unit_name }));
+        // หัวหน้าหลายหน่วย: เลือกฐานะ (capacities) — สายของแต่ละฐานะ · ตัวแรกคือค่าตั้งต้น
         return {
             success: true,
             data: {
-                me: { ...personOut(me), fy_trips: trips, has_signature: hasSig }, sign_mode: sign.mode, approval_chain: chainOut,
+                me: { ...personOut(me), fy_trips: trips, has_signature: hasSig }, sign_mode: sign.mode, approval_chain: chainOut(caps[0]?.steps ?? chain),
+                capacities: caps.map(c => ({ key: c.key, type: c.type, label: c.label, unit_name: c.unit_name, is_acting: c.is_acting, approval_chain: chainOut(c.steps) })),
                 fiscal_year: fy, vehicles, routes, local_rates: localRates, budgets, can_manage: manager,
             },
         };
@@ -522,18 +555,20 @@ export const searchTravelPeople = async ({ query, set }: any) => {
 };
 
 // ── งานที่ HRD ต้องดำเนินการ (alias r) — ใช้ทั้งการ์ดหน้าแรกและตัวกรอง ?task= ของรายการคำขอ ──
-// director = รอบันทึกผลคำสั่ง ผอ. (ลงนามในระบบครบสาย หรือเดินเอกสาร) · actual = ผอ. อนุมัติแล้ว รอบันทึกยอดที่การเงินยืนยัน
+// review = รอ HRD ตรวจคำขอ (ขั้นแรก) · director = รอบันทึกผลคำสั่ง ผอ. (ลงนามในระบบครบสาย หรือเดินเอกสาร) · actual = ผอ. อนุมัติแล้ว รอบันทึกยอดที่การเงินยืนยัน
 // soon = ใกล้ถึง/เลยวันเดินทาง (ภายใน SOON_DAYS วัน) แต่ ผอ. ยังไม่อนุมัติ (ค้างในสาย หรือรอ ผอ. ลงนาม) — ต้องเร่ง ไม่งั้นเดินทางไม่ได้
 // ทั้งสามใช้ index idx_hrd_travel_requests_open
 const SOON_DAYS = 7;
-const TASK_KEYS = ['director', 'actual', 'soon'] as const;
+const TASK_KEYS = ['review', 'director', 'actual', 'soon'] as const;
 type TaskKey = (typeof TASK_KEYS)[number];
-const taskWhere = (s: any, t: TaskKey) => t === 'director'
+const taskWhere = (s: any, t: TaskKey) => t === 'review'
+    ? s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage = 'hrd')`
+    : t === 'director'
     ? s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage = 'director')`
     : t === 'actual'
         // ไม่เบิกค่าใช้จ่าย ไม่มียอดให้การเงินยืนยัน
         ? s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage = 'approved' AND r.cost_mode <> 'no_claim')`
-        : s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage IN ('chain', 'director') AND r.start_at < now() + make_interval(days => ${SOON_DAYS}))`;
+        : s`(r.status = 'submitted' AND r.actual_amount IS NULL AND r.approval_stage IN ('hrd', 'returned', 'chain', 'director') AND r.start_at < now() + make_interval(days => ${SOON_DAYS}))`;
 /** งานค้างที่ต้องทำก่อนขึ้นก่อน — ผล ผอ./ใกล้เดินทาง เรียงตามวันออกเดินทาง · ยอดการเงิน เรียงตามวันกลับ */
 const taskOrder = (s: any, t: TaskKey) => t === 'actual' ? s`r.end_at ASC, r.id ASC` : s`r.start_at ASC, r.id ASC`;
 
@@ -543,7 +578,7 @@ type ApproveBucket = (typeof APPROVE_BUCKETS)[number];
 /** mine = รอท่าน · inprogress = ยังอยู่ในสาย รอขั้นอื่น · passed = ผ่านสายแล้ว (รอ/ได้ผล ผอ.) · rejected · cancelled (alias r) */
 const bucketWhere = (s: any, b: ApproveBucket, uid: number) =>
     b === 'mine' ? pendingFor(s, uid)
-        : b === 'inprogress' ? s`(r.status = 'submitted' AND r.approval_stage = 'chain' AND NOT ${pendingFor(s, uid)})`
+        : b === 'inprogress' ? s`(r.status = 'submitted' AND r.approval_stage IN ('hrd', 'returned', 'chain') AND NOT ${pendingFor(s, uid)})`
             : b === 'passed' ? s`(r.status = 'submitted' AND r.approval_stage IN ('director', 'approved'))`
                 : b === 'rejected' ? s`(r.status = 'rejected')` : s`(r.status = 'cancelled')`;
 const approveBuckets = async (uid: number) => {
@@ -556,6 +591,12 @@ const approveBuckets = async (uid: number) => {
         FROM hrd_travel_requests r WHERE ${involvedIn(core_kon, uid)}`;
     return c;
 };
+
+// แท็บกรองตามขั้นของหน้ารายการคำขอ (alias r)
+const STAGE_KEYS = ['hrd', 'returned', 'chain', 'director', 'approved', 'rejected', 'cancelled'] as const;
+type StageKey = (typeof STAGE_KEYS)[number];
+const stageWhere = (s: any, k: StageKey) => k === 'rejected' ? s`(r.status = 'rejected')` : k === 'cancelled' ? s`(r.status = 'cancelled')`
+    : s`(r.status = 'submitted' AND r.approval_stage = ${k})`;
 
 export const getRequests = async ({ query, user, set }: any) => {
     try {
@@ -573,17 +614,20 @@ export const getRequests = async ({ query, user, set }: any) => {
         const limit = Math.min(Math.max(Number(query?.limit) || 50, 1), 200);
         const offset = Math.max(Number(query?.offset) || 0, 0);
         const like = '%' + search + '%';
+        const stage = (STAGE_KEYS as readonly string[]).includes(query?.stage) ? query.stage as StageKey : null;
+        const searchWhere = search ? core_kon`AND (r.subject ILIKE ${like} OR r.purpose ILIKE ${like} OR r.location ILIKE ${like} OR r.requester_name ILIKE ${like} OR r.memo_no ILIKE ${like}
+                OR EXISTS (SELECT 1 FROM hrd_travel_request_travelers st WHERE st.request_id = r.id AND st.name ILIKE ${like}))` : core_kon``;
         const where = core_kon`TRUE
             ${scope === 'mine' ? core_kon`AND ${mineIn(core_kon, uid)}` : core_kon``}
             ${scope === 'approve' ? (pendingOnly ? core_kon`AND ${pendingFor(core_kon, uid)}` : core_kon`AND ${involvedIn(core_kon, uid)}`) : core_kon``}
-            ${search ? core_kon`AND (r.subject ILIKE ${like} OR r.purpose ILIKE ${like} OR r.location ILIKE ${like} OR r.requester_name ILIKE ${like} OR r.memo_no ILIKE ${like}
-                OR EXISTS (SELECT 1 FROM hrd_travel_request_travelers st WHERE st.request_id = r.id AND st.name ILIKE ${like}))` : core_kon``}
+            ${searchWhere}
             ${status ? core_kon`AND r.status = ${status}` : core_kon``}
+            ${stage ? core_kon`AND ${stageWhere(core_kon, stage)}` : core_kon``}
             ${task ? core_kon`AND ${taskWhere(core_kon, task)}` : core_kon``}
             ${bucket ? core_kon`AND ${bucketWhere(core_kon, bucket, uid)}` : core_kon``}`;
         const [rows, [{ total }]] = await Promise.all([
             // แท็บรออนุมัติ: ที่รอฉันขึ้นก่อน
-            core_kon`SELECT ${REQ_COLS(core_kon)}, (SELECT count(*)::int FROM hrd_travel_request_travelers t WHERE t.request_id = r.id) AS traveler_count,
+            core_kon`SELECT ${REQ_COLS(core_kon)}, ${IS_TRAVELER(core_kon, uid)}, (SELECT count(*)::int FROM hrd_travel_request_travelers t WHERE t.request_id = r.id) AS traveler_count,
                             -- ชื่อผู้เดินทางทุกคน (ผู้ขอก่อน) — แสดงในรายการและค้นหาได้
                             (SELECT COALESCE(json_agg(t.name ORDER BY t.sort_order, t.id), '[]'::json) FROM hrd_travel_request_travelers t WHERE t.request_id = r.id) AS traveler_names
                      FROM hrd_travel_requests r WHERE ${where}
@@ -591,16 +635,43 @@ export const getRequests = async ({ query, user, set }: any) => {
             core_kon`SELECT count(*)::int AS total FROM hrd_travel_requests r WHERE ${where}`,
         ]);
         const scopeWhere = scope === 'mine' ? mineIn(core_kon, uid) : scope === 'approve' ? involvedIn(core_kon, uid) : core_kon`TRUE`;
-        const [manager, [{ pending }], [{ soon, soon_overdue }]] = await Promise.all([
+        const [manager, [{ pending }], [{ soon, soon_overdue }], [stageCounts]] = await Promise.all([
             canManage(uid),
             core_kon`SELECT count(*)::int AS pending FROM hrd_travel_requests r WHERE ${pendingFor(core_kon, uid)}`,
             // ใกล้เดินทางแต่ ผอ. ยังไม่อนุมัติ — ในขอบเขตเดียวกับแท็บ (ไม่ขึ้นกับคำค้น/ตัวกรอง)
             core_kon`SELECT count(*)::int AS soon, count(*) FILTER (WHERE r.start_at < now())::int AS soon_overdue
                      FROM hrd_travel_requests r WHERE ${scopeWhere} AND ${taskWhere(core_kon, 'soon')}`,
+            // จำนวนแต่ละแท็บขั้น — ในขอบเขตเดียวกับแท็บ + คำค้น (ไม่ขึ้นกับตัวกรองอื่น)
+            core_kon`SELECT count(*)::int AS "all",
+                       count(*) FILTER (WHERE ${stageWhere(core_kon, 'hrd')})::int AS hrd,
+                       count(*) FILTER (WHERE ${stageWhere(core_kon, 'returned')})::int AS returned,
+                       count(*) FILTER (WHERE ${stageWhere(core_kon, 'chain')})::int AS chain,
+                       count(*) FILTER (WHERE ${stageWhere(core_kon, 'director')})::int AS director,
+                       count(*) FILTER (WHERE ${stageWhere(core_kon, 'approved')})::int AS approved,
+                       count(*) FILTER (WHERE ${stageWhere(core_kon, 'rejected')})::int AS rejected,
+                       count(*) FILTER (WHERE ${stageWhere(core_kon, 'cancelled')})::int AS cancelled
+                     FROM hrd_travel_requests r WHERE ${scopeWhere} ${searchWhere}`,
         ]);
+        // ของฉัน: คำขอที่ ผอ. อนุมัติแล้ว (HRD อัปเดตสถานะ) และยังไม่ถึงวันกลับ — แจ้งผู้เดินทางว่าเดินทางได้
+        const cleared = scope === 'mine' ? await core_kon`
+            SELECT r.id, r.subject, r.location, r.start_at, r.end_at, r.director_at, r.director_note, r.cost_mode, r.trip_dates::text[] AS trip_dates
+            FROM hrd_travel_requests r
+            WHERE ${mineIn(core_kon, uid)} AND r.status = 'submitted' AND r.approval_stage = 'approved' AND r.end_at >= now()
+            ORDER BY r.start_at LIMIT 10` : undefined;
+        // ของฉัน: แจ้งเตรียมเอกสารเบิกค่าใช้จ่ายจริง — ตั้งแต่ 08:00 วันถัดจากวันกลับ (เวลาไทย) จนกว่าจะส่งเบิก (ผู้ขอเท่านั้น — เบิกแทนทั้งคณะ)
+        const claimDue = scope === 'mine' ? await core_kon`
+            SELECT r.id, r.subject, r.location, r.start_at, r.end_at, r.vehicle_mode, r.lodging_mode, r.registration_amount::float8 AS registration_amount,
+                   (r.transport_amount + r.taxi_go_amount + r.taxi_back_amount + r.home_station_amount)::float8 AS transport_amount,
+                   (SELECT x.status FROM hrd_travel_reports x WHERE x.request_id = r.id) AS report_status,
+                   (SELECT cl.status FROM hrd_travel_claims cl WHERE cl.request_id = r.id) AS claim_status
+            FROM hrd_travel_requests r LEFT JOIN hrd_travel_claims c ON c.request_id = r.id
+            WHERE r.requester_id = ${uid} AND r.status = 'submitted' AND r.approval_stage = 'approved' AND r.cost_mode <> 'no_claim' AND r.actual_amount IS NULL
+              AND (c.id IS NULL OR c.status IN ('draft', 'returned'))
+              AND ((date_trunc('day', r.end_at AT TIME ZONE 'Asia/Bangkok') + interval '1 day 8 hours') AT TIME ZONE 'Asia/Bangkok') <= now()
+            ORDER BY r.end_at LIMIT 10` : undefined;
         // จำนวนแต่ละกลุ่มของหน้าอนุมัติ — ไม่ขึ้นกับคำค้น/ตัวกรอง
         return { success: true, data: { rows: rows.map((r: any) => ({ ...r, ...permsOf(r, uid, manager) })), total, limit, offset, can_manage: manager, pending_approvals: pending,
-            soon: { count: soon, overdue: soon_overdue, days: SOON_DAYS }, ...(scope === 'approve' ? { buckets: await approveBuckets(uid) } : {}) } };
+            soon: { count: soon, overdue: soon_overdue, days: SOON_DAYS }, ...(cleared ? { cleared } : {}), ...(claimDue ? { claim_due: claimDue } : {}), stage_counts: stageCounts, ...(scope === 'approve' ? { buckets: await approveBuckets(uid) } : {}) } };
     } catch (e: any) {
         console.error('[hrdRequest] list:', e?.message);
         return fail(set, 500, 'โหลดรายการคำขอไม่สำเร็จ');
@@ -610,15 +681,17 @@ export const getRequests = async ({ query, user, set }: any) => {
 export const getRequestById = async ({ params, user, set }: any) => {
     try {
         const uid = Number(user?.id);
-        const [r] = await core_kon`SELECT ${REQ_COLS(core_kon)} FROM hrd_travel_requests r WHERE r.id = ${Number(params.id)}`;
+        const [r] = await core_kon`SELECT ${REQ_COLS(core_kon)}, ${IS_TRAVELER(core_kon, uid)} FROM hrd_travel_requests r WHERE r.id = ${Number(params.id)}`;
         if (!r) return fail(set, 404, 'ไม่พบคำขอ');
         if (!(await canViewRequest(uid, r))) return fail(set, 403, 'ไม่มีสิทธิ์ดูคำขอนี้');
-        const [travelers, approvals, manager, [sig], files] = await Promise.all([
+        const [travelers, approvals, manager, [sig], files, reviews, changes] = await Promise.all([
             loadTravelers([r.id]), loadApprovals(r.id), canManage(uid),
             core_kon`SELECT requester_signature FROM hrd_travel_requests WHERE id = ${r.id}`,
             // ไฟล์แนบ (หนังสือต้นเรื่อง / อนุมัติเครื่องบิน / อนุมัติรถยนต์ส่วนตัว) — src/controllers/hrdTravelFileController.ts
             core_kon`SELECT f.id, f.kind, f.original_name, f.mime, f.size_bytes, f.uploaded_at, CONCAT(u.pname, u.fname, ' ', u.lname) AS uploaded_by_name
                      FROM hrd_travel_request_files f LEFT JOIN users u ON u.id = f.uploaded_by WHERE f.request_id = ${r.id} ORDER BY f.kind, f.id`,
+            core_kon`SELECT reviewer_name, action, note, acted_at FROM hrd_travel_request_reviews WHERE request_id = ${r.id} ORDER BY acted_at, id`,
+            core_kon`SELECT kind, before, after, note, changed_by_name, changed_at FROM hrd_travel_request_changes WHERE request_id = ${r.id} ORDER BY changed_at, id`,
         ]);
         const signers = await signersOf(r, approvals);
         // ประวัติในปีงบของวันออกเดินทาง: ไปแล้วก่อนครั้งนี้ (prior_trips) และทั้งปีไม่นับครั้งนี้ (fy_trips)
@@ -628,7 +701,7 @@ export const getRequestById = async ({ params, user, set }: any) => {
         const [fyTrips, prior] = await Promise.all([
             tripCounts(ids, fy, r.id),
             ids.length ? core_kon`SELECT t.user_id, count(*)::int AS n FROM hrd_travel_request_travelers t JOIN hrd_travel_requests x ON x.id = t.request_id
-                WHERE t.user_id IN ${core_kon(ids)} AND x.status = 'submitted' AND x.id <> ${r.id} AND x.start_at >= ${from} AND x.start_at < ${r.start_at}
+                WHERE t.user_id IN ${core_kon(ids)} AND NOT t.absent AND x.status = 'submitted' AND x.id <> ${r.id} AND x.start_at >= ${from} AND x.start_at < ${r.start_at}
                 GROUP BY t.user_id` : Promise.resolve([]),
         ]);
         const priorMap = new Map(prior.map((p: any) => [Number(p.user_id), p.n]));
@@ -636,14 +709,14 @@ export const getRequestById = async ({ params, user, set }: any) => {
         return {
             success: true,
             data: {
-                ...r, fiscal_year: fy, travelers: withTrips, signers, requester_signature: sig?.requester_signature ?? null, files,
+                ...r, fiscal_year: fy, travelers: withTrips, signers, requester_signature: sig?.requester_signature ?? null, files, reviews, changes,
                 // ไฟล์ที่ต้องแนบแต่ยังไม่มี: หนังสือต้นเรื่องทุกคำขอ · เครื่องบิน → อนุมัติเดินทางโดยเครื่องบิน · รถส่วนตัว → อนุมัติใช้รถยนต์ส่วนตัว
                 // ไม่เบิกค่าใช้จ่าย ไม่บังคับหนังสือต้นเรื่อง · ขออนุมัติใช้รถราชการ → หนังสือขออนุมัติใช้รถ
                 missing_files: [...(r.cost_mode === 'no_claim' ? [] : ['source']), ...(r.vehicle_mode === 'plane' ? ['plane'] : []), ...(r.vehicle_mode === 'private' ? ['private_car'] : []),
                     ...(r.vehicle_mode === 'gov_car' && r.vehicle_request ? ['vehicle_use'] : [])]
                     .filter(k => !files.some((f: any) => f.kind === k)),
                 approvals: approvals.map((a: any) => ({ ...a, signature: undefined })),   // ภาพลายเซ็นอยู่ใน signers แล้ว
-                ...permsOf(r, uid, manager),
+                ...permsOf({ ...r, traveler_count: travelers.length }, uid, manager),
             },
         };
     } catch (e: any) {
@@ -653,24 +726,47 @@ export const getRequestById = async ({ params, user, set }: any) => {
 };
 
 /**
- * เริ่มสายอนุมัติตามโหมดการลงนามของกลุ่มผู้ขอ
- *   esign: ลายเซ็นผู้ขอ (ต้องตั้งก่อน) · ไม่มีขั้นในระบบ (เช่น ผู้ขอเป็นหัวหน้ากลุ่มภารกิจ) = เสนอ ผอ. ทันที
- *   paper: ไม่ใช้ลายเซ็นในระบบ ขั้น director ทันที (HRD บันทึกผลตามเอกสาร) · เก็บสายไว้พิมพ์ชื่อผู้ลงนามในบันทึกข้อความ
+ * เริ่มสายอนุมัติตามโหมดการลงนามของกลุ่มผู้ขอ — ทุกคำขอ (ยื่นใหม่/แก้ไข) เริ่มที่ HRD ตรวจ (approval_stage hrd)
+ *   esign: ลายเซ็นผู้ขอ (ต้องตั้งก่อน) · HRD ผ่านแล้วเข้าสายหัวหน้า (ไม่มีขั้นในระบบ เช่น ผู้ขอเป็นหัวหน้ากลุ่มภารกิจ = เสนอ ผอ. ทันที)
+ *   paper: ไม่ใช้ลายเซ็นในระบบ · HRD ผ่านแล้วขั้น director ทันที (HRD บันทึกผลตามเอกสาร) · เก็บสายไว้พิมพ์ชื่อผู้ลงนามในบันทึกข้อความ
  */
-const approvalStart = async (sql: any, uid: number) => {
-    const [{ mode }, chain] = await Promise.all([signModeOf(sql, uid), travelChainOf(uid)]);
-    if (mode === 'paper') return { sign_mode: 'paper', requester_signature: null, approval_chain: sql.json(chain), current_step: 1, approval_stage: 'director' };
+/** ตัดขั้นที่ผู้อนุมัติเป็นผู้เดินทางในคำขอ (หัวหน้าร่วมเดินทาง = ข้ามขึ้นขั้นบน) แล้วเรียงลำดับใหม่ */
+const skipTravelers = (chain: ChainStep[], travelerIds: number[]) =>
+    chain.filter(s => !travelerIds.includes(Number(s.approver_id))).map((s, i) => ({ ...s, step: i + 1 }));
+/** สายในระบบของผู้ขอ ตามฐานะที่เลือก — คืน null เมื่อฐานะไม่ถูกต้อง */
+const chainFor = async (uid: number, capacityKey: unknown) => {
+    const caps = await capacitiesOf(uid);
+    if (!caps.length) return { cap: null, chain: await travelChainOf(uid) };
+    const key = capacityKey == null || capacityKey === '' ? caps[0].key : String(capacityKey);
+    const cap = caps.find(c => c.key === key) ?? null;
+    return cap ? { cap, chain: cap.steps } : null;
+};
+const approvalStart = async (sql: any, uid: number, capacityKey?: unknown, travelerIds: number[] = []) => {
+    const [{ mode }, caps] = await Promise.all([signModeOf(sql, uid), capacitiesOf(uid)]);
+    // ขออนุมัติในฐานะ — หัวหน้าหลายหน่วยเลือกฐานะ (ไม่ส่งมา = ฐานะแรก) · ฐานะที่ไม่ใช่ของตัวเอง/พ้นแล้ว = 400
+    let cap: ApprovalCapacity | null = null;
+    if (caps.length) {
+        const key = capacityKey == null || capacityKey === '' ? caps[0].key : String(capacityKey);
+        cap = caps.find(c => c.key === key) ?? null;
+        if (!cap) throw new Bad(400, 'ฐานะที่เลือกไม่ถูกต้อง หรือไม่ได้เป็นหัวหน้าหน่วยนี้แล้ว — เลือกใหม่', 'approval_capacity');
+    }
+    const chain = skipTravelers(cap ? cap.steps : await travelChainOf(uid), travelerIds);
+    const capCols = cap ? { approval_capacity: cap.key, capacity_label: cap.label, requester_unit: cap.unit_name } : { approval_capacity: null, capacity_label: null };
+    if (mode === 'paper') return { sign_mode: 'paper', requester_signature: null, approval_chain: sql.json(chain), current_step: 1, approval_stage: 'hrd', ...capCols };
     const signature = await signatureOf(sql, uid);
     if (!signature) throw new Bad(400, NO_SIGNATURE, 'signature');
-    return { sign_mode: 'esign', requester_signature: signature, approval_chain: sql.json(chain), current_step: 1, approval_stage: chain.length ? 'chain' : 'director' };
+    return { sign_mode: 'esign', requester_signature: signature, approval_chain: sql.json(chain), current_step: 1, approval_stage: 'hrd', ...capCols };
 };
+/** ขั้นถัดจาก HRD ตรวจผ่าน */
+const afterHrd = (r: { sign_mode: string; approval_chain: unknown }) =>
+    r.sign_mode === 'esign' && parseChain(r.approval_chain).length ? 'chain' : 'director';
 
 export const createRequest = async ({ body, user, set }: any) => {
     try {
         const uid = Number(user?.id);
         const id = await core_kon.begin(async (sql: any) => {
             const { row, travelers } = await computeRequest(sql, body, uid);
-            const approval = await approvalStart(sql, uid);
+            const approval = await approvalStart(sql, uid, body?.approval_capacity, travelers.map(t => t.user_id));
             const [r] = await sql`INSERT INTO hrd_travel_requests ${sql({ ...row, ...approval, updated_by: uid })} RETURNING id`;
             await sql`INSERT INTO hrd_travel_request_travelers ${sql(travelers.map(t => ({ ...t, request_id: r.id })))}`;
             return r.id;
@@ -692,10 +788,11 @@ export const updateRequest = async ({ params, body, user, set }: any) => {
             if (cur.requester_id !== uid) throw new Bad(403, 'แก้ไขได้เฉพาะผู้ขอ');
             if (cur.status !== 'submitted') throw new Bad(409, cur.status === 'rejected' ? 'คำขอนี้ไม่ได้รับอนุมัติ แก้ไขไม่ได้ — ยื่นคำขอใหม่' : 'คำขอนี้ยกเลิกแล้ว แก้ไขไม่ได้');
             if (cur.actual_amount != null) throw new Bad(409, 'การเงินยืนยันยอดเบิกจ่ายแล้ว แก้ไขคำขอไม่ได้');
-            if (Number(cur.current_step) !== 1 || cur.approval_stage === 'approved') throw new Bad(409, 'หัวหน้าลงนามอนุมัติแล้ว แก้ไขคำขอไม่ได้ — ยกเลิกแล้วยื่นใหม่');
+            if (!editableStage(cur)) throw new Bad(409, cur.approval_stage === 'chain' ? 'หัวหน้าลงนามอนุมัติแล้ว แก้ไขคำขอไม่ได้ — ยกเลิกแล้วยื่นใหม่'
+                : 'เสนอผู้อำนวยการแล้ว แก้ไขคำขอไม่ได้ — ยกเลิกแล้วยื่นใหม่');
             const { row, travelers } = await computeRequest(sql, body, uid, cur.budget_id);
             // แก้แล้วลงนามใหม่ด้วยลายเซ็นปัจจุบัน และคิดสายอนุมัติใหม่ตามผังปัจจุบัน
-            const approval = await approvalStart(sql, uid);
+            const approval = await approvalStart(sql, uid, body?.approval_capacity, travelers.map(t => t.user_id));
             await sql`UPDATE hrd_travel_requests SET ${sql({ ...row, ...approval, updated_by: uid, updated_at: new Date() })} WHERE id = ${cur.id}`;
             await sql`DELETE FROM hrd_travel_request_travelers WHERE request_id = ${cur.id}`;
             await sql`INSERT INTO hrd_travel_request_travelers ${sql(travelers.map(t => ({ ...t, request_id: cur.id })))}`;
@@ -724,7 +821,7 @@ export const getTravelHistory = async ({ query, user, set }: any) => {
                        t.is_requester, r.total_amount::float8 AS total_amount, r.actual_amount::float8 AS actual_amount,
                        (SELECT count(*)::int FROM hrd_travel_request_travelers x WHERE x.request_id = r.id) AS traveler_count
                 FROM hrd_travel_request_travelers t JOIN hrd_travel_requests r ON r.id = t.request_id
-                WHERE t.user_id = ${target} AND r.start_at >= ${from} AND r.start_at < ${to}
+                WHERE t.user_id = ${target} AND NOT t.absent AND r.start_at >= ${from} AND r.start_at < ${to}
                 ORDER BY r.start_at DESC, r.id DESC`,
         ]);
         if (!person) return fail(set, 404, 'ไม่พบบุคลากร');
@@ -756,7 +853,7 @@ export const getTravelerStats = async ({ query, user, set }: any) => {
         const offset = Math.max(Number(query?.offset) || 0, 0);
         const like = '%' + search + '%';
         const base = core_kon`FROM hrd_travel_request_travelers t
-            JOIN hrd_travel_requests r ON r.id = t.request_id AND r.status = 'submitted' AND r.start_at >= ${from} AND r.start_at < ${to}
+            JOIN hrd_travel_requests r ON r.id = t.request_id AND r.status = 'submitted' AND NOT t.absent AND r.start_at >= ${from} AND r.start_at < ${to}
             JOIN users u ON u.id = t.user_id
             LEFT JOIN user_positions up ON up.user_position_id = u.user_position_id
             LEFT JOIN majors mj ON mj.major_id = u.major_id
@@ -789,6 +886,8 @@ export const recordActual = async ({ params, body, user, set }: any) => {
         const r = await core_kon.begin(async (sql: any) => {
             const [cur] = await sql`SELECT id, status, approval_stage, cost_mode FROM hrd_travel_requests WHERE id = ${Number(params.id)} FOR UPDATE`;
             if (cur?.cost_mode === 'no_claim') throw new Bad(409, 'คำขอนี้ไม่เบิกค่าใช้จ่าย ไม่ต้องบันทึกยอดเบิกจ่าย');
+            const [cl] = cur ? await sql`SELECT status FROM hrd_travel_claims WHERE request_id = ${cur.id}` : [];
+            if (cl && cl.status !== 'draft') throw new Bad(409, 'คำขอนี้เบิกผ่านระบบเคลียร์ค่าใช้จ่ายแล้ว — ยอดจริงมาจากการเงินยืนยัน');
             if (!cur) throw new Bad(404, 'ไม่พบคำขอ');
             if (cur.status !== 'submitted') throw new Bad(409, cur.status === 'rejected' ? 'คำขอนี้ไม่ได้รับอนุมัติ' : 'คำขอนี้ยกเลิกแล้ว');
             if (!clear && cur.approval_stage !== 'approved') throw new Bad(409, 'ยังไม่ได้บันทึกว่าผู้อำนวยการอนุมัติ — บันทึกผลคำสั่ง ผอ. ก่อน');
@@ -816,6 +915,7 @@ const actOnRequest = async ({ params, body, user, set }: any, action: 'approved'
             const [r] = await sql`SELECT id, requester_id, status, approval_stage, approval_chain, current_step FROM hrd_travel_requests WHERE id = ${Number(params.id)} FOR UPDATE`;
             if (!r) throw new Bad(404, 'ไม่พบคำขอ');
             if (r.status !== 'submitted') throw new Bad(409, r.status === 'rejected' ? 'คำขอนี้ไม่ได้รับอนุมัติแล้ว' : 'คำขอนี้ยกเลิกแล้ว');
+            if (r.approval_stage === 'hrd' || r.approval_stage === 'returned') throw new Bad(409, 'คำขอนี้ยังรอเจ้าหน้าที่ HRD ตรวจ', 'NOT_PENDING');
             if (r.approval_stage !== 'chain') throw new Bad(409, 'คำขอนี้ผ่านการอนุมัติในระบบครบแล้ว', 'NOT_PENDING');
             const chain = parseChain(r.approval_chain);
             const step = chain.find(s => Number(s.step) === Number(r.current_step));
@@ -850,7 +950,52 @@ const actOnRequest = async ({ params, body, user, set }: any, action: 'approved'
 export const approveRequest = (ctx: any) => actOnRequest(ctx, 'approved');
 export const rejectRequest = (ctx: any) => actOnRequest(ctx, 'rejected');
 
+// ── เจ้าหน้าที่ HRD ตรวจคำขอ (ขั้นแรก ก่อนเข้าสายหัวหน้า) — body { result: passed|returned|rejected, note? } ──
+// passed → เข้าสายหัวหน้า (เดินเอกสาร/ไม่มีหัวหน้าในสาย → รอ ผอ.) · returned → ผู้ขอแก้ไขแล้วส่งใหม่ (ต้องมีเหตุผล)
+// rejected → ไม่อนุมัติ จบคำขอ (ต้องมีเหตุผล) · ตรวจคำขอของตัวเองไม่ได้
+const REVIEW_RESULTS = ['passed', 'returned', 'rejected'] as const;
+export const reviewRequest = async ({ params, body, user, set }: any) => {
+    try {
+        const uid = Number(user?.id);
+        if (!(await canManage(uid))) return fail(set, 403, 'ตรวจคำขอได้เฉพาะผู้ดูแลระบบและเจ้าหน้าที่งานพัฒนาทรัพยากรบุคคล (HRD)');
+        const result = body?.result;
+        if (!(REVIEW_RESULTS as readonly string[]).includes(result)) return fail(set, 400, 'เลือกผลการตรวจ (ผ่าน / ส่งกลับแก้ไข / ไม่อนุมัติ)', 'result');
+        const note = multiline(body?.note, 'note', result === 'returned' ? 'สิ่งที่ต้องแก้ไข' : result === 'rejected' ? 'เหตุผลที่ไม่อนุมัติ' : 'หมายเหตุ', 1000, result !== 'passed');
+        const out = await core_kon.begin(async (sql: any) => {
+            const [r] = await sql`SELECT id, requester_id, status, approval_stage, sign_mode, approval_chain FROM hrd_travel_requests WHERE id = ${Number(params.id)} FOR UPDATE`;
+            if (!r) throw new Bad(404, 'ไม่พบคำขอ');
+            if (r.status !== 'submitted') throw new Bad(409, r.status === 'rejected' ? 'คำขอนี้ไม่ได้รับอนุมัติแล้ว' : 'คำขอนี้ยกเลิกแล้ว');
+            if (r.approval_stage === 'returned') throw new Bad(409, 'ส่งกลับให้ผู้ขอแก้ไขแล้ว — รอผู้ขอส่งใหม่', 'NOT_PENDING');
+            if (r.approval_stage !== 'hrd') throw new Bad(409, 'คำขอนี้ผ่านการตรวจของ HRD แล้ว', 'NOT_PENDING');
+            if (r.requester_id === uid) throw new Bad(403, 'ตรวจคำขอของตัวเองไม่ได้ — ให้เจ้าหน้าที่ HRD คนอื่นตรวจ');
+            if ((await sql`SELECT 1 FROM hrd_travel_request_travelers WHERE request_id = ${r.id} AND user_id = ${uid}`).length)
+                throw new Bad(403, 'ท่านเป็นผู้ร่วมเดินทางในคำขอนี้ ตรวจไม่ได้ — ให้เจ้าหน้าที่ HRD คนอื่นตรวจ');
+            const [{ name }] = await sql`SELECT CONCAT(pname, fname, ' ', lname) AS name FROM users WHERE id = ${uid}`;
+            await sql`INSERT INTO hrd_travel_request_reviews ${sql({ request_id: r.id, reviewer_id: uid, reviewer_name: String(name ?? '').trim() || '-', action: result, note })}`;
+            if (result === 'rejected') {
+                await sql`UPDATE hrd_travel_requests SET status = 'rejected', reject_reason = ${note && note.length > 300 ? note.slice(0, 299) + '…' : note}, updated_by = ${uid}, updated_at = NOW() WHERE id = ${r.id}`;
+                return { stage: 'hrd', message: 'บันทึกการไม่อนุมัติแล้ว' };
+            }
+            const stage = result === 'returned' ? 'returned' : afterHrd(r);
+            await sql`UPDATE hrd_travel_requests SET approval_stage = ${stage}, updated_by = ${uid}, updated_at = NOW() WHERE id = ${r.id}`;
+            const next = stage === 'chain' ? parseChain(r.approval_chain)[0] : null;
+            return {
+                stage,
+                message: stage === 'returned' ? 'ส่งกลับให้ผู้ขอแก้ไขแล้ว'
+                    : next ? `ตรวจผ่าน ส่งต่อให้${next.level_name} (${next.approver_name})`
+                        : r.sign_mode === 'paper' ? 'ตรวจผ่าน — เดินเอกสารเสนอผู้อำนวยการ' : 'ตรวจผ่าน — รอผู้อำนวยการลงนามในบันทึกข้อความ',
+            };
+        });
+        return { success: true, data: { id: Number(params.id), result, approval_stage: out.stage }, message: out.message };
+    } catch (e: any) {
+        if (e instanceof Bad) return fail(set, e.status, e.message, e.field);
+        console.error('[hrdRequest] review:', e?.message);
+        return fail(set, 500, 'บันทึกผลการตรวจไม่สำเร็จ');
+    }
+};
+
 // บันทึกผลคำสั่ง ผอ. ตามบันทึกข้อความที่ลงนามจริงแล้ว (ADMIN/HRD) — body { result: approved|rejected, note? }
+// HRD รับเอกสารที่ ผอ. ลงนามแล้วอัปเดตสถานะ = แจ้งผู้เดินทาง (ผู้ขอ + ผู้ร่วมเดินทาง) ในระบบว่าเดินทางได้ / ไม่ได้รับอนุมัติ
 export const recordDirector = async ({ params, body, user, set }: any) => {
     try {
         const uid = Number(user?.id);
@@ -862,7 +1007,8 @@ export const recordDirector = async ({ params, body, user, set }: any) => {
             const [r] = await sql`SELECT id, status, approval_stage FROM hrd_travel_requests WHERE id = ${Number(params.id)} FOR UPDATE`;
             if (!r) throw new Bad(404, 'ไม่พบคำขอ');
             if (r.status !== 'submitted') throw new Bad(409, r.status === 'rejected' ? 'คำขอนี้ไม่ได้รับอนุมัติแล้ว' : 'คำขอนี้ยกเลิกแล้ว');
-            if (r.approval_stage !== 'director') throw new Bad(409, r.approval_stage === 'chain' ? 'ยังรอหัวหน้าอนุมัติในระบบ' : 'บันทึกผลคำสั่งผู้อำนวยการไปแล้ว');
+            if (r.approval_stage !== 'director') throw new Bad(409, r.approval_stage === 'chain' ? 'ยังรอหัวหน้าอนุมัติในระบบ'
+                : r.approval_stage === 'hrd' || r.approval_stage === 'returned' ? 'ยังรอเจ้าหน้าที่ HRD ตรวจ' : 'บันทึกผลคำสั่งผู้อำนวยการไปแล้ว');
             await sql`UPDATE hrd_travel_requests SET director_result = ${result}, director_note = ${note}, director_by = ${uid}, director_at = NOW(),
                       approval_stage = ${result === 'approved' ? 'approved' : 'director'}, status = ${result === 'approved' ? 'submitted' : 'rejected'},
                       reject_reason = ${result === 'rejected' ? note : null}, updated_by = ${uid}, updated_at = NOW()
@@ -897,15 +1043,36 @@ export const cancelRequest = async ({ params, body, user, set }: any) => {
     try {
         const uid = Number(user?.id);
         const reason = text(body?.reason, 'reason', 'เหตุผลที่ยกเลิก', 300, false);
+        // ยืมเงินไปแล้ว (ระบุตอนยกเลิก หรือบันทึกไว้ในร่างการเบิก) → สร้างรายการคืนเงินยืมเต็มจำนวน ส่ง HRD → การเงิน
+        const advIn = body?.advance_amount === undefined || body?.advance_amount === null || body?.advance_amount === '' ? null : money(body.advance_amount, 'advance_amount', 'จำนวนเงินยืม');
+        const advNo = text(body?.advance_no, 'advance_no', 'เลขที่สัญญายืมเงิน', 50, false);
+        let refund: number | null = null;
         await core_kon.begin(async (sql: any) => {
-            const [cur] = await sql`SELECT id, requester_id, status, actual_amount FROM hrd_travel_requests WHERE id = ${Number(params.id)} FOR UPDATE`;
+            const [cur] = await sql`SELECT id, requester_id, status, actual_amount, start_at, end_at FROM hrd_travel_requests WHERE id = ${Number(params.id)} FOR UPDATE`;
             if (!cur) throw new Bad(404, 'ไม่พบคำขอ');
             if (cur.requester_id !== uid && !(await canManage(uid))) throw new Bad(403, 'ยกเลิกได้เฉพาะผู้ขอ หรือเจ้าหน้าที่งานพัฒนาทรัพยากรบุคคล (HRD)');
             if (cur.status !== 'submitted') throw new Bad(409, 'คำขอนี้ยกเลิกแล้ว');
             if (cur.actual_amount != null) throw new Bad(409, 'การเงินยืนยันยอดเบิกจ่ายแล้ว ยกเลิกไม่ได้ — ล้างยอดยืนยันก่อน');
+            const [cl] = await sql`SELECT id, status, mode, advance_amount::float8 AS advance_amount, advance_no FROM hrd_travel_claims WHERE request_id = ${cur.id} FOR UPDATE`;
+            if (cl && cl.status !== 'draft' && cl.status !== 'returned') throw new Bad(409, 'ส่งเบิกค่าใช้จ่ายจริงแล้ว ยกเลิกคำขอไม่ได้');
+            const adv = advIn ?? (cl?.mode === 'advance' && Number(cl.advance_amount) > 0 ? Number(cl.advance_amount) : null);
+            if (adv != null && adv > 0) {
+                const no = advNo ?? cl?.advance_no ?? null;
+                const row = { kind: 'refund', mode: 'advance', advance_amount: adv, advance_no: no, status: 'hrd', submitted_at: new Date(), submitted_by: uid,
+                    claimed: sql.json({}), claimed_total: 0, approved: null, approved_total: null, over_reasons: sql.json({}), absent_user_ids: [] as number[], person_times: sql.json({}),
+                    finance_returned: false, updated_by: uid, updated_at: new Date() };
+                const [c] = cl
+                    ? await sql`UPDATE hrd_travel_claims SET ${sql(row)} WHERE id = ${cl.id} RETURNING id`
+                    : await sql`INSERT INTO hrd_travel_claims ${sql({ ...row, request_id: cur.id, actual_start_at: cur.start_at, actual_end_at: cur.end_at, created_by: uid })} RETURNING id`;
+                await sql`DELETE FROM hrd_travel_claim_items WHERE claim_id = ${c.id}`;
+                const [{ n }] = await sql`SELECT CONCAT(pname, fname, ' ', lname) AS n FROM users WHERE id = ${uid}`;
+                await sql`INSERT INTO hrd_travel_claim_log (claim_id, actor_id, actor_name, action, note, amount)
+                          VALUES (${c.id}, ${uid}, ${String(n ?? '').trim() || '-'}, 'submitted', ${`ยกเลิกการเดินทาง — คืนเงินยืมเต็มจำนวน${reason ? ` (${reason})` : ''}`}, ${adv})`;
+                refund = adv;
+            } else if (cl) await sql`DELETE FROM hrd_travel_claims WHERE id = ${cl.id}`;
             await sql`UPDATE hrd_travel_requests SET status = 'cancelled', cancel_reason = ${reason}, cancelled_by = ${uid}, cancelled_at = NOW(), updated_by = ${uid}, updated_at = NOW() WHERE id = ${cur.id}`;
         });
-        return { success: true, data: { cancelled: true } };
+        return { success: true, data: { cancelled: true, refund }, ...(refund ? { message: `ยกเลิกแล้ว — ส่งรายการคืนเงินยืม ${refund.toLocaleString('en-US', { minimumFractionDigits: 2 })} บาท ให้ HRD และการเงินดำเนินการ` } : {}) };
     } catch (e: any) {
         if (e instanceof Bad) return fail(set, e.status, e.message, e.field);
         console.error('[hrdRequest] cancel:', e?.message);
@@ -922,16 +1089,18 @@ export const getHrdTasks = async ({ user, set }: any) => {
         const itemCols = core_kon`r.id, r.requester_name, r.requester_unit, r.subject, r.location, r.start_at, r.end_at, r.sign_mode,
             r.total_amount::float8 AS total_amount, r.current_step, r.approval_chain, r.approval_stage`;
         const items = (t: TaskKey) => core_kon`SELECT ${itemCols} FROM hrd_travel_requests r WHERE ${taskWhere(core_kon, t)} ORDER BY ${taskOrder(core_kon, t)} LIMIT 5`;
-        const [[c], director, actual, soon, budgets] = await Promise.all([
+        const [[c], review, director, actual, soon, budgets] = await Promise.all([
             core_kon`
-                SELECT count(*) FILTER (WHERE ${taskWhere(core_kon, 'director')})::int AS director,
+                SELECT count(*) FILTER (WHERE ${taskWhere(core_kon, 'review')})::int AS review,
+                       count(*) FILTER (WHERE ${taskWhere(core_kon, 'review')} AND r.start_at < now() + make_interval(days => ${SOON_DAYS}))::int AS review_soon,
+                       count(*) FILTER (WHERE ${taskWhere(core_kon, 'director')})::int AS director,
                        count(*) FILTER (WHERE ${taskWhere(core_kon, 'director')} AND r.sign_mode = 'paper')::int AS director_paper,
                        count(*) FILTER (WHERE ${taskWhere(core_kon, 'actual')})::int AS actual,
                        count(*) FILTER (WHERE ${taskWhere(core_kon, 'actual')} AND r.end_at < now())::int AS actual_returned,
                        count(*) FILTER (WHERE ${taskWhere(core_kon, 'soon')})::int AS soon,
                        count(*) FILTER (WHERE ${taskWhere(core_kon, 'soon')} AND r.start_at < now())::int AS soon_overdue
                 FROM hrd_travel_requests r WHERE r.status = 'submitted' AND r.actual_amount IS NULL`,
-            items('director'), items('actual'), items('soon'),
+            items('review'), items('director'), items('actual'), items('soon'),
             core_kon`
                 SELECT b.id, b.name, b.budget_type, b.is_active, b.amount::float8 AS amount,
                        COALESCE(SUM(r.actual_amount), 0)::float8 AS spent,
@@ -943,6 +1112,8 @@ export const getHrdTasks = async ({ user, set }: any) => {
         ]);
         // คำขอที่ยังอยู่ในสาย — บอกว่ารอใคร (ขั้นปัจจุบัน)
         const waiting = ({ approval_chain, current_step, approval_stage, ...rest }: any) => {
+            if (approval_stage === 'hrd') return { ...rest, waiting_for: 'เจ้าหน้าที่ HRD ตรวจคำขอ' };
+            if (approval_stage === 'returned') return { ...rest, waiting_for: 'ผู้ขอแก้ไขตามที่ HRD ส่งกลับ' };
             if (approval_stage === 'director') return { ...rest, waiting_for: rest.sign_mode === 'paper' ? 'เดินเอกสาร · รอผลคำสั่งผู้อำนวยการ' : 'ผู้อำนวยการ (ลงนามบนกระดาษ)' };
             const step = parseChain(approval_chain).find(x => Number(x.step) === Number(current_step));
             return { ...rest, waiting_for: step ? `${step.level_name} · ${step.approver_name}` : null };
@@ -953,6 +1124,7 @@ export const getHrdTasks = async ({ user, set }: any) => {
             success: true,
             data: {
                 fiscal_year: fy, soon_days: SOON_DAYS,
+                review: { count: c.review, soon: c.review_soon, items: review.map(strip) },
                 director: { count: c.director, paper: c.director_paper, items: director.map(strip) },
                 actual: { count: c.actual, returned: c.actual_returned, items: actual.map(strip) },
                 soon: { count: c.soon, overdue: c.soon_overdue, items: soon.map(waiting) },
@@ -967,5 +1139,147 @@ export const getHrdTasks = async ({ user, set }: any) => {
     } catch (e: any) {
         console.error('[hrdRequest] tasks:', e?.message);
         return fail(set, 500, 'โหลดงานที่ต้องดำเนินการไม่สำเร็จ');
+    }
+};
+
+// ── HRD เปลี่ยนแปลงคำขอหลังยื่น (เก็บประวัติใน hrd_travel_request_changes) ──
+const logChange = async (sql: any, requestId: number, uid: number, kind: 'dates' | 'chain' | 'travelers', before: unknown, after: unknown, note: string | null) => {
+    const [{ n }] = await sql`SELECT CONCAT(pname, fname, ' ', lname) AS n FROM users WHERE id = ${uid}`;
+    await sql`INSERT INTO hrd_travel_request_changes (request_id, kind, before, after, note, changed_by, changed_by_name)
+              VALUES (${requestId}, ${kind}, ${sql.json(before)}, ${sql.json(after)}, ${note}, ${uid}, ${String(n ?? '').trim() || '-'})`;
+};
+
+// POST /requests/:id/reschedule — เลื่อนวันเดินทางของคำขอที่ ผอ. อนุมัติแล้ว { start_at, end_at, note } (ADMIN/HRD)
+// ตามหนังสือขอเลื่อน/แจ้งเปลี่ยนกำหนดการ · ประมาณการเดิมคงไว้ ยอดจริงคิดตอนเบิก (เกินประมาณการต้องมีเหตุผล) · ส่งเบิกแล้วเลื่อนไม่ได้
+export const rescheduleRequest = async ({ params, body, user, set }: any) => {
+    try {
+        const uid = Number(user?.id);
+        if (!(await canManage(uid))) return fail(set, 403, 'เลื่อนวันเดินทางได้เฉพาะผู้ดูแลระบบและเจ้าหน้าที่งานพัฒนาทรัพยากรบุคคล (HRD)');
+        const note = text(body?.note, 'note', 'เหตุผล/หนังสืออ้างอิงการเลื่อน', 500, true);
+        const s = Date.parse(String(body?.start_at ?? '')), e = Date.parse(String(body?.end_at ?? ''));
+        if (!Number.isFinite(s)) return fail(set, 400, 'ระบุวันเวลาออกเดินทางใหม่', 'start_at');
+        if (!Number.isFinite(e) || e <= s) return fail(set, 400, 'วันเวลากลับต้องหลังวันเวลาออกเดินทาง', 'end_at');
+        if (e - s > MAX_TRIP_DAYS * 86_400_000) return fail(set, 400, `เดินทางได้ไม่เกิน ${MAX_TRIP_DAYS} วันต่อคำขอ`, 'end_at');
+        const out = await core_kon.begin(async (sql: any) => {
+            const [r] = await sql`SELECT id, status, approval_stage, cost_mode, start_at, end_at FROM hrd_travel_requests WHERE id = ${Number(params.id)} FOR UPDATE`;
+            if (!r) throw new Bad(404, 'ไม่พบคำขอ');
+            if (r.status !== 'submitted' || r.approval_stage !== 'approved') throw new Bad(409, 'เลื่อนได้เฉพาะคำขอที่ผู้อำนวยการอนุมัติแล้ว — ก่อนอนุมัติให้ผู้ขอแก้ไขคำขอ');
+            if (r.cost_mode === 'no_claim') throw new Bad(409, 'คำขอไม่เบิกค่าใช้จ่ายเลือกวันเป็นรายวัน — ให้ยกเลิกแล้วยื่นใหม่');
+            const [cl] = await sql`SELECT status FROM hrd_travel_claims WHERE request_id = ${r.id}`;
+            if (cl && cl.status !== 'draft' && cl.status !== 'returned') throw new Bad(409, 'ส่งเบิกค่าใช้จ่ายแล้ว เลื่อนวันไม่ได้');
+            const calc = allowanceDays(s, e);
+            await sql`UPDATE hrd_travel_requests SET start_at = ${new Date(s)}, end_at = ${new Date(e)}, overnight = ${calc.overnight}, updated_by = ${uid}, updated_at = NOW() WHERE id = ${r.id}`;
+            // ร่างการเบิกที่ยังใช้เวลาเดิม → ตามวันใหม่
+            await sql`UPDATE hrd_travel_claims SET actual_start_at = ${new Date(s)}, actual_end_at = ${new Date(e)} WHERE request_id = ${r.id} AND status IN ('draft', 'returned')
+                      AND actual_start_at = ${r.start_at} AND actual_end_at = ${r.end_at}`;
+            await logChange(sql, r.id, uid, 'dates', { start_at: r.start_at, end_at: r.end_at }, { start_at: new Date(s), end_at: new Date(e) }, note);
+            return { start_at: new Date(s), end_at: new Date(e) };
+        });
+        return { success: true, data: { id: Number(params.id), ...out }, message: 'เลื่อนวันเดินทางแล้ว — ผู้เดินทางเห็นวันใหม่ในรายการคำขอ' };
+    } catch (e: any) {
+        if (e instanceof Bad) return fail(set, e.status, e.message, e.field);
+        console.error('[hrdRequest] reschedule:', e?.message);
+        return fail(set, 500, 'เลื่อนวันเดินทางไม่สำเร็จ');
+    }
+};
+
+// POST /requests/:id/chain — คิดสายอนุมัติใหม่ตามผังปัจจุบัน { dry_run?, note? } (ADMIN/HRD) — ใช้เมื่อเปลี่ยนตัวหัวหน้า/รักษาการ
+// ขั้นที่หัวหน้ากดไปแล้วคงไว้ (หลักฐาน ณ วันกด) · ขั้นที่ยังไม่ถึงคิดใหม่จากผังปัจจุบัน + ฐานะที่ผู้ขอเลือก + ข้ามหัวหน้าที่ร่วมเดินทาง
+// สายใหม่ไม่เหลือขั้นที่ยังไม่ถึง ขณะอยู่ในสาย → รอ ผอ. ลงนาม
+export const resyncChain = async ({ params, body, user, set }: any) => {
+    try {
+        const uid = Number(user?.id);
+        if (!(await canManage(uid))) return fail(set, 403, 'แก้สายอนุมัติได้เฉพาะผู้ดูแลระบบและเจ้าหน้าที่งานพัฒนาทรัพยากรบุคคล (HRD)');
+        const dry = body?.dry_run === true;
+        const note = text(body?.note, 'note', 'หมายเหตุ', 300, false);
+        const out = await core_kon.begin(async (sql: any) => {
+            const [r] = await sql`SELECT id, requester_id, status, approval_stage, approval_chain, current_step, approval_capacity FROM hrd_travel_requests WHERE id = ${Number(params.id)} FOR UPDATE`;
+            if (!r) throw new Bad(404, 'ไม่พบคำขอ');
+            if (r.status !== 'submitted' || !['hrd', 'returned', 'chain'].includes(r.approval_stage)) throw new Bad(409, 'แก้สายได้เฉพาะคำขอที่ยังไม่ผ่านสายหัวหน้า (รอ HRD ตรวจ / ส่งกลับ / อยู่ในสาย)');
+            const resolved = await chainFor(r.requester_id, r.approval_capacity);
+            if (!resolved) throw new Bad(409, 'ผู้ขอไม่ได้เป็นหัวหน้าหน่วยตามฐานะที่เลือกแล้ว — ให้ผู้ขอแก้ไขคำขอแล้วเลือกฐานะใหม่');
+            const travelerIds = (await sql`SELECT user_id FROM hrd_travel_request_travelers WHERE request_id = ${r.id}`).map((t: any) => Number(t.user_id));
+            const fresh = skipTravelers(resolved.chain, travelerIds);
+            const old = parseChain(r.approval_chain);
+            const acted = r.approval_stage === 'chain' ? old.filter(s => Number(s.step) < Number(r.current_step)) : [];
+            // ขั้นที่ยังไม่ถึง: ระดับสูงกว่าขั้นสุดท้ายที่กดแล้ว (กดกลุ่มงานแล้ว เหลือภารกิจ)
+            const lastActed = acted.length ? TRAVEL_LEVELS.indexOf(acted[acted.length - 1].level) : -1;
+            const pending = fresh.filter(s => TRAVEL_LEVELS.indexOf(s.level) > lastActed);
+            const next = [...acted, ...pending].map((s, i) => ({ ...s, step: i + 1 }));
+            const sig = (c: ChainStep[]) => c.map(s => `${s.level}:${s.approver_id}`).join('>');
+            const view = (c: ChainStep[]) => c.map(s => ({ step: s.step, level_name: s.level_name, approver_name: s.approver_name, is_acting: !!s.is_acting, unit_name: s.unit_name }));
+            const changed = sig(old) !== sig(next);
+            if (dry || !changed) return { changed, before: view(old), after: view(next), approval_stage: r.approval_stage };
+            const stage = r.approval_stage === 'chain' && !pending.length ? 'director' : r.approval_stage;
+            await sql`UPDATE hrd_travel_requests SET approval_chain = ${sql.json(next)}, current_step = ${acted.length + 1}, approval_stage = ${stage}, updated_by = ${uid}, updated_at = NOW() WHERE id = ${r.id}`;
+            await logChange(sql, r.id, uid, 'chain', view(old), view(next), note);
+            return { changed, before: view(old), after: view(next), approval_stage: stage };
+        });
+        return { success: true, data: { id: Number(params.id), ...out },
+            message: !out.changed ? 'สายอนุมัติตรงกับผังปัจจุบันแล้ว' : dry ? 'ตัวอย่างสายใหม่' : 'คิดสายอนุมัติใหม่แล้ว' };
+    } catch (e: any) {
+        if (e instanceof Bad) return fail(set, e.status, e.message, e.field);
+        console.error('[hrdRequest] chain:', e?.message);
+        return fail(set, 500, 'คิดสายอนุมัติใหม่ไม่สำเร็จ');
+    }
+};
+
+// POST /requests/:id/travelers — HRD แก้ผู้ร่วมเดินทาง (เพิ่ม/ลบ/เปลี่ยนตัว) หลังหัวหน้าเริ่มอนุมัติ { companion_ids, note } (ADMIN/HRD)
+// ก่อนหัวหน้ากด ผู้ขอแก้เองได้ที่หน้าแก้ไขคำขอ · ตามหนังสือแจ้งเปลี่ยนตัว/บันทึกที่ผู้อนุมัติรับทราบ (note บังคับ) · เก็บประวัติ
+// คนเดิมคงอัตรา ณ วันยื่น · คนใหม่ใช้อัตราปัจจุบัน (เบี้ยเลี้ยง/ระดับที่พัก) · ประมาณการเดิมคงไว้ ยอดจริงคิดตอนเบิก · ส่งเบิกแล้วแก้ไม่ได้
+// อยู่ในสาย: เพิ่มหัวหน้าที่ยังไม่ถึงขั้นของตัวเองไม่ได้ (ให้คิดสายอนุมัติใหม่ก่อน)
+export const updateTravelers = async ({ params, body, user, set }: any) => {
+    try {
+        const uid = Number(user?.id);
+        if (!(await canManage(uid))) return fail(set, 403, 'แก้ผู้ร่วมเดินทางหลังอนุมัติได้เฉพาะผู้ดูแลระบบและเจ้าหน้าที่งานพัฒนาทรัพยากรบุคคล (HRD)');
+        const note = text(body?.note, 'note', 'เหตุผล/หนังสืออ้างอิง', 500, true);
+        const out = await core_kon.begin(async (sql: any) => {
+            const [r] = await sql`SELECT id, requester_id, status, approval_stage, approval_chain, current_step, lodging_mode, lodging_nights, cost_mode FROM hrd_travel_requests WHERE id = ${Number(params.id)} FOR UPDATE`;
+            if (!r) throw new Bad(404, 'ไม่พบคำขอ');
+            if (r.status !== 'submitted') throw new Bad(409, 'คำขอนี้ยกเลิกหรือไม่ได้รับอนุมัติแล้ว');
+            if (!['chain', 'director', 'approved'].includes(r.approval_stage)) throw new Bad(409, 'ยังไม่เข้าสายหัวหน้า — ให้ผู้ขอแก้ไขคำขอเอง');
+            if (r.approval_stage === 'chain' && Number(r.current_step) === 1) throw new Bad(409, 'หัวหน้ายังไม่ได้กดอนุมัติ — ให้ผู้ขอแก้ไขคำขอเอง');
+            const [cl] = await sql`SELECT status FROM hrd_travel_claims WHERE request_id = ${r.id}`;
+            if (cl && cl.status !== 'draft' && cl.status !== 'returned') throw new Bad(409, 'ส่งเบิกค่าใช้จ่ายแล้ว แก้ผู้ร่วมเดินทางไม่ได้ — ใช้ "ไม่ได้เดินทาง" ตอนเบิกแทน');
+            const companions = [...new Set<number>((Array.isArray(body?.companion_ids) ? body.companion_ids : []).map(Number))]
+                .filter(n => Number.isInteger(n) && n > 0 && n !== r.requester_id);
+            if (companions.length + 1 > MAX_TRAVELERS) throw new Bad(400, `ผู้เดินทางได้ไม่เกิน ${MAX_TRAVELERS} คนต่อคำขอ`, 'companion_ids');
+            const cur = await sql`SELECT * FROM hrd_travel_request_travelers WHERE request_id = ${r.id} ORDER BY sort_order, id`;
+            const curIds = cur.map((t: any) => Number(t.user_id));
+            const added = companions.filter(id => !curIds.includes(id));
+            const removed = curIds.filter((id: number) => id !== r.requester_id && !companions.includes(id));
+            if (!added.length && !removed.length) throw new Bad(400, 'รายชื่อผู้ร่วมเดินทางไม่เปลี่ยน', 'companion_ids');
+            // หัวหน้าที่ยังไม่ถึงขั้นของตัวเอง ร่วมเดินทางไม่ได้ (จะอนุมัติการเดินทางของตัวเอง)
+            if (r.approval_stage === 'chain') {
+                const pending = parseChain(r.approval_chain).filter(s => Number(s.step) >= Number(r.current_step)).map(s => Number(s.approver_id));
+                if (added.some(id => pending.includes(id))) throw new Bad(409, 'มีหัวหน้าในสายที่ยังไม่ได้อนุมัติอยู่ในรายชื่อที่เพิ่ม — ใช้ "คิดสายอนุมัติใหม่" หลังแก้ หรือรอผ่านสายก่อน', 'companion_ids');
+            }
+            const people = added.length ? await peopleWithRate(sql, added) : [];
+            const byId = new Map<number, any>(people.map((p: any) => [Number(p.id), p]));
+            const notWorking = added.filter(id => !byId.get(id)?.working);
+            if (notWorking.length) throw new Bad(400, 'มีผู้ร่วมเดินทางที่ไม่ได้อยู่ในสถานะปฏิบัติงาน', 'companion_ids');
+            if (removed.length) await sql`DELETE FROM hrd_travel_request_travelers WHERE request_id = ${r.id} AND user_id IN ${sql(removed)}`;
+            const total = companions.length + 1;
+            const nextSort = Math.max(0, ...cur.map((t: any) => Number(t.sort_order))) + 1;
+            if (added.length) await sql`INSERT INTO hrd_travel_request_travelers ${sql(added.map((id, i) => {
+                const p = byId.get(id);
+                const room = r.lodging_mode === 'actual' ? (total > 1 ? 'double' : 'single') : null;
+                const rate = r.lodging_mode === 'lump' ? Number(p.lump_sum) : r.lodging_mode === 'actual' ? Number(room === 'single' ? p.single_room : p.double_room) : null;
+                return {
+                    request_id: r.id, user_id: id, name: p.name, position: p.position ?? null, tier_id: p.tier_id, tier_name: p.tier_name, rate: Number(p.rate), is_requester: false,
+                    sort_order: nextSort + i, lodging_class_id: p.lodging_class_id, lodging_class_name: p.lodging_class_name, lodging_room: room,
+                    lodging_rate: rate, lodging_cap: rate != null ? rate * Number(r.lodging_nights || 0) : 0, flight_class: p.flight_class,
+                };
+            }))}`;
+            const names = async (ids: number[]) => ids.length ? (await sql`SELECT TRIM(CONCAT(pname, fname, ' ', lname)) AS n FROM users WHERE id IN ${sql(ids)}`).map((x: any) => x.n) : [];
+            const [addedNames, removedNames] = await Promise.all([names(added), names(removed)]);
+            await logChange(sql, r.id, uid, 'travelers', { removed: removedNames }, { added: addedNames }, note);
+            return { added: addedNames.length, removed: removedNames.length, travelers: total };
+        });
+        return { success: true, data: { id: Number(params.id), ...out }, message: `แก้ผู้ร่วมเดินทางแล้ว (เพิ่ม ${out.added} · ลบ ${out.removed}) — รวม ${out.travelers} คน` };
+    } catch (e: any) {
+        if (e instanceof Bad) return fail(set, e.status, e.message, e.field);
+        console.error('[hrdRequest] travelers:', e?.message);
+        return fail(set, 500, 'แก้ผู้ร่วมเดินทางไม่สำเร็จ');
     }
 };
