@@ -111,3 +111,81 @@ export const getItAssets = async ({ set }: any) => {
         return { success: false, message: 'ดึงข้อมูลทะเบียนครุภัณฑ์คอมพิวเตอร์ไม่สำเร็จ' };
     }
 };
+
+// ── ครุภัณฑ์เป้าหมายสำหรับ BIA (นอกหมวดคอมพิวเตอร์) ─────────────────────────
+// BIA ต้องผูกโครงสร้างพื้นฐานที่บริการ IT พึ่งพาได้ด้วย (ไฟฟ้าสำรอง แอร์ห้อง Server โทรศัพท์ ซอฟต์แวร์ เครื่องมือแพทย์ที่เชื่อมระบบ)
+// แต่ไม่เอาของที่ไม่เกี่ยว (เก้าอี้ โต๊ะ ตู้ พัดลม ...) — หมวดสำนักงาน/ไฟฟ้ากรองต่อด้วยชื่อประเภทหรือชื่อครุภัณฑ์
+// (ทะเบียน V2 ลงชื่อประเภทผิดหลายรายการ เช่น แอร์ลงประเภท "ตู้ปลอดเชื้อ" โต๊ะลงประเภท "เครื่องปรับอากาศ" — จึงกรองจากชื่อครุภัณฑ์)
+// หมวดคอมพิวเตอร์ไม่อยู่ในรายการนี้ — หน้าเว็บใช้จาก /api/v1/it/assets เหมือนเดิม (มีผลประเมินความเสี่ยงทรัพย์สิน)
+// key ใช้รูปแบบเดียวกับทะเบียนทรัพย์สิน IT (<ทะเบียน>:<เลขครุภัณฑ์>) — ข้อมูล BIA เดิมใช้ต่อได้
+type BiaGroup = 'software' | 'power' | 'facility' | 'medical';
+const BIA_GROUPS: { group: BiaGroup; label: string; cat: string; match?: RegExp; exclude?: RegExp }[] = [
+    { group: 'software', label: 'ซอฟต์แวร์', cat: '%ไม่มีตัวตน%' },
+    { group: 'power', label: 'ไฟฟ้าสำรอง/สื่อสาร', cat: '%ไฟฟ้า%', match: /กำเนิดไฟฟ้า|ควบคุมแรงดัน|จ่ายไฟฟ้า|วิทยุ|วิมยุ|หม้อแปลง|สำรองไฟ|\bups\b/i },
+    { group: 'facility', label: 'ปรับอากาศ/โทรศัพท์', cat: '%สำนักงาน%', match: /ปรับอากาศ|โทรศัพท์|ไทรศัพท์|โทรศัพย์|โทรสาร|\bfax\b|ลายนิ้วมือ|ตู้สาขา|แม่ข่าย/i, exclude: /พัดลม/ },
+    // ราว 5,700 รายการ — ส่งให้เฉพาะตอนค้นหา
+    { group: 'medical', label: 'เครื่องมือแพทย์', cat: '%การแพทย์%' },
+];
+const BIA_KEY_RE = /^(v3|v2):.{1,60}$/;
+const BIA_SEARCH_LIMIT = 50;
+const BIA_CACHE_MS = 5 * 60_000;
+let biaCache: { at: number; rows: any[] } | null = null;
+let biaLoading: Promise<any[]> | null = null;
+
+const loadBiaTargetsFresh = async () => {
+    const out: any[] = [];
+    for (const g of BIA_GROUPS) {
+        const [[v3], [v2]] = await Promise.all([equipmentPool.execute(v3Sql, [g.cat]) as any, equipmentV2Pool.execute(v2Sql, [g.cat]) as any]);
+        for (const [src, rows] of [['v3', v3], ['v2', v2]] as const) {
+            for (const r of rows as any[]) {
+                const noid = clean(r.noid), name = clean(r.names), type = clean(r.type_name);
+                // ชื่อครุภัณฑ์เชื่อถือได้กว่าชื่อประเภท — ใช้ชื่อประเภทเฉพาะเมื่อไม่มีชื่อ
+                const text = name ?? type ?? '';
+                if (!noid || (g.match && !g.match.test(text)) || (g.exclude && g.exclude.test(text))) continue;
+                const transferred = src === 'v2' && String(r.trans ?? '').toUpperCase() === 'Y';
+                out.push({
+                    key: `${src}:${noid}`, source: src, noid, name, model: clean(r.models), type, kind: 'other',
+                    group: g.group, group_label: g.label,
+                    department: clean(r.department), location: clean(r.locates), receive: r.receive || null,
+                    status: transferred ? 'ตัดออกจากทะเบียน' : clean(r.status_name),
+                    status_group: transferred ? 'disposed' : (STATUS_GROUP[src][String(r.iscode ?? '').trim()] ?? 'other'),
+                });
+            }
+        }
+    }
+    return out;
+};
+const loadBiaTargets = async () => {
+    if (biaCache && Date.now() - biaCache.at < BIA_CACHE_MS) return biaCache.rows;
+    biaLoading ??= loadBiaTargetsFresh()
+        .then(rows => { biaCache = { at: Date.now(), rows }; return rows; })
+        .finally(() => { biaLoading = null; });
+    return biaLoading;
+};
+
+// GET /api/v1/it/bia/assets?search=&keys=
+//   ไม่มี search → ครุภัณฑ์เป้าหมายทุกกลุ่มยกเว้นเครื่องมือแพทย์ · มี search (2–60 ตัว) → เครื่องมือแพทย์ที่ตรงคำค้น (ยังถือครอง สูงสุด 50)
+//   keys (คั่นด้วย , สูงสุด 200) → รวมรายการตาม key ที่บันทึกไว้แล้วด้วย (ทุกกลุ่ม รวมที่ออกจากทะเบียนแล้ว) ไว้แสดงชื่อ
+export const getBiaAssets = async ({ query, set }: any) => {
+    const search = typeof query?.search === 'string' ? query.search.trim() : '';
+    if (search && (search.length < 2 || search.length > 60)) { set.status = 400; return { success: false, message: 'คำค้นต้องยาว 2–60 ตัวอักษร', field: 'search' }; }
+    const keys = typeof query?.keys === 'string' && query.keys ? [...new Set(query.keys.split(',').map((k: string) => k.trim()).filter(Boolean))] as string[] : [];
+    if (keys.length > 200 || keys.some(k => !BIA_KEY_RE.test(k))) { set.status = 400; return { success: false, message: 'รายการครุภัณฑ์ไม่ถูกต้อง', field: 'keys' }; }
+    try {
+        const rows = await loadBiaTargets();
+        let base: any[];
+        if (search) {
+            const words = search.toLowerCase().split(/\s+/);
+            base = rows.filter(r => r.group === 'medical' && r.status_group !== 'disposed'
+                && words.every(w => [r.noid, r.name, r.model, r.type, r.department].some(v => v && String(v).toLowerCase().includes(w)))).slice(0, BIA_SEARCH_LIMIT);
+        } else base = rows.filter(r => r.group !== 'medical');
+        const seen = new Set(base.map(r => r.key));
+        const want = new Set(keys.filter(k => !seen.has(k)));
+        const extra = want.size ? rows.filter(r => want.has(r.key)) : [];
+        return { success: true, data: [...base, ...extra], groups: BIA_GROUPS.map(g => ({ group: g.group, label: g.label })) };
+    } catch (error: any) {
+        console.error('[ItAsset] BIA targets DB Error:', error?.message, error?.code);
+        set.status = 500;
+        return { success: false, message: 'ดึงข้อมูลครุภัณฑ์จากทะเบียนไม่สำเร็จ' };
+    }
+};
