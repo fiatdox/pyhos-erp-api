@@ -54,7 +54,7 @@ const budgetRows = (where: any) => core_kon`
                SUM(r.total_amount) FILTER (WHERE r.actual_amount IS NULL) AS pending,
                count(*) AS requests, count(*) FILTER (WHERE r.actual_amount IS NOT NULL) AS confirmed,
                (SELECT count(*) FROM hrd_travel_request_travelers t JOIN hrd_travel_requests r2 ON r2.id = t.request_id
-                 WHERE r2.budget_id = b.id AND r2.status = 'submitted') AS travelers
+                 WHERE r2.budget_id = b.id AND r2.status = 'submitted' AND NOT t.absent) AS travelers
         FROM hrd_travel_requests r WHERE r.budget_id = b.id AND r.status = 'submitted'
     ) x ON TRUE
     WHERE ${where}
@@ -194,8 +194,8 @@ const linesOf = (budgetIds: number[], f: DashFilters) => core_kon`
                 ELSE r.actual_amount / n.n END AS spent,
            CASE WHEN r.actual_amount IS NULL THEN e.est ELSE 0 END AS pending
     FROM hrd_travel_requests r
-    JOIN hrd_travel_request_travelers t ON t.request_id = r.id
-    JOIN LATERAL (SELECT count(*)::numeric AS n, SUM(x.lodging_cap) AS cap FROM hrd_travel_request_travelers x WHERE x.request_id = r.id) n ON TRUE
+    JOIN hrd_travel_request_travelers t ON t.request_id = r.id AND NOT t.absent
+    JOIN LATERAL (SELECT count(*)::numeric AS n, SUM(x.lodging_cap) AS cap FROM hrd_travel_request_travelers x WHERE x.request_id = r.id AND NOT x.absent) n ON TRUE
     JOIN LATERAL (SELECT ${ALLOWANCE_SQL(core_kon)}
                          + CASE WHEN n.cap > 0 THEN r.lodging_amount * t.lodging_cap / n.cap ELSE r.lodging_amount / n.n END
                          + (r.total_amount - r.allowance_amount - r.lodging_amount) / n.n AS est) e ON TRUE
@@ -366,5 +366,59 @@ export const updateBudgetType = async ({ params, body, user, set }: any) => {
         if (e instanceof Bad) return fail(set, e.status, e.message, e.field);
         console.error('[hrdBudget] type update:', e?.message);
         return fail(set, 500, 'บันทึกประเภทงบไม่สำเร็จ');
+    }
+};
+
+// ── เปรียบเทียบย้อนหลังหลายปีงบ (เช่น 5 ปี) — ADMIN / HRD ──
+// ทุกตัวเลขคิดจากบรรทัดผู้เดินทาง: ยอดของคำขอหารเท่ากันตามจำนวนผู้เดินทาง (กรองกลุ่มงานแล้วยอดยังสอดคล้องกัน)
+//   estimate = ประมาณการ · actual = ยอดที่การเงินยืนยัน (null = ยังไม่ยืนยัน) · กลุ่มงาน = สังกัด ณ วันยื่น (travelers.major_id)
+// ใช้ r.fiscal_year (คอลัมน์คำนวณ) + ดัชนี idx_hrd_travel_requests_fy / idx_hrd_travel_travelers_major — src/db/hrd_travel_analytics.sql
+const MAX_COMPARE_YEARS = 10;
+export const getBudgetCompare = async ({ query, user, set }: any) => {
+    try {
+        const denied = await guard(user, set); if (denied) return denied;
+        const years = Math.min(Math.max(Number(query?.years) || 5, 2), MAX_COMPARE_YEARS);
+        const to = Number(query?.to_year) || currentFiscalYear();
+        const from = to - years + 1;
+        const majorId = pid(query?.major_id), missionId = pid(query?.mission_id);
+        const budgetType = TYPE_CODE_RE.test(String(query?.budget_type ?? '')) ? String(query.budget_type) : null;
+        // จำนวนผู้เดินทางต่อคำขอ (n) นับก่อนกรองกลุ่มงาน — ยอดต่อคนยังเป็นสัดส่วนของทั้งคำขอ · window function อ่านตารางรอบเดียว
+        // สรุปรายปีและรายปี×กลุ่มงานใน query เดียว (GROUPING SETS) — ไม่ต้องคำนวณบรรทัดซ้ำสองรอบ
+        const rows = await core_kon`
+            WITH l AS (
+                SELECT * FROM (
+                    SELECT r.id AS rid, r.fiscal_year, t.user_id, t.major_id, t.mission_id, r.allowance_days,
+                           count(*) OVER (PARTITION BY r.id)::numeric AS n,
+                           r.total_amount, r.actual_amount, r.allowance_amount, r.lodging_amount,
+                           r.transport_amount + r.fuel_amount + r.toll_amount AS transport, r.registration_amount + r.other_amount AS other
+                    FROM hrd_travel_requests r JOIN hrd_travel_request_travelers t ON t.request_id = r.id AND NOT t.absent
+                    WHERE r.status = 'submitted' AND r.fiscal_year BETWEEN ${from} AND ${to}
+                      ${budgetType ? core_kon`AND r.budget_type = ${budgetType}` : core_kon``}
+                ) x
+                WHERE TRUE ${majorId ? core_kon`AND x.major_id = ${majorId}` : core_kon``} ${missionId ? core_kon`AND x.mission_id = ${missionId}` : core_kon``}
+            )
+            SELECT fiscal_year::int AS fiscal_year, major_id, GROUPING(major_id)::int AS by_year,
+                   count(DISTINCT rid)::int AS requests, count(*)::int AS person_trips, count(DISTINCT user_id)::int AS people,
+                   COALESCE(SUM(allowance_days), 0)::float8 AS days,
+                   ${m2('SUM(total_amount / n)')} AS estimate, ${m2('SUM(actual_amount / n)')} AS actual,
+                   count(DISTINCT rid) FILTER (WHERE actual_amount IS NOT NULL)::int AS confirmed,
+                   ${m2('SUM(allowance_amount / n)')} AS allowance, ${m2('SUM(lodging_amount / n)')} AS lodging,
+                   ${m2('SUM(transport / n)')} AS transport, ${m2('SUM(other / n)')} AS other,
+                   ${m2('SUM(COALESCE(actual_amount, total_amount) / n)')} AS amount
+            FROM l GROUP BY GROUPING SETS ((fiscal_year), (fiscal_year, major_id))`;
+        const units = new Map((await core_kon`SELECT major_id, name FROM majors WHERE major_id IN ${core_kon([0, ...new Set(rows.filter((x: any) => x.major_id != null).map((x: any) => x.major_id))])}`)
+            .map((m: any) => [m.major_id, m.name]));
+        const byYear = rows.filter((x: any) => x.by_year === 1);
+        const byUnit = rows.filter((x: any) => x.by_year === 0)
+            .map((x: any) => ({ fiscal_year: x.fiscal_year, major_id: x.major_id, unit: units.get(x.major_id) ?? 'ไม่ระบุกลุ่มงาน', person_trips: x.person_trips, amount: x.amount }))
+            .sort((a: any, b: any) => a.fiscal_year - b.fiscal_year || b.amount - a.amount);
+        // ทุกปีในช่วง (ปีที่ไม่มีคำขอ = 0) ให้กราฟเทียบได้ครบ
+        const zero = { requests: 0, person_trips: 0, people: 0, days: 0, estimate: 0, actual: 0, confirmed: 0, allowance: 0, lodging: 0, transport: 0, other: 0 };
+        const got = new Map(byYear.map(({ major_id: _m, by_year: _b, amount: _a, ...y }: any) => [y.fiscal_year, y]));
+        const yearsOut = Array.from({ length: years }, (_, i) => from + i).map(fy => ({ ...zero, ...(got.get(fy) ?? {}), fiscal_year: fy }));
+        return { success: true, data: { from, to, years: yearsOut, by_unit: byUnit, filters: { major_id: majorId, mission_id: missionId, budget_type: budgetType } } };
+    } catch (e: any) {
+        console.error('[hrdBudget] compare:', e?.message);
+        return fail(set, 500, 'โหลดข้อมูลเปรียบเทียบไม่สำเร็จ');
     }
 };

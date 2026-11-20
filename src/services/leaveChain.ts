@@ -253,6 +253,93 @@ export const resolveApprovalChain = async (userId: number): Promise<ResolvedChai
     return { steps, skipped };
 };
 
+// ── ขออนุมัติในฐานะ (ระบบเดินทางไปราชการ) ─────────────────────────────────────
+// คนที่เป็นหัวหน้าหลายหน่วย (เช่น หัวหน้ากลุ่มงานอายุรกรรม ในภารกิจตติยภูมิ + หัวหน้ากลุ่มภารกิจด้านสุขภาพดิจิทัล)
+// เลือกได้ว่ายื่นในฐานะใด สายจึงต่างกัน: หัวหน้าภารกิจ = เสนอ ผอ. โดยตรง · หัวหน้ากลุ่มงาน = ผ่านหัวหน้าภารกิจต้นสังกัดของกลุ่มงาน
+// บุคลากรในสังกัด = หัวหน้ากลุ่มงานต้นสังกัด → หัวหน้าภารกิจ (เมื่อไม่ได้เป็นหัวหน้ากลุ่มงานของตัวเอง)
+export type CapacityType = 'mission' | 'major' | 'member';
+export interface ApprovalCapacity {
+    key: string;                  // mission:7 · major:20 · member:20
+    type: CapacityType;
+    unit_id: number;
+    unit_name: string;            // ชื่อหน่วยที่พิมพ์ในบันทึกข้อความ (กลุ่มงาน/กลุ่มภารกิจ)
+    label: string;                // ข้อความที่แสดง เช่น "หัวหน้ากลุ่มภารกิจด้านสุขภาพดิจิทัล"
+    is_acting: boolean;
+    steps: ChainStep[];           // ขั้นหัวหน้าในระบบ (MAJOR/MISSION) — ว่าง = เสนอ ผอ. โดยตรง
+}
+const majorName = (n: string | null) => { const t = String(n ?? '').trim(); return t.startsWith('กลุ่มงาน') ? t : `กลุ่มงาน${t}`; };
+const missionName = (n: string | null) => { const t = String(n ?? '').trim(); return t.startsWith('กลุ่มภารกิจ') ? t : `กลุ่มภารกิจ${t}`; };
+
+/**
+ * ฐานะที่ผู้ใช้เลือกยื่นได้ เรียงตามลำดับ: หัวหน้าภารกิจ → หัวหน้ากลุ่มงาน → บุคลากรในสังกัด
+ * นับเฉพาะหน่วยที่ผู้ใช้ "ทำหน้าที่หัวหน้าอยู่จริง" (ตัวจริง หรือรักษาการเมื่อตัวจริงไม่ปฏิบัติงาน — กติกาเดียวกับ pickHead)
+ * ฐานะที่สายออกมาเหมือนกันรวมเป็นตัวเลือกเดียว (เก็บตัวแรก) · ไม่ได้เป็นหัวหน้าที่ไหน = [] (ไม่ต้องเลือก)
+ */
+export const approvalCapacitiesOf = async (userId: number): Promise<ApprovalCapacity[]> => {
+    const [missions, majors, [me]] = await Promise.all([
+        core_kon`SELECT mission_id AS unit_id, name, supervisor_id, acting_supervisor_id FROM missions
+                 WHERE is_active = 'Y' AND (supervisor_id = ${userId} OR acting_supervisor_id = ${userId}) ORDER BY mission_id`,
+        core_kon`SELECT m.major_id AS unit_id, m.name, m.supervisor_id, m.acting_supervisor_id, m.mission_id FROM majors m
+                 WHERE m.is_active = 'Y' AND (m.supervisor_id = ${userId} OR m.acting_supervisor_id = ${userId}) ORDER BY m.major_id`,
+        core_kon`SELECT u.major_id, m.name AS major_name, m.mission_id FROM users u LEFT JOIN majors m ON m.major_id = u.major_id AND m.is_active = 'Y' WHERE u.id = ${userId}`,
+    ]);
+    const active0 = await activeApprovers([...missions, ...majors].flatMap((u: any) => [u.supervisor_id, u.acting_supervisor_id]));
+    const isHead = (u: any) => pickHead(u, active0)?.id === userId;
+    const myMissions = missions.filter(isHead), myMajors = majors.filter(isHead);
+    if (!myMissions.length && !myMajors.length) return [];
+
+    // หัวหน้าของกลุ่มงาน/ภารกิจที่เกี่ยวข้อง (ไว้สร้างขั้น)
+    const missionIds = [...new Set([...myMajors.map((m: any) => m.mission_id), me?.mission_id].filter((x: any) => x != null).map(Number))];
+    // ฐานะบุคลากรในสังกัด: เฉพาะเมื่อกลุ่มงานของตัวเองอยู่คนละภารกิจกับหน่วยที่ตัวเองเป็นหัวหน้า
+    // (ภารกิจเดียวกัน = หัวหน้ากลุ่มงานนั้นเป็นผู้ใต้บังคับบัญชาหรือระดับเดียวกัน อนุมัติให้ไม่ได้ — กติกา ก)
+    const headedMissionIds = new Set([...myMissions.map((m: any) => Number(m.unit_id)), ...myMajors.map((m: any) => Number(m.mission_id))]);
+    const ownMajorHeaded = me?.major_id == null || myMajors.some((m: any) => Number(m.unit_id) === Number(me.major_id))
+        || headedMissionIds.has(Number(me.mission_id));
+    const [missionRows, ownMajor] = await Promise.all([
+        missionIds.length ? core_kon`SELECT mission_id AS unit_id, name, supervisor_id, acting_supervisor_id FROM missions WHERE is_active = 'Y' AND mission_id IN ${core_kon(missionIds)}` : Promise.resolve([]),
+        me?.major_id != null && !ownMajorHeaded ? core_kon`SELECT major_id AS unit_id, name, supervisor_id, acting_supervisor_id, mission_id FROM majors WHERE is_active = 'Y' AND major_id = ${me.major_id}` : Promise.resolve([]),
+    ]);
+    const active = await activeApprovers([...missionRows, ...ownMajor].flatMap((u: any) => [u.supervisor_id, u.acting_supervisor_id]));
+    const raw: { level: ApprovalLevel; unit: any; head: { id: number; is_acting: boolean } }[][] = [];
+    const stepOf = (level: ApprovalLevel, unit: any) => {
+        const head = unit ? pickHead(unit, active) : null;
+        return head && head.id !== userId ? [{ level, unit, head }] : [];
+    };
+    const missionRow = (id: unknown) => missionRows.find((x: any) => Number(x.unit_id) === Number(id));
+
+    const out: Omit<ApprovalCapacity, 'steps'>[] = [];
+    for (const m of myMissions) {
+        out.push({ key: `mission:${m.unit_id}`, type: 'mission', unit_id: Number(m.unit_id), unit_name: missionName(m.name), label: `หัวหน้า${missionName(m.name)}`, is_acting: Number(m.supervisor_id) !== userId });
+        raw.push([]);
+    }
+    for (const m of myMajors) {
+        out.push({ key: `major:${m.unit_id}`, type: 'major', unit_id: Number(m.unit_id), unit_name: majorName(m.name), label: `หัวหน้า${majorName(m.name)}`, is_acting: Number(m.supervisor_id) !== userId });
+        raw.push(stepOf('MISSION', missionRow(m.mission_id)));
+    }
+    if (ownMajor[0]) {
+        const om = ownMajor[0];
+        out.push({ key: `member:${om.unit_id}`, type: 'member', unit_id: Number(om.unit_id), unit_name: majorName(om.name), label: `บุคลากร${majorName(om.name)}`, is_acting: false });
+        raw.push([...stepOf('MAJOR', om), ...stepOf('MISSION', missionRow(om.mission_id ?? me.mission_id))]);
+    }
+    const names = await namesOf(raw.flat().map(s => s.head.id));
+    const seen = new Set<string>();
+    const result: ApprovalCapacity[] = [];
+    out.forEach((c, i) => {
+        // หัวหน้าคนเดียวกันสองขั้น (กลุ่มงาน + ภารกิจ) รวมเป็นขั้นบนขั้นเดียว
+        const hs = raw[i].filter((s, k, a) => !a.slice(k + 1).some(x => x.head.id === s.head.id));
+        const steps: ChainStep[] = hs.map((s, k) => ({
+            step: k + 1, level: s.level, level_name: LEVEL_NAME[s.level], approver_id: s.head.id,
+            approver_name: names.get(s.head.id) ?? `ผู้ใช้ #${s.head.id}`, unit_type: s.level === 'MAJOR' ? 'major' : 'mission',
+            unit_id: Number(s.unit.unit_id), unit_name: s.unit.name ?? null, is_acting: s.head.is_acting,
+        }));
+        const sig = steps.map(s => `${s.level}:${s.approver_id}`).join('>');
+        if (seen.has(sig)) return;
+        seen.add(sig);
+        result.push({ ...c, steps });
+    });
+    return result;
+};
+
 /** ขั้นของ ผอ. — ใช้ตัวจริงก่อน ไม่มี (หรือพ้นจากการปฏิบัติงานแล้ว) จึงใช้รักษาการ */
 export const resolveDirectorStep = async (step: number): Promise<ChainStep | null> => {
     const rows = await core_kon`
