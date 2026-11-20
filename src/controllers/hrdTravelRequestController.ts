@@ -388,10 +388,19 @@ const involvedIn = (s: any, uid: number) => s`(${inChain(s, uid)}
 const mineIn = (s: any, uid: number) => s`(r.requester_id = ${uid}
     OR r.id = ANY (ARRAY(SELECT t.request_id FROM hrd_travel_request_travelers t WHERE t.user_id = ${uid})))`;
 
+/** ตำแหน่งผู้เดินทาง (alias t) — เหมือน REQUESTER_POS: แถวที่บันทึกก่อนมีกติกาต่อระดับ เติมระดับปัจจุบันของข้าราชการตอนแสดง */
+const TRAVELER_POS = (s: any) => s`COALESCE((
+    SELECT CASE WHEN RIGHT(t.position, length(TRIM(lv.level_name))) = TRIM(lv.level_name) THEN t.position
+                WHEN lv.level_name ~ '[0-9]' THEN t.position || ' ' || TRIM(lv.level_name)
+                ELSE t.position || TRIM(lv.level_name) END
+    FROM users u JOIN user_levels lv ON lv.user_level_id = u.user_level_id JOIN user_types ty ON ty.user_type_id = u.user_type_id
+    WHERE u.id = t.user_id AND t.position IS NOT NULL AND TRIM(ty.type_name) = 'ข้าราชการ'
+      AND lv.level_name IS NOT NULL AND TRIM(lv.level_name) NOT IN ('', '-')), t.position)`;
+
 const loadTravelers = (ids: number[]) => ids.length === 0 ? Promise.resolve([]) : core_kon`
-    SELECT request_id, user_id, name, position, tier_id, tier_name, rate, is_requester,
+    SELECT request_id, user_id, name, ${TRAVELER_POS(core_kon)} AS position, tier_id, tier_name, rate, is_requester,
            lodging_class_id, lodging_class_name, lodging_room, lodging_rate, lodging_cap::float8 AS lodging_cap, flight_class
-    FROM hrd_travel_request_travelers WHERE request_id IN ${core_kon(ids)} ORDER BY request_id, sort_order, id`;
+    FROM hrd_travel_request_travelers t WHERE request_id IN ${core_kon(ids)} ORDER BY request_id, sort_order, id`;
 
 // แก้ได้ก่อนมีผู้อนุมัติกด (current_step = 1) · ยกเลิกได้จนกว่าการเงินยืนยันยอด
 // บันทึกยอดยืนยัน = ADMIN/HRD หลัง ผอ. อนุมัติ · อนุมัติ = ผู้อนุมัติของขั้นปัจจุบัน · บันทึกผล ผอ. = ADMIN/HRD
